@@ -206,6 +206,50 @@ class CompanionTests(unittest.TestCase):
             controller.server_close()
             controller_thread.join(timeout=2)
 
+    def test_linked_lan_controller_can_poll_without_valid_plex_token(self):
+        receiver = CompanionReceiver('player', 'Test', None,
+                                     lambda *_: {'state': 'stopped'},
+                                     lambda token: token == 'allowed', port=0)
+        with patch('companion.GDM.start'):
+            receiver.start()
+            try:
+                base = f'http://127.0.0.1:{receiver.port}/player/timeline/poll?commandID=1'
+                def poll(token=None, controller='phone'):
+                    headers = {'X-Plex-Client-Identifier': controller,
+                               'X-Plex-Target-Client-Identifier': 'player'}
+                    if token is not None:
+                        headers['X-Plex-Token'] = token
+                    with urlopen(Request(base, headers=headers), timeout=3) as response:
+                        return response.status
+                with self.assertRaises(HTTPError) as error:
+                    poll()
+                self.assertEqual(error.exception.code, 401)
+                receiver.set_link('device-token', 'owner')
+                with patch('companion.same_lan_peer', return_value=True):
+                    self.assertEqual(poll(), 200)
+                    self.assertEqual(poll('unrecognized-phone-token'), 200)
+                    command = Request(
+                        f'http://127.0.0.1:{receiver.port}/player/playback/pause?commandID=2',
+                        headers={'X-Plex-Client-Identifier': 'phone',
+                                 'X-Plex-Target-Client-Identifier': 'player'})
+                    with urlopen(command, timeout=3) as response:
+                        self.assertEqual(response.status, 200)
+                    with self.assertRaises(HTTPError) as error:
+                        poll(controller='')
+                    self.assertEqual(error.exception.code, 401)
+                with patch('companion.same_lan_peer', return_value=False):
+                    with self.assertRaises(HTTPError) as error:
+                        poll('unrecognized-phone-token')
+                    self.assertEqual(error.exception.code, 401)
+                    self.assertEqual(poll('allowed'), 200)
+                receiver.set_link(None, None)
+                with patch('companion.same_lan_peer', return_value=True):
+                    with self.assertRaises(HTTPError) as error:
+                        poll()
+                    self.assertEqual(error.exception.code, 401)
+            finally:
+                receiver.stop()
+
 
 class AccountTests(unittest.TestCase):
     def test_pin_and_connection_publication(self):

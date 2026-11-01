@@ -35,7 +35,7 @@ In **Settings → Plexamp remote control**, enable **Allow Plexamp remote contro
 
 Select **Link Plex account…**, enter the displayed code at [plex.tv/link](https://plex.tv/link), and leave the dialog open until the status says linked. Linking registers the same persistent player identifier used by GDM and the HTTP receiver, then publishes the current local connection URI to plex.tv. The app checks for local IP changes every 30 seconds and republishes when necessary. The device token is stored only in the desktop Secret Service keyring; if no keyring is available, linking fails with an explicit message. **Unlink** deletes the registered device and clears that token. Disabling remote control stops the listener and GDM advertisement without erasing the link.
 
-The receiver accepts music from the Plex server configured in the app. Its requests require a Plex token from the linked account (or the app's configured server token before linking), the correct target identifier when supplied, and ordered `commandID` values. Controller-supplied server URLs and media tokens are ignored; only validated metadata paths are requested from the configured server. Its advertised capabilities are `timeline,playback`; it handles tracks, albums, playlists and existing Plex play queues through `playMedia`, up to 1000 tracks. Long queues beyond that limit need live compatibility work.
+The receiver accepts music from the Plex server configured in the app. After account linking, controllers on the computer's advertised local subnet can control it even if Plexamp omits a token or sends one the receiver cannot verify. **Any device on that subnet can then control playback while remote control is enabled.** Unlinked receivers and controllers on other private subnets still require a valid Plex token. Requests require a controller identifier, the correct target identifier when supplied, and ordered `commandID` values. Controller-supplied server URLs and media tokens are ignored; only validated metadata paths are requested from the configured server. Its advertised capabilities are `timeline,playback`; it handles tracks, albums, playlists and existing Plex play queues through `playMedia`, up to 1000 tracks. Long queues beyond that limit need live compatibility work.
 
 ### Phone check
 
@@ -54,7 +54,7 @@ If Plexamp lists the player but says **Could not connect to player**, leave the 
 sudo ufw allow from 192.168.0.0/24 to any port 32500 proto tcp
 ```
 
-Use your own LAN range and the port shown by the app. Do not open the port to the internet. If Safari works but Settings shows HTTP 401 when Plexamp selects the player, the controller token is being rejected; the receiver accepts a token in either the Plex header or query string and verifies it against the linked account or the configured Plex server.
+Use your own LAN range and the port shown by the app. Do not open the port to the internet. If Settings still shows HTTP 401 when Plexamp selects the player, confirm that Settings says **linked to Plex** and that the phone is on the same subnet as the Linux computer. The local subnet fallback applies only while the device link is active.
 
 ## UI
 

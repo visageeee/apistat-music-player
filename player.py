@@ -705,7 +705,7 @@ class Player(Gtk.Window):
         elif not self.remote_config['enabled']:
             self.remote_status.set_text('Remote control is off')
         elif self.remote_receiver:
-            link = ('linked to Plex' if self.remote_link_user else
+            link = ('linked to Plex • LAN devices may control playback' if self.remote_link_user else
                     'keyring unavailable; linking disabled' if not self.remote_keyring_available
                     else 'not linked to Plex')
             self.remote_status.set_text(

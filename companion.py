@@ -5,8 +5,10 @@ Plex server. No controller-provided URL or token is used to fetch media.
 """
 
 import ipaddress
+import fcntl
 import re
 import socket
+import struct
 import threading
 import time
 import xml.etree.ElementTree as ET
@@ -205,6 +207,38 @@ def local_ip():
                 return '127.0.0.1'
 
 
+def same_lan_peer(address):
+    """Permit tokenless control only on the advertised IPv4 interface's subnet."""
+    try:
+        peer = ipaddress.ip_address(address)
+        published = ipaddress.ip_address(local_ip())
+    except ValueError:
+        return False
+    if peer.is_loopback:
+        return True
+    if not isinstance(peer, ipaddress.IPv4Address) or published.is_loopback:
+        return False
+    try:
+        interfaces = socket.if_nameindex()
+    except OSError:
+        return False
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+        for _index, name in interfaces:
+            request = struct.pack('256s', name.encode()[:15])
+            try:
+                address = ipaddress.ip_address(socket.inet_ntoa(
+                    fcntl.ioctl(sock.fileno(), 0x8915, request)[20:24]))
+                if address != published:
+                    continue
+                mask = socket.inet_ntoa(fcntl.ioctl(sock.fileno(), 0x891b,
+                                                    request)[20:24])
+                network = ipaddress.ip_network(f'{address}/{mask}', strict=False)
+                return peer in network
+            except (OSError, ValueError):
+                continue
+    return False
+
+
 class GDM:
     def __init__(self, identifier, name, port):
         self.identifier, self.name, self.port = identifier, name, port
@@ -383,7 +417,11 @@ class CompanionReceiver:
                     return self.send_xml(receiver.resources())
                 controller = field('X-Plex-Client-Identifier')
                 token = field('X-Plex-Token')
-                if not controller or not token or len(token) > 1024 or not receiver.verifier(token):
+                if not controller or len(controller) > 256 or len(token) > 1024:
+                    return self.error(401, 'Unauthorized')
+                linked_lan = bool(receiver.link_user_id and
+                                  same_lan_peer(self.client_address[0]))
+                if not linked_lan and (not token or not receiver.verifier(token)):
                     return self.error(401, 'Unauthorized')
                 try:
                     command_id = nonnegative(one(query, 'commandID'), 'commandID')
