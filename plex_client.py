@@ -38,13 +38,16 @@ class Item:
 
 
 class PlexClient:
-    def __init__(self, address, token):
+    def __init__(self, address, token, identifier='linux-plex-music-prototype',
+                 device_name='Plex Music on Linux'):
         address = address.strip().rstrip('/')
         parsed = urlsplit(address)
         if (parsed.scheme not in ('http', 'https') or not parsed.hostname
                 or parsed.username or parsed.password or parsed.query or parsed.fragment):
             raise ValueError('Enter a server URL such as http://192.168.1.10:32400')
         self.address, self.token = address, token.strip()
+        self.identifier = identifier
+        self.device_name = device_name
         if not self.token:
             raise ValueError('Enter a Plex token.')
         self.opener = build_opener(NoRedirect())
@@ -56,8 +59,9 @@ class PlexClient:
 
     def request(self, method, path, **params):
         req = Request(self.url(path, **params), headers={
-            'X-Plex-Token': self.token, 'X-Plex-Product': 'Plex Music Prototype',
-            'X-Plex-Client-Identifier': 'linux-plex-music-prototype',
+            'X-Plex-Token': self.token, 'X-Plex-Product': 'Plex Music on Linux',
+            'X-Plex-Client-Identifier': self.identifier,
+            'X-Plex-Device-Name': self.device_name,
             'Accept': 'application/xml'}, method=method)
         with self.opener.open(req, timeout=15) as response:
             return response.read()

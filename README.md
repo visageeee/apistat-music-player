@@ -29,6 +29,25 @@ Right-click a Library song to play it, love or unlove it on Plex, or show its ar
 
 The player exposes MPRIS controls on the desktop session bus. Play/pause, next, previous and stop media keys can control playback, and compatible desktop widgets can show track details and seek. On Xfce, open **Settings → Global keyboard shortcuts** to see the current bindings, record a new key combination, or clear one. The editor preserves shortcuts used by other Xfce commands. `bash setup_xfce_media_keys.sh` can still assign unused default media keys in one step. The player must be running for its media key commands to work.
 
+## Plexamp remote control
+
+In **Settings → Plexamp remote control**, enable **Allow Plexamp remote control** and choose a player name. Remote control is off by default. The app opens a Companion HTTP receiver on local TCP port 32500 (or an available port if that is occupied) and advertises it with Plex GDM on UDP 32412/32413. This is intended for phones on the same local network; do not forward the port on your router. A local firewall must allow the receiver's TCP port and GDM UDP traffic. The player keeps its own GTK interface and uses GStreamer for playback.
+
+Select **Link Plex account…**, enter the displayed code at [plex.tv/link](https://plex.tv/link), and leave the dialog open until the status says linked. Linking registers the same persistent player identifier used by GDM and the HTTP receiver, then publishes the current local connection URI to plex.tv. The app checks for local IP changes every 30 seconds and republishes when necessary. The device token is stored only in the desktop Secret Service keyring; if no keyring is available, linking fails with an explicit message. **Unlink** deletes the registered device and clears that token. Disabling remote control stops the listener and GDM advertisement without erasing the link.
+
+The receiver accepts music from the Plex server configured in the app. Its requests require a Plex token from the linked account (or the app's configured server token before linking), the correct target identifier when supplied, and ordered `commandID` values. Controller-supplied server URLs and media tokens are ignored; only validated metadata paths are requested from the configured server. Its advertised capabilities are `timeline,playback`; it handles tracks, albums, playlists and existing Plex play queues through `playMedia`, up to 1000 tracks. Long queues beyond that limit need live compatibility work.
+
+### Phone check
+
+1. Start the Linux player, connect to your Plex music server, enable remote control and link the same Plex account used by the phone. On iOS, allow Plexamp Local Network access. Keep phone and computer on the same LAN.
+2. Open Plexamp on Android or iOS, open its player picker and select the Linux player by the chosen name. If it does not appear, check the link status, local firewall, and `http://<computer LAN IP>:<shown port>/resources` from another LAN device.
+3. Send an album from the phone. Confirm the requested track begins at the requested position, with artwork and queue in the Linux window.
+4. From the phone, pause, resume, skip backward and forward, seek, and adjust volume. Then use the Linux controls and confirm Plexamp's timeline and track update.
+5. Let a track end and confirm the next queue item starts. Try a Plex play queue with several tracks and inspect skip behavior.
+6. Restart the Linux app and confirm the player appears under the same name and identifier. Disable remote control and confirm the receiver no longer answers and the player disappears from local discovery.
+
+These phone steps require a real Plex account, server and phone. The automated suite uses mock Plex metadata, plex.tv responses and local HTTP requests; it cannot establish Android or iOS picker compatibility by itself.
+
 ## UI
 
 - Narrow icon sidebar for Now Playing, Albums, Library and Settings
@@ -56,16 +75,18 @@ The player exposes MPRIS controls on the desktop session bus. Play/pause, next, 
 
 ## Prototype boundaries
 
-Streams the original file through GStreamer. There is no Plex transcoding fallback, PIN sign-in, automatic server discovery, offline download, playlist editor, playback reporting/scrobbling or gapless playback yet. A manually reachable server URL is required. Saved login requires a working desktop keyring. MPRIS requires a desktop session bus. Codec support depends on installed GStreamer plugins. Seek support depends on the format and HTTP source.
+Streams the original file through GStreamer. There is no Plex transcoding fallback, automatic server discovery, offline download, playback reporting/scrobbling or gapless playback yet. A manually reachable server URL is required. Saved login and Plexamp account linking require a working desktop keyring. MPRIS requires a desktop session bus. Codec support depends on installed GStreamer plugins. Seek support depends on the format and HTTP source. Plex Companion compatibility is based on the published protocol and current third-party implementations; live Plexamp Android and iOS testing is still required.
 
 The code is not affiliated with Plex. Authentication, XML parsing, pagination, search encoding, stream resolution and missing-media handling are tested against a local mock server. Song sorting and audio playlists were also checked with a local Plex server. GTK view rendering was checked on a Linux desktop.
+
+Companion support follows the Plex API documentation and independently reads the Music Assistant Plex Connect and plexdlnaplayer implementations for compatibility. No third-party receiver code is copied into this project.
 
 ## Checks
 
 ```bash
 /usr/bin/python3 -m unittest -v test_art_zoom.py test_appearance.py test_client.py test_credentials.py test_player_controls.py test_library_catalog.py test_session.py test_shortcuts.py test_waveform.py
-dbus-run-session -- /usr/bin/python3 -m unittest -v test_mpris.py
-/usr/bin/python3 -m py_compile player.py plex_client.py credentials.py mpris.py appearance.py album_card.py session.py shortcuts.py waveform.py
+dbus-run-session -- /usr/bin/python3 -m unittest discover -v
+/usr/bin/python3 -m py_compile player.py plex_client.py companion.py companion_account.py companion_config.py
 ```
 
 Suggested first live check: connect, select a music library, play an album, pause/resume, seek, skip, and let one track finish. Try a second album while the first plays, then a bad token and an unavailable server. A large library should expose Load more albums.
@@ -75,5 +96,8 @@ Suggested first live check: connect, select a music library, play an album, paus
 - [PlexAPI music model documentation](https://python-plexapi.readthedocs.io/en/latest/modules/audio.html)
 - [PlexAPI library documentation](https://python-plexapi.readthedocs.io/en/latest/modules/library.html)
 - [GStreamer playbin](https://gstreamer.freedesktop.org/documentation/playback/playbin.html)
+- [Plex Companion remote control API](https://github.com/plexinc/plex-media-player/wiki/Remote-control-API)
+- [Music Assistant Plex Connect implementation](https://github.com/music-assistant/server/tree/dev/music_assistant/providers/plex_connect)
+- [iOS Plexamp device registration findings](https://github.com/music-assistant/support/issues/5782)
 
 The client uses Python's standard HTTP/XML libraries directly; PlexAPI is not a dependency.

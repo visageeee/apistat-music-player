@@ -1,11 +1,15 @@
 #!/usr/bin/env python3
 import random
+import hmac
+import hashlib
 import hashlib
 import threading
 import time
 import weakref
 from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future
 from urllib.error import HTTPError, URLError
+from urllib.parse import urlsplit
 import gi
 
 gi.require_version('Gtk', '3.0')
@@ -36,6 +40,10 @@ from waveform import Waveform, spectrum_values
 from album_card import FlipCard
 from session import load_session, save_session, item_to_data
 import shortcuts
+from companion import CompanionReceiver, local_ip
+from companion_account import (PlexAccount, load_device_token, save_device_token,
+                               clear_device_token)
+from companion_config import load_config, save_config
 
 Gst.init(None)
 
@@ -81,6 +89,25 @@ class Player(Gtk.Window):
         self.set_decorated(not self.hide_title_bar)
         self.connect('size-allocate', self.window_allocated)
         self.client = None
+        self.remote_config = load_config()
+        self.remote_account = PlexAccount(self.remote_config['identifier'],
+                                          self.remote_config['name'])
+        self.remote_receiver = None
+        self.remote_link_token = None
+        self.remote_link_user = None
+        self.remote_keyring_available = True
+        self.remote_published_uri = ''
+        self.remote_publish_pending = False
+        self.remote_validation_pending = False
+        self.remote_pin_generation = 0
+        self.remote_container = ''
+        self.remote_queue_id = ''
+        self.remote_queue_version = ''
+        self.remote_item_ids = ()
+        self.remote_server_machine = ''
+        self.remote_stop_thread = None
+        self.remote_token_cache = {}
+        self.remote_token_lock = threading.Lock()
         self.index_cache = None
         self.indexed_albums = None
         self.index_section = None
@@ -99,6 +126,7 @@ class Player(Gtk.Window):
         self.closed = False
         self.playing = False
         self.stream_open = False
+        self.remote_opening = False
         self.playback_position_ms = 0
         self.pending_resume_seek_ms = 0
         self.updating = False
@@ -480,7 +508,9 @@ class Player(Gtk.Window):
         GLib.timeout_add(500, self.tick)
         GLib.timeout_add(33, self.animate_timeline)
         GLib.timeout_add_seconds(3600, self.refresh_album_ages)
+        GLib.timeout_add_seconds(30, self.refresh_remote_connection)
         GLib.idle_add(self.restore_connection)
+        GLib.idle_add(self.initialize_remote)
 
     def playback_options_changed(self, *_):
         if hasattr(self, 'mpris'):
@@ -627,6 +657,358 @@ class Player(Gtk.Window):
                 self.connect_dialog()
         self.async_work(load_credentials, restored, on_error=self.connect_dialog)
         return False
+
+    def remote_work(self, work, done, failed):
+        def run():
+            try:
+                result, error = work(), None
+            except Exception as exc:
+                result, error = None, exc
+            def deliver():
+                if not self.closed:
+                    failed(error) if error else done(result)
+                return False
+            GLib.idle_add(deliver)
+        threading.Thread(target=run, daemon=True).start()
+
+    def initialize_remote(self):
+        def load():
+            token = load_device_token(self.remote_config['identifier'])
+            if token and self.remote_config['enabled']:
+                try:
+                    return token, self.remote_account.user_id(token)
+                except Exception:
+                    return token, None
+            return None, None
+        def ready(result):
+            self.remote_link_token, self.remote_link_user = result
+            if self.remote_receiver:
+                self.remote_receiver.set_link(*result)
+            if self.remote_config['enabled']:
+                self.start_remote_receiver()
+                self.refresh_remote_connection()
+            else:
+                self.update_remote_status()
+            if self.remote_link_token and not self.remote_link_user:
+                self.update_remote_status('Plex link could not be verified; reconnect or relink.')
+        def failed(_error):
+            self.remote_keyring_available = False
+            if self.remote_config['enabled']:
+                self.start_remote_receiver()
+            self.update_remote_status()
+        self.remote_work(load, ready, failed)
+        return False
+
+    def update_remote_status(self, detail=None):
+        if detail:
+            self.remote_status.set_text(detail)
+        elif not self.remote_config['enabled']:
+            self.remote_status.set_text('Remote control is off')
+        elif self.remote_receiver:
+            link = ('linked to Plex' if self.remote_link_user else
+                    'keyring unavailable; linking disabled' if not self.remote_keyring_available
+                    else 'not linked to Plex')
+            self.remote_status.set_text(
+                f'Listening on local port {self.remote_receiver.port} • {link}' +
+                (' • Plex server identity unavailable' if self.client and
+                 not self.remote_server_machine else '') +
+                (' • GDM unavailable (UDP 32412)' if not self.remote_receiver.gdm else ''))
+        else:
+            self.remote_status.set_text('Starting local receiver…')
+        self.remote_link_button.set_sensitive(self.remote_keyring_available and
+                                              self.remote_config['enabled'] and
+                                              self.remote_receiver is not None)
+        self.remote_unlink_button.set_sensitive(bool(self.remote_link_token))
+
+    def remote_toggle_changed(self, button):
+        self.remote_config['enabled'] = button.get_active()
+        try:
+            save_config(self.remote_config)
+        except OSError:
+            self.update_remote_status('Could not save the remote-control preference.')
+            return
+        if button.get_active():
+            self.start_remote_receiver()
+        else:
+            self.stop_remote_receiver()
+
+    def remote_name_changed(self, *_):
+        name = self.remote_name_entry.get_text().strip() or 'Plex Music on Linux'
+        self.remote_name_entry.set_text(name)
+        if name != self.remote_config['name']:
+            self.remote_config['name'] = name
+            self.remote_account.name = name
+            if self.client:
+                self.client.device_name = name
+            try:
+                save_config(self.remote_config)
+            except OSError:
+                self.update_remote_status('Could not save the player name.')
+                return False
+            if self.remote_receiver:
+                self.remote_receiver.name = name
+                if self.remote_receiver.gdm:
+                    self.remote_receiver.gdm.name = name
+                    self.remote_receiver.gdm.announce()
+                self.remote_published_uri = ''
+                self.refresh_remote_connection()
+        return False
+
+    def start_remote_receiver(self):
+        if self.remote_receiver or getattr(self, '_remote_starting', False):
+            return
+        self._remote_starting = True
+        self.update_remote_status()
+        receiver = CompanionReceiver(self.remote_config['identifier'],
+                                     self.remote_config['name'], self.remote_account,
+                                     self.apply_remote_command, self.verify_remote_token)
+        if self.client:
+            receiver.set_server(self.client, self.remote_server_machine)
+        receiver.set_link(self.remote_link_token, self.remote_link_user)
+        def work():
+            receiver.start()
+            if self.closed:
+                receiver.stop()
+            return receiver
+        def ready(result):
+            self._remote_starting = False
+            if not self.remote_config['enabled']:
+                self.remote_stop_thread = threading.Thread(target=result.stop, daemon=True)
+                self.remote_stop_thread.start()
+                return
+            self.remote_receiver = result
+            self.update_remote_status()
+            self.refresh_remote_connection()
+        def failed(_error):
+            self._remote_starting = False
+            self.update_remote_status('Could not start the local receiver.')
+        self.remote_work(work, ready, failed)
+
+    def stop_remote_receiver(self):
+        receiver = self.remote_receiver
+        self.remote_receiver = None
+        self.remote_published_uri = ''
+        self.update_remote_status()
+        if receiver:
+            self.remote_stop_thread = threading.Thread(target=receiver.stop, daemon=True)
+            self.remote_stop_thread.start()
+
+    def verify_remote_token(self, token):
+        if self.remote_link_user:
+            digest = hashlib.sha256(token.encode()).digest()
+            with self.remote_token_lock:
+                cached = self.remote_token_cache.get(digest)
+                if cached and cached[1] > time.monotonic():
+                    return cached[0]
+            try:
+                valid = hmac.compare_digest(self.remote_account.user_id(token),
+                                            self.remote_link_user)
+            except Exception:
+                return False
+            with self.remote_token_lock:
+                self.remote_token_cache[digest] = valid, time.monotonic() + (300 if valid else 30)
+            return valid
+        return bool(self.client and hmac.compare_digest(token, self.client.token))
+
+    def remote_uri(self):
+        address = local_ip()
+        if not self.remote_receiver or address.startswith('127.'):
+            return ''
+        return f'http://{address}:{self.remote_receiver.port}'
+
+    def refresh_remote_connection(self):
+        if not self.remote_config['enabled'] or not self.remote_receiver:
+            return True
+        if self.remote_link_token and not self.remote_link_user and not self.remote_validation_pending:
+            self.remote_validation_pending = True
+            token = self.remote_link_token
+            def validated(user):
+                self.remote_validation_pending = False
+                if token != self.remote_link_token:
+                    return
+                self.remote_link_user = user
+                if self.remote_receiver:
+                    self.remote_receiver.set_link(token, user)
+                self.refresh_remote_connection()
+            self.remote_work(lambda: self.remote_account.user_id(token), validated,
+                             lambda _error: setattr(self, 'remote_validation_pending', False))
+        uri = self.remote_uri()
+        if (uri and self.remote_link_user and self.remote_link_token and
+                not self.remote_publish_pending and
+                uri != self.remote_published_uri):
+            self.remote_publish_pending = True
+            token = self.remote_link_token
+            def ready(_unused):
+                self.remote_publish_pending = False
+                self.remote_published_uri = uri
+                self.update_remote_status()
+            def failed(_error):
+                self.remote_publish_pending = False
+                self.update_remote_status('Linked to Plex; could not publish the local address.')
+            self.remote_work(lambda: self.remote_account.publish(token, uri), ready, failed)
+        return True
+
+    def start_remote_link(self, *_):
+        if not self.remote_receiver or not self.remote_keyring_available:
+            return
+        self.remote_pin_generation += 1
+        generation = self.remote_pin_generation
+        self.update_remote_status('Requesting Plex link code…')
+        def ready(result):
+            if generation != self.remote_pin_generation:
+                return
+            pin_id, code = result
+            dialog = Gtk.Dialog(title='Link Plex Music to Plex', transient_for=self)
+            dialog.add_button('Cancel', Gtk.ResponseType.CANCEL)
+            box = dialog.get_content_area()
+            box.set_spacing(10)
+            box.set_border_width(18)
+            box.pack_start(Gtk.Label(label=f'Enter code {code} at plex.tv/link'), False, False, 0)
+            box.pack_start(Gtk.LinkButton.new_with_label('https://plex.tv/link',
+                                                         'Open plex.tv/link'), False, False, 0)
+            dialog.connect('response', lambda window, *_: (setattr(
+                self, 'remote_pin_generation', self.remote_pin_generation + 1), window.destroy()))
+            dialog.show_all()
+            self.update_remote_status('Waiting for Plex account link…')
+            pending = {'active': False}
+            def poll():
+                if generation != self.remote_pin_generation or self.closed:
+                    return False
+                if pending['active']:
+                    return True
+                pending['active'] = True
+                def linked(token):
+                    pending['active'] = False
+                    if generation != self.remote_pin_generation:
+                        return
+                    if token:
+                        dialog.response(Gtk.ResponseType.OK)
+                        self.finish_remote_link(token)
+                def failed(_error):
+                    pending['active'] = False
+                    if generation == self.remote_pin_generation:
+                        dialog.response(Gtk.ResponseType.CANCEL)
+                        self.update_remote_status('Plex link code expired or could not be checked.')
+                self.remote_work(lambda: self.remote_account.check_pin(pin_id), linked, failed)
+                return True
+            GLib.timeout_add_seconds(3, poll)
+        self.remote_work(self.remote_account.create_pin, ready,
+                         lambda _error: self.update_remote_status('Could not request a Plex link code.'))
+
+    def finish_remote_link(self, token):
+        def work():
+            user = self.remote_account.user_id(token)
+            save_device_token(self.remote_config['identifier'], token)
+            return user
+        def ready(user):
+            self.remote_link_token, self.remote_link_user = token, user
+            with self.remote_token_lock:
+                self.remote_token_cache.clear()
+            if self.remote_receiver:
+                self.remote_receiver.set_link(token, user)
+            self.update_remote_status()
+            self.refresh_remote_connection()
+        self.remote_work(work, ready, lambda _error: self.update_remote_status(
+            'Could not save Plex link in the desktop keyring; no plaintext fallback is used.'))
+
+    def unlink_remote(self, *_):
+        token = self.remote_link_token
+        if not token:
+            return
+        self.update_remote_status('Unlinking Plex device…')
+        def work():
+            remote_failed = False
+            try:
+                self.remote_account.unlink(token)
+            except Exception:
+                remote_failed = True
+            clear_device_token(self.remote_config['identifier'])
+            return remote_failed
+        def ready(remote_failed):
+            self.remote_link_token = self.remote_link_user = None
+            with self.remote_token_lock:
+                self.remote_token_cache.clear()
+            self.remote_published_uri = ''
+            if self.remote_receiver:
+                self.remote_receiver.set_link(None, None)
+            self.update_remote_status('Removed the local link; remove the device in Plex settings when online.'
+                                      if remote_failed else None)
+        self.remote_work(work, ready, lambda _error: self.update_remote_status(
+            'Could not unlink the Plex device; check the connection and retry.'))
+
+    def clear_remote_queue(self):
+        self.remote_container = self.remote_queue_id = self.remote_queue_version = ''
+        self.remote_item_ids = ()
+
+    def apply_remote_command(self, action, args, media):
+        future = Future()
+        def deliver():
+            try:
+                if self.closed or not self.remote_config['enabled']:
+                    raise RuntimeError('Remote control is off')
+                if action == 'playMedia':
+                    if not self.remote_receiver or self.remote_receiver.server_client is not self.client:
+                        raise RuntimeError('Plex connection changed')
+                    self.queue = list(media.tracks)
+                    self.queue_client = self.client
+                    self.queue_album = None
+                    self.index = media.index
+                    self.remote_container = media.container_key
+                    self.remote_queue_id = media.queue_id
+                    self.remote_queue_version = media.queue_version
+                    self.remote_item_ids = media.item_ids
+                    self.start_track(resume_position_ms=media.offset)
+                elif action == 'play':
+                    self.play()
+                elif action == 'pause':
+                    self.pause()
+                elif action == 'stop':
+                    self.stop()
+                    self.persist_session(force=True)
+                elif action == 'skipNext':
+                    self.advance()
+                elif action == 'skipPrevious':
+                    self.previous()
+                elif action == 'seekTo':
+                    if self.stream_open and self.seek.get_sensitive():
+                        self.seek_mpris(args['offset'] * 1000)
+                    elif self.queue:
+                        self.pending_resume_seek_ms = args['offset']
+                        self.playback_position_ms = args['offset']
+                elif action == 'setParameters':
+                    self.set_volume(args['volume'] / 100)
+                future.set_result(self.remote_snapshot())
+            except Exception as exc:
+                future.set_exception(exc)
+            return False
+        GLib.idle_add(deliver)
+        return future.result(timeout=15)
+
+    def remote_snapshot(self):
+        item = self.queue[self.index] if 0 <= self.index < len(self.queue) else None
+        state = 'playing' if self.stream_open and self.playing else (
+            'paused' if self.stream_open else 'buffering' if self.remote_opening else 'stopped')
+        position = self.playback_position_ms
+        if self.stream_open and self.playing:
+            position = max(position, int((self.timeline_base_position +
+                           time.monotonic() - self.timeline_base_time) * 1000))
+        server = urlsplit(self.queue_client.address) if item and self.queue_client else None
+        album_container = (self.queue_album.key if self.queue_album and
+                           self.queue_album.key.endswith('/children') else
+                           self.queue_album.key.rstrip('/') + '/children' if self.queue_album else '')
+        container = self.remote_container or album_container
+        item_id = (self.remote_item_ids[self.index] if self.remote_item_ids and
+                   self.index < len(self.remote_item_ids) else '')
+        return {'state': state, 'key': item.key if item else '', 'position': position,
+                'duration': item.duration if item else 0,
+                'volume': round(self.volume.get_value() * 100),
+                'machine': self.remote_server_machine if item else '',
+                'address': server.hostname if server else '',
+                'port': (server.port if server else None) or
+                        (443 if server and server.scheme == 'https' else 32400),
+                'protocol': server.scheme if server else 'http', 'container': container,
+                'queue_id': self.remote_queue_id, 'queue_version': self.remote_queue_version,
+                'item_id': item_id, 'queue_length': len(self.queue), 'queue_index': self.index}
 
     def finish_startup_loading(self):
         if not self.startup_loading:
@@ -1117,6 +1499,29 @@ class Player(Gtk.Window):
         info = Gtk.Label(label='Server login is stored in your desktop keyring after a successful connection.', xalign=0)
         info.set_line_wrap(True)
         panel.pack_start(info, False, False, 0)
+        panel.pack_start(Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL), False, False, 0)
+        panel.pack_start(Gtk.Label(label='Plexamp remote control', xalign=0), False, False, 0)
+        self.remote_toggle = Gtk.CheckButton(label='Allow Plexamp remote control')
+        self.remote_toggle.set_active(self.remote_config['enabled'])
+        self.remote_toggle.connect('toggled', self.remote_toggle_changed)
+        panel.pack_start(self.remote_toggle, False, False, 0)
+        panel.pack_start(Gtk.Label(label='Player name', xalign=0), False, False, 0)
+        self.remote_name_entry = Gtk.Entry()
+        self.remote_name_entry.set_max_length(80)
+        self.remote_name_entry.set_text(self.remote_config['name'])
+        self.remote_name_entry.connect('activate', self.remote_name_changed)
+        self.remote_name_entry.connect('focus-out-event', self.remote_name_changed)
+        panel.pack_start(self.remote_name_entry, False, False, 0)
+        self.remote_status = Gtk.Label(label='Remote control is off', xalign=0)
+        self.remote_status.set_line_wrap(True)
+        panel.pack_start(self.remote_status, False, False, 0)
+        remote_actions = Gtk.Box(spacing=12)
+        self.remote_link_button = self.button('Link Plex account…', self.start_remote_link)
+        self.remote_unlink_button = self.button('Unlink', self.unlink_remote)
+        remote_actions.pack_start(self.remote_link_button, False, False, 0)
+        remote_actions.pack_start(self.remote_unlink_button, False, False, 0)
+        self.remote_unlink_button.set_sensitive(False)
+        panel.pack_start(remote_actions, False, False, 0)
         panel.pack_start(Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL), False, False, 0)
         panel.pack_start(Gtk.Label(label='Appearance', xalign=0), False, False, 0)
         self.gradient_toggle = Gtk.CheckButton(label='Use album art colors behind Now Playing and Albums')
@@ -1952,6 +2357,9 @@ class Player(Gtk.Window):
 
     def play_song(self, index):
         if 0 <= index < len(self.songs):
+            Player.clear_remote_queue(self)
+            if self.active_playlist:
+                self.remote_container = self.active_playlist.key
             self.queue = list(self.song_results if self.song_results is not None else self.songs)
             self.queue_client = self.client
             self.queue_album = None
@@ -2185,6 +2593,7 @@ class Player(Gtk.Window):
     def play_card_track(self, card, index):
         if card.tracks is None or not 0 <= index < len(card.tracks):
             return
+        Player.clear_remote_queue(self)
         self.queue_album = card.album
         self.queue = list(card.tracks)
         self.queue_client = self.client
@@ -2313,7 +2722,8 @@ class Player(Gtk.Window):
 
     def connect_to_server(self, url, secret, remember=False, automatic=False):
         try:
-            client = PlexClient(url, secret)
+            client = PlexClient(url, secret, self.remote_config['identifier'],
+                                self.remote_config['name'])
         except ValueError as exc:
             self.status.set_text(str(exc))
             if automatic:
@@ -2325,16 +2735,25 @@ class Player(Gtk.Window):
         self.status.set_text('Connecting…')
         def work():
             sections = client.sections()
+            try:
+                machine = client.xml('/').get('machineIdentifier', '')
+            except Exception:
+                machine = ''
             saved = True
             if remember:
                 try:
                     save_credentials(client.address, client.token)
                 except Exception:
                     saved = False
-            return sections, saved
+            return sections, saved, machine
         def connected(result):
-            sections, saved = result
+            sections, saved, machine = result
             self.client = client
+            self.remote_server_machine = machine
+            self.clear_remote_queue()
+            if self.remote_receiver:
+                self.remote_receiver.set_server(client, machine)
+                self.update_remote_status()
             self.index_generation += 1
             self.index_cache = None
             self.indexed_albums = None
@@ -2598,6 +3017,7 @@ class Player(Gtk.Window):
     def play_album(self, index):
         if not self.tracks:
             return
+        Player.clear_remote_queue(self)
         self.queue_album = self.selected_album
         self.queue = list(self.tracks)
         self.queue_client = self.client
@@ -2616,6 +3036,7 @@ class Player(Gtk.Window):
 
     def stop(self):
         self.play_generation += 1
+        self.remote_opening = False
         self.pipeline.set_state(Gst.State.NULL)
         self.playing = False
         self.stream_open = False
@@ -2635,6 +3056,7 @@ class Player(Gtk.Window):
         self.stop()
         if not 0 <= self.index < len(self.queue):
             return
+        self.remote_opening = True
         self.playback_position_ms = max(0, resume_position_ms)
         track = self.queue[self.index]
         self.timeline_base_position = self.playback_position_ms / 1000
@@ -2672,9 +3094,10 @@ class Player(Gtk.Window):
         self.mpris.changed()
         def ready(uri):
             self.pipeline.set_property('uri', uri)
+            self.remote_opening = False
             self.stream_open = True
             self.playing = not resume_paused
-            self.pending_resume_seek_ms = self.playback_position_ms if resume_paused else 0
+            self.pending_resume_seek_ms = self.playback_position_ms
             self.pipeline.set_state(Gst.State.PAUSED if resume_paused else Gst.State.PLAYING)
             self.set_play_button_state(not resume_paused)
             self.status.set_text(f'Queue • {self.index + 1} / {len(self.queue)}' +
@@ -2816,6 +3239,8 @@ class Player(Gtk.Window):
             self.time.set_text(f'{clock(position / Gst.SECOND)} / {clock(duration / Gst.SECOND)}')
         if self.stream_open and self.queue:
             self.persist_session()
+        if self.remote_receiver:
+            self.remote_receiver.publish(self.remote_snapshot())
         return True
 
     def animate_timeline(self):
@@ -2888,6 +3313,12 @@ class Player(Gtk.Window):
         return data
 
     def close(self, *_):
+        self.remote_pin_generation += 1
+        if self.remote_receiver:
+            self.remote_receiver.stop()
+            self.remote_receiver = None
+        if self.remote_stop_thread:
+            self.remote_stop_thread.join(timeout=5)
         if self.library_layout_save_timeout:
             GLib.source_remove(self.library_layout_save_timeout)
         self.save_library_layout_now()

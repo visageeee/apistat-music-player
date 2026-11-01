@@ -135,6 +135,50 @@ class PlayerControlTests(unittest.TestCase):
         self.assertEqual(player.playback_position_ms, 42500)
         self.assertEqual(saved, [{'force': True}])
 
+    def test_remote_media_uses_same_queue_and_start_offset(self):
+        tracks = [Item('/library/metadata/20', 'First'),
+                  Item('/library/metadata/21', 'Second')]
+        media = SimpleNamespace(tracks=tracks, index=1, offset=4300,
+                                container_key='/playQueues/7', queue_id='7',
+                                queue_version='2', item_ids=('10', '11'))
+        client = object()
+        starts = []
+        player = SimpleNamespace(closed=False, remote_config={'enabled': True},
+                                 client=client,
+                                 remote_receiver=SimpleNamespace(server_client=client),
+                                 start_track=lambda **kwargs: starts.append(kwargs),
+                                 remote_snapshot=lambda: {'state': 'buffering'})
+        with patch('player.GLib.idle_add', side_effect=lambda callback: callback()):
+            result = Player.apply_remote_command(player, 'playMedia', {}, media)
+        self.assertEqual(result['state'], 'buffering')
+        self.assertEqual((player.queue, player.index, player.queue_client),
+                         (tracks, 1, client))
+        self.assertEqual((player.remote_queue_id, player.remote_item_ids),
+                         ('7', ('10', '11')))
+        self.assertEqual(starts, [{'resume_position_ms': 4300}])
+
+    def test_remote_transport_seek_and_volume_use_local_controls(self):
+        calls = []
+        player = SimpleNamespace(closed=False, remote_config={'enabled': True},
+                                 stream_open=False, queue=['track'],
+                                 play=lambda: calls.append('play'),
+                                 pause=lambda: calls.append('pause'),
+                                 stop=lambda: calls.append('stop'),
+                                 persist_session=lambda **_kwargs: None,
+                                 advance=lambda: calls.append('next'),
+                                 previous=lambda: calls.append('previous'),
+                                 set_volume=lambda value: calls.append(('volume', value)),
+                                 remote_snapshot=lambda: {'state': 'paused'})
+        with patch('player.GLib.idle_add', side_effect=lambda callback: callback()):
+            for action in ('play', 'pause', 'stop', 'skipNext', 'skipPrevious'):
+                Player.apply_remote_command(player, action, {}, None)
+            Player.apply_remote_command(player, 'seekTo', {'offset': 42000}, None)
+            Player.apply_remote_command(player, 'setParameters', {'volume': 37}, None)
+        self.assertEqual(calls, ['play', 'pause', 'stop', 'next', 'previous',
+                                 ('volume', 0.37)])
+        self.assertEqual((player.pending_resume_seek_ms, player.playback_position_ms),
+                         (42000, 42000))
+
 
 if __name__ == '__main__':
     unittest.main()
