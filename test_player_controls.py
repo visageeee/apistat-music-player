@@ -1,5 +1,6 @@
 import unittest
 import weakref
+import threading
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -178,6 +179,19 @@ class PlayerControlTests(unittest.TestCase):
                                  ('volume', 0.37)])
         self.assertEqual((player.pending_resume_seek_ms, player.playback_position_ms),
                          (42000, 42000))
+
+    def test_remote_token_can_be_authorized_by_configured_plex_server(self):
+        player = SimpleNamespace(client=SimpleNamespace(address='http://plex.local:32400',
+                                                        token='desktop-token'),
+                                 remote_config={'identifier': 'player', 'name': 'Linux'},
+                                 remote_link_user='owner', remote_token_cache={},
+                                 remote_token_lock=threading.Lock())
+        self.assertTrue(Player.verify_remote_token(player, 'desktop-token'))
+        with patch('player.PlexClient') as client_class:
+            client_class.return_value.sections.return_value = [('1', 'Music')]
+            self.assertTrue(Player.verify_remote_token(player, 'phone-server-token'))
+            client_class.assert_called_once_with('http://plex.local:32400',
+                                                 'phone-server-token', 'player', 'Linux')
 
 
 if __name__ == '__main__':

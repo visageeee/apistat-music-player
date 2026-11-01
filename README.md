@@ -48,6 +48,14 @@ The receiver accepts music from the Plex server configured in the app. Its reque
 
 These phone steps require a real Plex account, server and phone. The automated suite uses mock Plex metadata, plex.tv responses and local HTTP requests; it cannot establish Android or iOS picker compatibility by itself.
 
+If Plexamp lists the player but says **Could not connect to player**, leave the desktop app open and try the exact `http://<LAN address>:<port>/resources` address shown in Settings from Safari on the phone. Settings also shows the last request path and HTTP status without recording tokens or query strings. If Safari cannot reach it, allow incoming TCP on that port from your LAN. For example, on a `192.168.0.0/24` network with port 32500 and UFW:
+
+```bash
+sudo ufw allow from 192.168.0.0/24 to any port 32500 proto tcp
+```
+
+Use your own LAN range and the port shown by the app. Do not open the port to the internet. If Safari works but Settings shows HTTP 401 when Plexamp selects the player, the controller token is being rejected; the receiver accepts a token in either the Plex header or query string and verifies it against the linked account or the configured Plex server.
+
 ## UI
 
 - Narrow icon sidebar for Now Playing, Albums, Library and Settings

@@ -162,6 +162,11 @@ class CompanionTests(unittest.TestCase):
                 _status, body = get('/player/timeline/poll?commandID=2')
                 self.assertEqual(body.find("Timeline[@type='music']").get('key'),
                                  '/library/metadata/11')
+                self.assertEqual(receiver.last_request, ('/player/timeline/poll', 200))
+                query_auth = urlencode({'commandID': 2, 'X-Plex-Token': 'allowed',
+                                        'X-Plex-Client-Identifier': 'phone'})
+                with urlopen(base + '/player/timeline/poll?' + query_auth, timeout=3) as response:
+                    self.assertEqual(response.status, 200)
             finally:
                 receiver.stop()
 

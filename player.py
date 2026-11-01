@@ -709,7 +709,7 @@ class Player(Gtk.Window):
                     'keyring unavailable; linking disabled' if not self.remote_keyring_available
                     else 'not linked to Plex')
             self.remote_status.set_text(
-                f'Listening on local port {self.remote_receiver.port} • {link}' +
+                f'Listening at http://{local_ip()}:{self.remote_receiver.port} • {link}' +
                 (' • Plex server identity unavailable' if self.client and
                  not self.remote_server_machine else '') +
                 (' • GDM unavailable (UDP 32412)' if not self.remote_receiver.gdm else ''))
@@ -777,6 +777,7 @@ class Player(Gtk.Window):
                 self.remote_stop_thread.start()
                 return
             self.remote_receiver = result
+            self.remote_request_status.set_text('No phone requests yet')
             self.update_remote_status()
             self.refresh_remote_connection()
         def failed(_error):
@@ -788,27 +789,38 @@ class Player(Gtk.Window):
         receiver = self.remote_receiver
         self.remote_receiver = None
         self.remote_published_uri = ''
+        self.remote_request_status.set_text('Receiver stopped')
         self.update_remote_status()
         if receiver:
             self.remote_stop_thread = threading.Thread(target=receiver.stop, daemon=True)
             self.remote_stop_thread.start()
 
     def verify_remote_token(self, token):
-        if self.remote_link_user:
-            digest = hashlib.sha256(token.encode()).digest()
-            with self.remote_token_lock:
-                cached = self.remote_token_cache.get(digest)
-                if cached and cached[1] > time.monotonic():
-                    return cached[0]
+        if self.client and hmac.compare_digest(token, self.client.token):
+            return True
+        digest = hashlib.sha256(token.encode()).digest()
+        with self.remote_token_lock:
+            cached = self.remote_token_cache.get(digest)
+            if cached and cached[1] > time.monotonic():
+                return cached[0]
+        valid = False
+        if self.client:
+            try:
+                probe = PlexClient(self.client.address, token,
+                                   self.remote_config['identifier'],
+                                   self.remote_config['name'])
+                valid = bool(probe.sections())
+            except Exception:
+                pass
+        if not valid and self.remote_link_user:
             try:
                 valid = hmac.compare_digest(self.remote_account.user_id(token),
                                             self.remote_link_user)
             except Exception:
-                return False
-            with self.remote_token_lock:
-                self.remote_token_cache[digest] = valid, time.monotonic() + (300 if valid else 30)
-            return valid
-        return bool(self.client and hmac.compare_digest(token, self.client.token))
+                pass
+        with self.remote_token_lock:
+            self.remote_token_cache[digest] = valid, time.monotonic() + (300 if valid else 30)
+        return valid
 
     def remote_uri(self):
         address = local_ip()
@@ -1515,6 +1527,9 @@ class Player(Gtk.Window):
         self.remote_status = Gtk.Label(label='Remote control is off', xalign=0)
         self.remote_status.set_line_wrap(True)
         panel.pack_start(self.remote_status, False, False, 0)
+        self.remote_request_status = Gtk.Label(label='No phone requests yet', xalign=0)
+        self.remote_request_status.set_line_wrap(True)
+        panel.pack_start(self.remote_request_status, False, False, 0)
         remote_actions = Gtk.Box(spacing=12)
         self.remote_link_button = self.button('Link Plex account…', self.start_remote_link)
         self.remote_unlink_button = self.button('Unlink', self.unlink_remote)
@@ -3241,6 +3256,9 @@ class Player(Gtk.Window):
             self.persist_session()
         if self.remote_receiver:
             self.remote_receiver.publish(self.remote_snapshot())
+            if self.remote_receiver.last_request:
+                path, code = self.remote_receiver.last_request
+                self.remote_request_status.set_text(f'Last remote request: {path} → HTTP {code}')
         return True
 
     def animate_timeline(self):

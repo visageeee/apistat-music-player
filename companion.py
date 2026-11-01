@@ -83,7 +83,8 @@ def parse_command(path, target, identifier):
         if value is None:
             raise ProtocolError('Only volume can be set')
         args['volume'] = nonnegative(value, 'volume', 100)
-        if set(query) - {'commandID', 'type', 'volume'}:
+        if set(query) - {'commandID', 'type', 'volume', 'X-Plex-Token',
+                         'X-Plex-Client-Identifier', 'X-Plex-Target-Client-Identifier'}:
             raise ProtocolError('Unsupported parameter')
     elif action == 'playMedia':
         key = one(query, 'key')
@@ -299,6 +300,7 @@ class CompanionReceiver:
         self.gdm = None
         self.push_thread = None
         self.running = False
+        self.last_request = None
 
     def set_server(self, client, machine):
         self.server_client = client
@@ -339,6 +341,7 @@ class CompanionReceiver:
                 pass  # Never log URLs: Companion requests may contain tokens.
 
             def send_xml(self, body, code=200):
+                receiver.last_request = (urlsplit(self.path).path[:80], code)
                 self.send_response(code)
                 self.send_header('Content-Type', 'application/xml; charset=utf-8')
                 self.send_header('Content-Length', str(len(body)))
@@ -366,16 +369,22 @@ class CompanionReceiver:
                 if not (peer.is_private or peer.is_loopback or peer.is_link_local):
                     return self.error(403, 'Local network only')
                 path = urlsplit(self.path)
-                target = self.headers.get('X-Plex-Target-Client-Identifier', '')
+                query = parse_qs(path.query, keep_blank_values=True)
+                plex_fields = ('X-Plex-Target-Client-Identifier',
+                               'X-Plex-Client-Identifier', 'X-Plex-Token')
+                if any(len(query.get(field, ())) > 1 for field in plex_fields):
+                    return self.error(400, 'Duplicate Plex header')
+                def field(name):
+                    return self.headers.get(name) or next(iter(query.get(name, ())), '')
+                target = field('X-Plex-Target-Client-Identifier')
                 if target and target != receiver.identifier:
                     return self.error(404, 'Wrong target player')
                 if path.path in ('/', '/resources'):
                     return self.send_xml(receiver.resources())
-                controller = self.headers.get('X-Plex-Client-Identifier', '')
-                token = self.headers.get('X-Plex-Token', '')
+                controller = field('X-Plex-Client-Identifier')
+                token = field('X-Plex-Token')
                 if not controller or not token or len(token) > 1024 or not receiver.verifier(token):
                     return self.error(401, 'Unauthorized')
-                query = parse_qs(path.query, keep_blank_values=True)
                 try:
                     command_id = nonnegative(one(query, 'commandID'), 'commandID')
                     if path.path == '/player/timeline/poll':
