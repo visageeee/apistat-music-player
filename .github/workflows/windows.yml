@@ -46,13 +46,16 @@ jobs:
           python -m compileall -q .
           python player.py --self-test
           python -m unittest discover -q
+          find /ucrt64/lib/gstreamer-1.0 -iname '*whisper*' -o -iname '*transcrib*'
       - name: Build portable app
         run: |
           pyinstaller --noconfirm --clean windows/Apistat.spec
           test -f dist/Apistat/Apistat.exe
+          find dist/Apistat -iname '*ggml*' -o -iname '*whisper*'
       - name: Check frozen runtime
         run: ./dist/Apistat/Apistat-Debug.exe --self-test
       - uses: actions/upload-artifact@v4
+        if: always()
         with:
           name: Apistat-Windows-x64
           path: dist/Apistat/
