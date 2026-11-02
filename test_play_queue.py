@@ -212,6 +212,33 @@ class PlayQueueTests(unittest.TestCase):
         Player.queue_drag_data_get(player, None, None, selection, 0, 0)
         self.assertEqual(data, [b'/library/metadata/1\n/library/metadata/3'])
 
+    def test_queue_drag_keeps_multi_selection_after_pointer_press(self):
+        selected = [1, 3]
+        selection = SimpleNamespace(path_is_selected=lambda _path: True)
+        view = SimpleNamespace(get_path_at_pos=lambda _x, _y: ('row', None, None, None),
+                               get_selection=lambda: selection)
+        player = SimpleNamespace(selected_queue_indices=lambda: list(selected),
+                                 queue_drag_candidate_indices=[])
+        event = SimpleNamespace(button=1, x=8, y=12, state=0)
+        self.assertFalse(Player.queue_song_pressed(player, view, event))
+        selected[:] = [3]  # GTK may collapse the selection after the press event.
+        Player.queue_drag_begin(player, view, None)
+        self.assertEqual(player.queue_drag_indices, [1, 3])
+        Player.queue_drag_end(player, view, None)
+        self.assertEqual(player.queue_drag_indices, [])
+
+    def test_queue_drag_motion_accepts_internal_move_target(self):
+        target = object()
+        dest = []
+        view = SimpleNamespace(drag_dest_find_target=lambda _context, _targets: target,
+                               get_dest_row_at_pos=lambda _x, _y: ('row', 'before'),
+                               set_drag_dest_row=lambda *args: dest.append(args))
+        with patch('player.Gdk.drag_status') as status:
+            self.assertTrue(Player.queue_drag_motion(SimpleNamespace(), view,
+                                                     object(), 10, 15, 42))
+        self.assertEqual(dest, [('row', 'before')])
+        self.assertEqual(status.call_args.args[1:], (Gdk.DragAction.MOVE, 42))
+
     def test_queue_drop_moves_selected_rows_together(self):
         tracks = [Item(f'/library/metadata/{index}', str(index)) for index in range(5)]
         changed = []

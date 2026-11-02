@@ -18,6 +18,15 @@ from test_smart_playlists import definition as smart_definition
 
 
 class PlayerControlTests(unittest.TestCase):
+    def test_window_controls_follow_option_with_title_bar_visible(self):
+        shown = []
+        margins = []
+        player = SimpleNamespace(window_buttons_enabled=True, hide_title_bar=False,
+                                 window_controls=SimpleNamespace(set_visible=shown.append),
+                                 busy_spinner=SimpleNamespace(set_margin_end=margins.append))
+        Player.update_window_controls(player)
+        self.assertEqual((shown, margins), ([True], [90]))
+
     def test_queue_shows_five_prior_tracks_in_dim_text_before_current(self):
         history = deque((Item(f'/library/metadata/{index}', f'Played {index}')
                          for index in range(6)), maxlen=5)

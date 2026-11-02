@@ -236,9 +236,9 @@ class Player(Gtk.Window):
             #album-results-back, #album-results-back:hover { background: transparent;
                 border: 0; box-shadow: none; }
             #album-sort-bar { background: transparent; min-height: 28px; }
-            #album-sort-bar button { background: rgba(0, 0, 0, 0.32); border: 0;
+            #album-sort-bar button { background: rgba(0, 0, 0, 0.68); border: 0;
                 border-radius: 0; box-shadow: none; color: #c8c8c8; padding: 3px 10px; }
-            #album-sort-bar #album-search-button { margin: 2px 12px 2px 0; padding: 2px 7px; }
+            #album-sort-bar #album-search-button { padding: 3px 8px; }
             #album-sort-bar button.sort-divider { border-right: 1px solid rgba(255, 255, 255, 0.18); }
             #album-sort-bar button:hover { background: rgba(255, 255, 255, 0.12); }
             #album-sort-bar button.active { color: #fff; font-weight: bold; }
@@ -262,9 +262,9 @@ class Player(Gtk.Window):
             #album-track-number { font-weight: bold; }
             #bar-track-title { font-weight: bold; }
             #bar-track-artist { color: #bbb; }
-            #window-controls button { background: rgba(20, 20, 20, 0.55); border: 0;
+            #window-controls button { background: rgba(20, 20, 20, 0.78); border: 0;
                 border-radius: 0; box-shadow: none; min-width: 22px; min-height: 22px;
-                padding: 2px; }
+                padding: 2px; font-size: 14px; font-weight: bold; }
             #window-controls button:hover { background: rgba(100, 100, 100, 0.5); }
             #window-controls button.close:hover { background: #b83d46; }
             #border-timeline { margin: 0; padding: 0 0 16px 0; min-height: 24px; }
@@ -287,7 +287,11 @@ class Player(Gtk.Window):
             #side-nav image { color: #eee; }
             #library-split { background: #181818; border: 0; box-shadow: none; }
             #library-split separator { background: #181818; border: 0;
-                box-shadow: none; min-width: 14px; }
+                box-shadow: none; min-width: 8px; }
+            #library-side-split separator { background: #363636; border: 0;
+                border-radius: 3px; box-shadow: none; min-height: 8px;
+                margin: 0 8px; }
+            #full-library-button { margin: 8px 8px 0 8px; }
             #playlist-panel, #smart-playlist-panel { background: #181818; border: 0; }
             #playlist-scroll, #playlist-scroll viewport, #playlist-list,
             #smart-playlist-scroll, #smart-playlist-scroll viewport, #smart-playlist-list,
@@ -428,8 +432,7 @@ class Player(Gtk.Window):
         self.busy_spinner.set_halign(Gtk.Align.END)
         self.busy_spinner.set_valign(Gtk.Align.START)
         self.busy_spinner.set_margin_top(12)
-        self.busy_spinner.set_margin_end(90 if self.window_buttons_enabled and self.hide_title_bar
-                                        else 14)
+        self.busy_spinner.set_margin_end(90 if self.window_buttons_enabled else 14)
         self.busy_spinner.set_no_show_all(True)
         self.content_overlay.add_overlay(self.busy_spinner)
         self.busy = BusyIndicator(self.busy_spinner)
@@ -441,16 +444,18 @@ class Player(Gtk.Window):
         self.window_controls.set_margin_top(4)
         self.window_controls.set_margin_end(4)
         self.window_controls.set_no_show_all(True)
-        for icon, label, callback in (
-                ('window-minimize-symbolic', 'Minimize', lambda *_: self.iconify()),
-                ('window-maximize-symbolic', 'Maximize', self.toggle_window_maximize),
-                ('window-close-symbolic', 'Close', lambda *_: self.destroy())):
-            button = self.icon_button(icon, label, callback)
+        for glyph, label, callback in (
+                ('−', 'Minimize', lambda *_: self.iconify()),
+                ('□', 'Maximize', self.toggle_window_maximize),
+                ('×', 'Close', lambda *_: self.destroy())):
+            button = Gtk.Button(label=glyph)
+            self.set_tooltip(button, label)
+            button.get_accessible().set_name(label)
+            button.connect('clicked', callback)
             if label == 'Maximize':
                 self.maximize_button = button
             if label == 'Close':
                 button.get_style_context().add_class('close')
-            button.get_image().set_pixel_size(13)
             self.window_controls.pack_start(button, False, False, 0)
         self.content_overlay.add_overlay(self.window_controls)
         self.connect('window-state-event', self.window_state_changed)
@@ -490,11 +495,11 @@ class Player(Gtk.Window):
             button.connect('clicked', self.change_album_sort, sort)
             sort_buttons.pack_start(button, False, False, 0)
             self.album_sort_buttons[sort] = button
-        sort_bar.set_center_widget(sort_buttons)
         self.search_button = self.icon_button('system-search-symbolic', 'Search albums',
                                               self.toggle_album_search)
         self.search_button.set_name('album-search-button')
-        sort_bar.pack_end(self.search_button, False, False, 0)
+        sort_buttons.pack_start(self.search_button, False, False, 0)
+        sort_bar.set_center_widget(sort_buttons)
         self.album_sort_bar = sort_bar
         self.update_album_sort_buttons()
         self.artist_filter_bar = Gtk.Box(spacing=10)
@@ -808,6 +813,7 @@ class Player(Gtk.Window):
                     background: #000; }
                 #playlist-list row, #playlist-list row:hover,
                 #smart-playlist-list row, #smart-playlist-list row:hover { background: #000; }
+                #library-side-split separator { background: #383838; }
                 #album-grid button:hover { background: #000; }
                 #song-view.view:selected, #queue-view.view:selected,
                 #album-track-view.view:selected { background: #303030; color: #fff; }
@@ -818,6 +824,7 @@ class Player(Gtk.Window):
                 #plex-player, #settings-panel, #playlist-panel, #smart-playlist-panel, #song-panel,
                 #startup-loading,
                 #library-split, #library-split separator { background: #f5f5f3; color: #202326; }
+                #library-side-split separator { background: #c9c9c5; }
                 #plex-player label, #album-grid #album-title, #album-grid #album-meta,
                 #now-album, #bar-track-artist { color: #202326; }
                 #side-nav, #player-bar { background: #e9e9e6; color: #202326; }
@@ -2031,8 +2038,17 @@ class Player(Gtk.Window):
         split = Gtk.Paned(orientation=Gtk.Orientation.HORIZONTAL)
         split.set_name('library-split')
         split.set_position(225)
-        sidebar_panels = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
-        smart_panel = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8, margin=12)
+        sidebar_panels = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        self.full_library_button = self.button('Full music library',
+                                                self.show_full_music_library)
+        self.full_library_button.set_name('full-library-button')
+        sidebar_panels.pack_start(self.full_library_button, False, False, 0)
+        self.library_side_split = Gtk.Paned(orientation=Gtk.Orientation.VERTICAL)
+        self.library_side_split.set_name('library-side-split')
+        self.library_side_split.set_wide_handle(True)
+        self.library_side_split.set_position(190)
+        sidebar_panels.pack_start(self.library_side_split, True, True, 0)
+        smart_panel = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6, margin=8)
         smart_panel.set_name('smart-playlist-panel')
         smart_header = Gtk.Box(spacing=4)
         smart_header.pack_start(Gtk.Label(label='SMART PLAYLISTS', xalign=0), True, True, 0)
@@ -2050,10 +2066,10 @@ class Player(Gtk.Window):
         smart_scroll = self.scroll(self.smart_playlist_list)
         smart_scroll.set_name('smart-playlist-scroll')
         smart_scroll.set_shadow_type(Gtk.ShadowType.NONE)
-        smart_scroll.set_size_request(-1, 140)
+        smart_scroll.set_min_content_height(50)
         smart_panel.pack_start(smart_scroll, True, True, 0)
-        sidebar_panels.pack_start(smart_panel, False, False, 0)
-        playlists = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8, margin=12)
+        self.library_side_split.pack1(smart_panel, True, False)
+        playlists = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6, margin=8)
         playlists.set_name('playlist-panel')
         playlists.set_size_request(170, -1)
         playlist_header = Gtk.Box(spacing=4)
@@ -2073,10 +2089,12 @@ class Player(Gtk.Window):
         playlist_scroll.set_shadow_type(Gtk.ShadowType.NONE)
         playlists.pack_start(playlist_scroll, True, True, 0)
         self.all_songs_row = self.playlist_row('All songs', None)
-        sidebar_panels.pack_start(playlists, True, True, 0)
+        self.all_songs_row.set_no_show_all(True)
+        self.all_songs_row.hide()
+        self.library_side_split.pack2(playlists, True, False)
         split.pack1(sidebar_panels, False, False)
 
-        songs_panel = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10, margin=16)
+        songs_panel = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10, margin=8)
         songs_panel.set_name('song-panel')
         self.songs_heading = Gtk.Label(label='Songs', xalign=0)
         self.songs_heading.set_name('now-title')
@@ -2188,12 +2206,15 @@ class Player(Gtk.Window):
             Gtk.TargetEntry.new('application/x-plex-queue-indices', Gtk.TargetFlags.SAME_APP, 2),
             Gtk.TargetEntry.new('application/x-plex-song-key', Gtk.TargetFlags.SAME_APP, 0),
         ]
-        self.queue_view.enable_model_drag_source(Gdk.ModifierType.BUTTON1_MASK,
-                                                  queue_drag_targets,
-                                                  Gdk.DragAction.COPY | Gdk.DragAction.MOVE)
+        self.queue_view.drag_source_set(Gdk.ModifierType.BUTTON1_MASK,
+                                        queue_drag_targets,
+                                        Gdk.DragAction.COPY | Gdk.DragAction.MOVE)
+        self.queue_view.connect('drag-begin', self.queue_drag_begin)
+        self.queue_view.connect('drag-end', self.queue_drag_end)
         self.queue_view.connect('drag-data-get', self.queue_drag_data_get)
-        self.queue_view.drag_dest_set(Gtk.DestDefaults.ALL,
+        self.queue_view.drag_dest_set(Gtk.DestDefaults.DROP,
                                       [queue_drag_targets[0]], Gdk.DragAction.MOVE)
+        self.queue_view.connect('drag-motion', self.queue_drag_motion)
         self.queue_view.connect('drag-data-received', self.queue_list_drop_received)
         queue_scroll = self.scroll(self.queue_view)
         queue_scroll.set_name('queue-scroll')
@@ -2258,6 +2279,14 @@ class Player(Gtk.Window):
             self.start_track()
 
     def queue_song_pressed(self, view, event):
+        if event.button == 1:
+            hit = view.get_path_at_pos(int(event.x), int(event.y))
+            selected = view.get_selection()
+            modifiers = Gdk.ModifierType.SHIFT_MASK | Gdk.ModifierType.CONTROL_MASK
+            self.queue_drag_candidate_indices = (
+                self.selected_queue_indices() if hit and selected.path_is_selected(hit[0])
+                and not (event.state & modifiers) else [])
+            return False
         if event.button != 3:
             return False
         hit = view.get_path_at_pos(int(event.x), int(event.y))
@@ -2288,8 +2317,30 @@ class Player(Gtk.Window):
         model, paths = self.queue_view.get_selection().get_selected_rows()
         return [model[path][0] for path in paths if model[path][0] >= 0]
 
+    def queue_drag_begin(self, _view, _context):
+        self.queue_drag_indices = (getattr(self, 'queue_drag_candidate_indices', None)
+                                   or self.selected_queue_indices())
+
+    def queue_drag_end(self, _view, _context):
+        self.queue_drag_indices = []
+        self.queue_drag_candidate_indices = []
+
+    def queue_drag_motion(self, view, context, x, y, event_time):
+        target = view.drag_dest_find_target(context, None)
+        if target is None:
+            Gdk.drag_status(context, Gdk.DragAction(0), event_time)
+            return True
+        hit = view.get_dest_row_at_pos(x, y)
+        if hit:
+            view.set_drag_dest_row(*hit)
+        elif len(self.queue_store):
+            path = Gtk.TreePath.new_from_indices([len(self.queue_store) - 1])
+            view.set_drag_dest_row(path, Gtk.TreeViewDropPosition.AFTER)
+        Gdk.drag_status(context, Gdk.DragAction.MOVE, event_time)
+        return True
+
     def queue_drag_data_get(self, _view, _context, selection, info, _time):
-        indices = self.selected_queue_indices()
+        indices = getattr(self, 'queue_drag_indices', None) or self.selected_queue_indices()
         if not indices:
             return
         if info == 2:
@@ -2482,7 +2533,7 @@ class Player(Gtk.Window):
         self.title_bar_toggle.connect('toggled', self.title_bar_changed)
         panel.pack_start(self.title_bar_toggle, False, False, 0)
         self.window_buttons_toggle = Gtk.CheckButton(
-            label='Show small window buttons when the title bar is hidden')
+            label='Show small window buttons in the top right')
         self.window_buttons_toggle.set_active(self.window_buttons_enabled)
         self.window_buttons_toggle.connect('toggled', self.window_buttons_changed)
         panel.pack_start(self.window_buttons_toggle, False, False, 0)
@@ -2802,16 +2853,13 @@ class Player(Gtk.Window):
     def window_state_changed(self, _window, event):
         maximized = bool(event.new_window_state & Gdk.WindowState.MAXIMIZED)
         name = 'Restore' if maximized else 'Maximize'
-        icon = 'window-restore-symbolic' if maximized else 'window-maximize-symbolic'
-        self.maximize_button.set_image(Gtk.Image.new_from_icon_name(icon,
-                                                                    Gtk.IconSize.BUTTON))
-        self.maximize_button.get_image().set_pixel_size(13)
+        self.maximize_button.set_label('❐' if maximized else '□')
         self.set_tooltip(self.maximize_button, name)
         self.maximize_button.get_accessible().set_name(name)
         return False
 
     def update_window_controls(self):
-        visible = self.window_buttons_enabled and self.hide_title_bar
+        visible = self.window_buttons_enabled
         self.window_controls.set_visible(visible)
         self.busy_spinner.set_margin_end(90 if visible else 14)
 
@@ -3092,6 +3140,13 @@ class Player(Gtk.Window):
         self.songs_heading.set_text(row.definition['name'])
         self.apply_library_layout()
         self.load_songs()
+
+    def show_full_music_library(self, *_):
+        if self.playlist_list.get_selected_row() is self.all_songs_row:
+            self.select_playlist(self.playlist_list, self.all_songs_row)
+        else:
+            self.playlist_list.select_row(self.all_songs_row)
+        self.show_view('library')
 
     def create_playlist_dialog(self, *_):
         if not self.client:
