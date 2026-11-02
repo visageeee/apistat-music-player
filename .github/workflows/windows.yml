@@ -51,10 +51,7 @@ jobs:
           pyinstaller --noconfirm --clean windows/Apistat.spec
           test -f dist/Apistat/Apistat.exe
       - name: Check frozen runtime
-        shell: pwsh
-        run: |
-          & .\dist\Apistat\Apistat.exe --self-test
-          if ($LASTEXITCODE -ne 0) { throw "Bundled runtime check failed: $LASTEXITCODE" }
+        run: ./dist/Apistat/Apistat-Debug.exe --self-test
       - uses: actions/upload-artifact@v4
         with:
           name: Apistat-Windows-x64

@@ -42,8 +42,21 @@ exe = EXE(
     upx=False,
     console=False,
 )
+debug_exe = EXE(
+    pyz,
+    a.scripts,
+    [],
+    exclude_binaries=True,
+    name='Apistat-Debug',
+    debug=False,
+    bootloader_ignore_signals=False,
+    strip=False,
+    upx=False,
+    console=True,
+)
 coll = COLLECT(
     exe,
+    debug_exe,
     a.binaries,
     a.datas,
     strip=False,
