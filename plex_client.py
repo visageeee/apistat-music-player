@@ -44,7 +44,7 @@ class Item:
 
 class PlexClient:
     def __init__(self, address, token, identifier='linux-plex-music-prototype',
-                 device_name='Apistat'):
+                 device_name='Apistat', timeout=15):
         address = address.strip().rstrip('/')
         parsed = urlsplit(address)
         if (parsed.scheme not in ('http', 'https') or not parsed.hostname
@@ -53,6 +53,7 @@ class PlexClient:
         self.address, self.token = address, token.strip()
         self.identifier = identifier
         self.device_name = device_name
+        self.timeout = timeout
         if not self.token:
             raise ValueError('Enter a Plex token.')
         self.opener = build_opener(NoRedirect())
@@ -68,7 +69,7 @@ class PlexClient:
             'X-Plex-Client-Identifier': self.identifier,
             'X-Plex-Device-Name': self.device_name,
             'Accept': 'application/xml'}, method=method)
-        with self.opener.open(req, timeout=15) as response:
+        with self.opener.open(req, timeout=self.timeout) as response:
             return response.read()
 
     def get(self, path, **params):

@@ -299,11 +299,21 @@ class AccountTests(unittest.TestCase):
                     return Response(b'{"authToken":"device-token"}')
                 if path.endswith('/devices.xml'):
                     return Response(b'<MediaContainer><Device id="55" clientIdentifier="player"/></MediaContainer>')
+                if '/api/v2/resources?' in path:
+                    return Response(b'[{'
+                                    b'"provides":"server","name":"Music","clientIdentifier":"server-id",'
+                                    b'"accessToken":"server-token","connections":['
+                                    b'{"uri":"https://server.example:32400","local":false,"relay":false}]}]')
                 return Response(b'{}')
         opener = Opener()
         account = PlexAccount('player', 'Test Player', opener, base='https://plex.test')
         self.assertEqual(account.create_pin(), (123, 'ABCD'))
         self.assertEqual(account.check_pin(123), 'device-token')
+        servers = account.resources('device-token')
+        self.assertEqual((servers[0].name, servers[0].token), ('Music', 'server-token'))
+        self.assertIn('includeHttps=1&includeRelay=1&includeIPv6=1', opener.requests[-1].full_url)
+        self.assertTrue(opener.requests[-1].full_url.startswith('https://clients.plex.tv/'))
+        self.assertEqual(opener.requests[-1].get_header('X-plex-token'), 'device-token')
         account.publish('device-token', 'http://192.168.1.10:32500')
         uri = opener.requests[-1].full_url
         self.assertIn('Connection%5B%5D%5Buri%5D=http%3A%2F%2F192.168.1.10%3A32500', uri)

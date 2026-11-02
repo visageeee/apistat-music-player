@@ -23,7 +23,9 @@ GitHub Actions builds a portable 64-bit Windows folder on pushes and pull reques
 
 To build locally, install [MSYS2 UCRT64](https://www.msys2.org/), install the packages listed in [windows.yml](.github/workflows/windows.yml), then run `pyinstaller --noconfirm --clean windows/Apistat.spec` from the repository root in the UCRT64 shell. `python player.py --self-test` checks the GTK/GStreamer source environment; `dist/Apistat/Apistat.exe --self-test` checks the bundled media elements. The workflow also runs the unit tests before uploading its artifact. Playback and Plexamp remote control still need a hands-on check on a Windows desktop with a Plex server; the runner cannot verify audio output or phone discovery.
 
-Enter your server address, for example `http://192.168.1.10:32400`, and an X-Plex-Token. Use an HTTPS address with a valid certificate for remote connections. HTTP sends authentication and audio unencrypted and should be limited to a trusted local network. Enter the server address, not the Plex Web app URL. TLS verification remains enabled; redirects are disabled to avoid forwarding the token elsewhere.
+In the connection dialog, choose **Choose from Plex account…** to link your Plex account at [plex.tv/link](https://plex.tv/link) and select one of its servers. The app checks the server's published local, direct remote, and relay addresses in that order, verifies its identity, and uses the server-specific token supplied by Plex. You can choose a different server later in **Settings → Connection**. The account link also works when Plexamp remote control is off. Both the account link and selected server login are stored in the platform credential store, without a plaintext fallback.
+
+For manual connection, enter your server address, for example `http://192.168.1.10:32400`, and an X-Plex-Token. Use an HTTPS address with a valid certificate for remote connections. HTTP sends authentication and audio unencrypted and should be limited to a trusted local network. Enter the server address, not the Plex Web app URL. TLS verification remains enabled; redirects are disabled to avoid forwarding the token elsewhere.
 
 For this prototype you can obtain a temporary token using [Plex's instructions](https://support.plex.tv/articles/204059436-finding-an-authentication-token-x-plex-token/): open a library item's XML in Plex Web and copy the X-Plex-Token value from the URL. Tokens may expire. Enter it only in the app, not in chat. After a successful connection, the app saves the server address and token in your desktop keyring and reconnects on the next launch. It also restores the window size, open panel, and last queue and track position; playback returns paused. Playback state is saved when paused and periodically while playing. The keyring may ask you to unlock it. If the token expires, the connection dialog opens so you can replace it. The app uses an authentication header and does not print request URLs.
 
@@ -37,7 +39,7 @@ The player exposes MPRIS controls on the desktop session bus. Play/pause, next, 
 
 ## Plexamp remote control
 
-In **Settings → Plexamp remote control**, enable **Allow Plexamp remote control** and choose a player name. Remote control is off by default. The app opens a Companion HTTP receiver on local TCP port 32500 (or an available port if that is occupied) and advertises it with Plex GDM on UDP 32412/32413. This is intended for phones on the same local network; do not forward the port on your router. A local firewall must allow the receiver's TCP port and GDM UDP traffic. The player keeps its own GTK interface and uses GStreamer for playback.
+In **Settings → Connection**, enable **Allow Plexamp remote control** and choose a player name. Remote control is off by default. The app opens a Companion HTTP receiver on local TCP port 32500 (or an available port if that is occupied) and advertises it with Plex GDM on UDP 32412/32413. This is intended for phones on the same local network; do not forward the port on your router. A local firewall must allow the receiver's TCP port and GDM UDP traffic. The player keeps its own GTK interface and uses GStreamer for playback.
 
 Select **Link Plex account…**, enter the displayed code at [plex.tv/link](https://plex.tv/link), and leave the dialog open until the status says linked. Linking registers the same persistent player identifier used by GDM and the HTTP receiver, then publishes the current local connection URI to plex.tv. The app checks for local IP changes every 30 seconds and republishes when necessary. The device token is stored only in the desktop Secret Service keyring; if no keyring is available, linking fails with an explicit message. **Unlink** deletes the registered device and clears that token. Disabling remote control stops the listener and GDM advertisement without erasing the link.
 
@@ -89,7 +91,7 @@ Use your own LAN range and the port shown by the app. Do not open the port to th
 
 ## Prototype boundaries
 
-Streams the original file through GStreamer. There is no Plex transcoding fallback, automatic server discovery, offline download, playback reporting/scrobbling or gapless playback yet. A manually reachable server URL is required. Saved login and Plexamp account linking require a working desktop keyring. MPRIS requires a desktop session bus. Codec support depends on installed GStreamer plugins. Seek support depends on the format and HTTP source. Plex Companion compatibility is based on the published protocol and current third-party implementations; live Plexamp Android and iOS testing is still required.
+Streams the original file through GStreamer. There is no Plex transcoding fallback, offline download, playback reporting/scrobbling or gapless playback yet. Account server selection depends on the addresses Plex publishes; a server with no reachable published address still needs a working manual URL or Plex Remote Access/Relay configuration. Saved login and Plexamp account linking require a working platform credential store. MPRIS requires a desktop session bus. Codec support depends on installed GStreamer plugins. Seek support depends on the format and HTTP source. Plex Companion compatibility is based on the published protocol and current third-party implementations; live Plexamp Android and iOS testing is still required.
 
 The code is not affiliated with Plex. Authentication, XML parsing, pagination, search encoding, stream resolution and missing-media handling are tested against a local mock server. Song sorting and audio playlists were also checked with a local Plex server. GTK view rendering was checked on a Linux desktop.
 
@@ -100,7 +102,7 @@ Companion support follows the Plex API documentation and independently reads the
 ```bash
 /usr/bin/python3 -m unittest -v test_art_zoom.py test_appearance.py test_client.py test_credentials.py test_player_controls.py test_library_catalog.py test_session.py test_shortcuts.py test_waveform.py
 dbus-run-session -- /usr/bin/python3 -m unittest discover -v
-/usr/bin/python3 -m py_compile player.py plex_client.py companion.py companion_account.py companion_config.py
+/usr/bin/python3 -m py_compile player.py plex_client.py plex_resources.py companion.py companion_account.py companion_config.py
 ```
 
 Suggested first live check: connect, select a music library, play an album, pause/resume, seek, skip, and let one track finish. Try a second album while the first plays, then a bad token and an unavailable server. A large library should load more albums automatically near the bottom of the wall.
@@ -111,6 +113,7 @@ Suggested first live check: connect, select a music library, play an album, paus
 - [PlexAPI library documentation](https://python-plexapi.readthedocs.io/en/latest/modules/library.html)
 - [GStreamer playbin](https://gstreamer.freedesktop.org/documentation/playback/playbin.html)
 - [Plex Companion remote control API](https://github.com/plexinc/plex-media-player/wiki/Remote-control-API)
+- [Plex developer documentation for server resources and identity](https://developer.plex.tv/pms/)
 - [Music Assistant Plex Connect implementation](https://github.com/music-assistant/server/tree/dev/music_assistant/providers/plex_connect)
 - [iOS Plexamp device registration findings](https://github.com/music-assistant/support/issues/5782)
 

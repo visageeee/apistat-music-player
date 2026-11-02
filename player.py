@@ -19,6 +19,7 @@ gi.require_version('Gtk', '3.0')
 gi.require_version('Gst', '1.0')
 from gi.repository import Gtk, Gst, GLib, GdkPixbuf, Gdk, Pango
 from plex_client import PlexClient, ALBUM_SORT_ARTIST
+from plex_resources import reachable_music_server
 from credentials import load_credentials, save_credentials
 if os.name != 'nt':
     from mpris import Mpris
@@ -120,6 +121,10 @@ class Player(Gtk.Window):
         self.remote_publish_pending = False
         self.remote_validation_pending = False
         self.remote_pin_generation = 0
+        self.remote_link_select_server = False
+        self.remote_link_loading = True
+        self.pending_server_choice = False
+        self.server_choice_generation = 0
         self.remote_container = ''
         self.remote_queue_id = ''
         self.remote_queue_version = ''
@@ -981,13 +986,14 @@ class Player(Gtk.Window):
     def initialize_remote(self):
         def load():
             token = load_device_token(self.remote_config['identifier'])
-            if token and self.remote_config['enabled']:
+            if token:
                 try:
                     return token, self.remote_account.user_id(token)
                 except Exception:
                     return token, None
             return None, None
         def ready(result):
+            self.remote_link_loading = False
             self.remote_link_token, self.remote_link_user = result
             if self.remote_receiver:
                 self.remote_receiver.set_link(*result)
@@ -998,15 +1004,27 @@ class Player(Gtk.Window):
                 self.update_remote_status()
             if self.remote_link_token and not self.remote_link_user:
                 self.update_remote_status('Plex link could not be verified; reconnect or relink.')
+            if self.pending_server_choice:
+                self.pending_server_choice = False
+                self.choose_server_from_account()
         def failed(_error):
+            self.remote_link_loading = False
             self.remote_keyring_available = False
             if self.remote_config['enabled']:
                 self.start_remote_receiver()
             self.update_remote_status()
+            if self.pending_server_choice:
+                self.pending_server_choice = False
+                self.account_status.set_text('The credential store is unavailable; account linking cannot start.')
         self.remote_work(load, ready, failed)
         return False
 
     def update_remote_status(self, detail=None):
+        if detail is None:
+            self.account_status.set_text(
+                'Linked to Plex account' if self.remote_link_user else
+                'Plex account link needs renewal' if self.remote_link_token else
+                'Plex account is not linked')
         if detail:
             self.remote_status.set_text(detail)
         elif not self.remote_config['enabled']:
@@ -1022,9 +1040,8 @@ class Player(Gtk.Window):
                 (' • GDM unavailable (UDP 32412)' if not self.remote_receiver.gdm else ''))
         else:
             self.remote_status.set_text('Starting local receiver…')
-        self.remote_link_button.set_sensitive(self.remote_keyring_available and
-                                              self.remote_config['enabled'] and
-                                              self.remote_receiver is not None)
+        self.remote_link_button.set_sensitive(self.remote_keyring_available)
+        self.account_server_button.set_sensitive(self.remote_keyring_available)
         self.remote_unlink_button.set_sensitive(bool(self.remote_link_token))
 
     def remote_toggle_changed(self, button):
@@ -1167,11 +1184,13 @@ class Player(Gtk.Window):
             self.remote_work(lambda: self.remote_account.publish(token, uri), ready, failed)
         return True
 
-    def start_remote_link(self, *_):
-        if not self.remote_receiver or not self.remote_keyring_available:
+    def start_remote_link(self, _button=None, select_server=False):
+        if not self.remote_keyring_available:
             return
+        self.remote_link_select_server = select_server
         self.remote_pin_generation += 1
         generation = self.remote_pin_generation
+        self.account_status.set_text('Requesting Plex link code…')
         self.update_remote_status('Requesting Plex link code…')
         def ready(result):
             if generation != self.remote_pin_generation:
@@ -1185,9 +1204,14 @@ class Player(Gtk.Window):
             box.pack_start(Gtk.Label(label=f'Enter code {code} at plex.tv/link'), False, False, 0)
             box.pack_start(Gtk.LinkButton.new_with_label('https://plex.tv/link',
                                                          'Open plex.tv/link'), False, False, 0)
-            dialog.connect('response', lambda window, *_: (setattr(
-                self, 'remote_pin_generation', self.remote_pin_generation + 1), window.destroy()))
+            def closed(window, response):
+                self.remote_pin_generation += 1
+                if response != Gtk.ResponseType.OK:
+                    self.remote_link_select_server = False
+                window.destroy()
+            dialog.connect('response', closed)
             dialog.show_all()
+            self.account_status.set_text('Waiting for Plex account link…')
             self.update_remote_status('Waiting for Plex account link…')
             pending = {'active': False}
             def poll():
@@ -1207,12 +1231,16 @@ class Player(Gtk.Window):
                     pending['active'] = False
                     if generation == self.remote_pin_generation:
                         dialog.response(Gtk.ResponseType.CANCEL)
+                        self.account_status.set_text('Plex link code expired or could not be checked.')
                         self.update_remote_status('Plex link code expired or could not be checked.')
                 self.remote_work(lambda: self.remote_account.check_pin(pin_id), linked, failed)
                 return True
             GLib.timeout_add_seconds(3, poll)
-        self.remote_work(self.remote_account.create_pin, ready,
-                         lambda _error: self.update_remote_status('Could not request a Plex link code.'))
+        def failed(_error):
+            self.remote_link_select_server = False
+            self.account_status.set_text('Could not request a Plex link code.')
+            self.update_remote_status('Could not request a Plex link code.')
+        self.remote_work(self.remote_account.create_pin, ready, failed)
 
     def finish_remote_link(self, token):
         def work():
@@ -1227,13 +1255,100 @@ class Player(Gtk.Window):
                 self.remote_receiver.set_link(token, user)
             self.update_remote_status()
             self.refresh_remote_connection()
-        self.remote_work(work, ready, lambda _error: self.update_remote_status(
-            'Could not save Plex link in the desktop keyring; no plaintext fallback is used.'))
+            if self.remote_link_select_server:
+                self.remote_link_select_server = False
+                self.choose_server_from_account()
+        def failed(_error):
+            self.remote_link_select_server = False
+            store = ('Windows Credential Manager' if os.name == 'nt' else 'desktop keyring')
+            self.account_status.set_text(f'Could not save Plex link in {store}.')
+            self.update_remote_status('Could not save Plex link; no plaintext fallback is used.')
+        self.remote_work(work, ready, failed)
+
+    def choose_server_from_account(self, *_):
+        if self.remote_link_loading:
+            self.pending_server_choice = True
+            self.account_status.set_text('Checking saved Plex account link…')
+            self.status.set_text('Checking saved Plex account link…')
+            return
+        if not self.remote_link_token or not self.remote_link_user:
+            self.start_remote_link(select_server=True)
+            return
+        self.server_choice_generation += 1
+        generation = self.server_choice_generation
+        token = self.remote_link_token
+        self.account_status.set_text('Finding Plex servers…')
+        self.status.set_text('Finding Plex servers…')
+
+        def ready(servers):
+            if generation != self.server_choice_generation or token != self.remote_link_token:
+                return
+            if not servers:
+                self.account_status.set_text('No Plex servers with usable connections were found for this account.')
+                self.status.set_text('No Plex servers with usable connections were found for this account.')
+                return
+            dialog = Gtk.Dialog(title='Choose Plex music server', transient_for=self, modal=True)
+            dialog.add_buttons('Cancel', Gtk.ResponseType.CANCEL,
+                               'Connect', Gtk.ResponseType.OK)
+            box = dialog.get_content_area()
+            box.set_spacing(12)
+            box.set_border_width(18)
+            box.pack_start(Gtk.Label(label='Choose a server from your Plex account', xalign=0),
+                           False, False, 0)
+            choices = Gtk.ComboBoxText()
+            for index, server in enumerate(servers):
+                label = server.name + ('' if server.owned else ' (shared)')
+                choices.append(str(index), label)
+            choices.set_active(0)
+            box.pack_start(choices, False, False, 0)
+            dialog.show_all()
+            response = dialog.run()
+            selected = choices.get_active()
+            dialog.destroy()
+            if response == Gtk.ResponseType.OK and 0 <= selected < len(servers):
+                self.connect_account_server(servers[selected])
+            else:
+                self.account_status.set_text('Linked to Plex account')
+
+        def failed(_error):
+            if generation == self.server_choice_generation:
+                self.account_status.set_text('Could not list Plex servers. Check the account link and network.')
+                self.status.set_text('Could not list Plex servers. Check the account link and network.')
+
+        self.remote_work(lambda: self.remote_account.resources(token), ready, failed)
+
+    def connect_account_server(self, server):
+        self.server_choice_generation += 1
+        generation = self.server_choice_generation
+        self.account_status.set_text(f'Checking {server.name} connections…')
+        self.status.set_text(f'Checking {server.name} connections…')
+
+        def ready(connection):
+            if generation != self.server_choice_generation:
+                return
+            if connection is None:
+                self.account_status.set_text(
+                    'Could not reach a music library on this server. Check Plex Remote Access or Relay.')
+                self.status.set_text('Could not reach a music library. Check Plex Remote Access or Relay.')
+                return
+            address, token = connection
+            self.account_status.set_text(f'Connecting to {server.name}…')
+            self.connect_to_server(address, token, remember=True)
+
+        def failed(_error):
+            if generation == self.server_choice_generation:
+                self.account_status.set_text('Could not check this Plex server’s connections.')
+                self.status.set_text('Could not check this Plex server’s connections.')
+
+        self.remote_work(lambda: reachable_music_server(
+            server, self.remote_config['identifier'], self.remote_config['name']), ready, failed)
 
     def unlink_remote(self, *_):
         token = self.remote_link_token
         if not token:
             return
+        self.server_choice_generation += 1
+        self.account_status.set_text('Unlinking Plex account…')
         self.update_remote_status('Unlinking Plex device…')
         def work():
             remote_failed = False
@@ -1250,6 +1365,7 @@ class Player(Gtk.Window):
             self.remote_published_uri = ''
             if self.remote_receiver:
                 self.remote_receiver.set_link(None, None)
+            self.account_status.set_text('Plex account is not linked')
             self.update_remote_status('Removed the local link; remove the device in Plex settings when online.'
                                       if remote_failed else None)
         self.remote_work(work, ready, lambda _error: self.update_remote_status(
@@ -2150,6 +2266,19 @@ class Player(Gtk.Window):
         connection_button = self.button('Change connection…', self.connect_dialog)
         connection_button.set_halign(Gtk.Align.START)
         panel.pack_start(connection_button, False, False, 0)
+        account_actions = Gtk.Box(spacing=12)
+        self.account_server_button = self.button('Choose server from Plex account…',
+                                                 self.choose_server_from_account)
+        self.remote_link_button = self.button('Link Plex account…', self.start_remote_link)
+        self.remote_unlink_button = self.button('Unlink', self.unlink_remote)
+        account_actions.pack_start(self.account_server_button, False, False, 0)
+        account_actions.pack_start(self.remote_link_button, False, False, 0)
+        account_actions.pack_start(self.remote_unlink_button, False, False, 0)
+        self.remote_unlink_button.set_sensitive(False)
+        panel.pack_start(account_actions, False, False, 0)
+        self.account_status = Gtk.Label(label='Checking Plex account link…', xalign=0)
+        self.account_status.set_line_wrap(True)
+        panel.pack_start(self.account_status, False, False, 0)
         credential_store = ('Windows Credential Manager' if os.name == 'nt'
                             else 'your desktop keyring')
         info = Gtk.Label(label=f'Server login is stored in {credential_store} after a successful connection.', xalign=0)
@@ -2174,13 +2303,6 @@ class Player(Gtk.Window):
         self.remote_request_status = Gtk.Label(label='No phone requests yet', xalign=0)
         self.remote_request_status.set_line_wrap(True)
         panel.pack_start(self.remote_request_status, False, False, 0)
-        remote_actions = Gtk.Box(spacing=12)
-        self.remote_link_button = self.button('Link Plex account…', self.start_remote_link)
-        self.remote_unlink_button = self.button('Unlink', self.unlink_remote)
-        remote_actions.pack_start(self.remote_link_button, False, False, 0)
-        remote_actions.pack_start(self.remote_unlink_button, False, False, 0)
-        self.remote_unlink_button.set_sensitive(False)
-        panel.pack_start(remote_actions, False, False, 0)
         self.settings_tabs.append_page(self.scroll(panel), Gtk.Label(label='Connection'))
         panel = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=18, margin=24)
         panel.set_name('settings-panel')
@@ -3637,6 +3759,8 @@ class Player(Gtk.Window):
         self.finish_startup_loading()
         dialog = Gtk.Dialog(title='Connect to Plex', transient_for=self, modal=True)
         dialog.add_buttons('Cancel', Gtk.ResponseType.CANCEL, 'Connect', Gtk.ResponseType.OK)
+        account_response = 1001
+        dialog.add_button('Choose from Plex account…', account_response)
         box = dialog.get_content_area()
         box.set_spacing(10)
         box.set_border_width(18)
@@ -3658,6 +3782,9 @@ class Player(Gtk.Window):
         response = dialog.run()
         url, secret = address.get_text(), token.get_text()
         dialog.destroy()
+        if response == account_response:
+            self.choose_server_from_account()
+            return False
         if response != Gtk.ResponseType.OK:
             return False
         self.connect_to_server(url, secret, remember=True)
@@ -3698,7 +3825,7 @@ class Player(Gtk.Window):
             self.clear_remote_queue()
             if self.remote_receiver:
                 self.remote_receiver.set_server(client, machine)
-                self.update_remote_status()
+            self.update_remote_status()
             self.index_generation += 1
             self.index_cache = None
             self.indexed_albums = None
@@ -3708,7 +3835,8 @@ class Player(Gtk.Window):
             self.index_status.set_text('Choose a music library to build the index'
                                        if self.search_index_enabled else 'Index is off')
             self.restored_credentials = None
-            self.credential_warning = '' if saved else 'Desktop keyring could not save this login.'
+            store = 'Windows Credential Manager' if os.name == 'nt' else 'desktop keyring'
+            self.credential_warning = '' if saved else f'{store} could not save this login.'
             self.sections = sections
             self.library.remove_all()
             self.clear_wall()

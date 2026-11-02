@@ -23,9 +23,11 @@ else:
     from gi.repository import Secret
 
 from plex_client import NoRedirect
+from plex_resources import parse_resources
 
 
 PLEX_TV = 'https://plex.tv'
+PLEX_CLIENTS = 'https://clients.plex.tv'
 SCHEMA = (Secret.Schema.new('org.plexmusicprototype.companion', Secret.SchemaFlags.NONE,
                             {'identifier': Secret.SchemaAttributeType.STRING})
           if Secret is not None else None)
@@ -55,13 +57,14 @@ class PlexAccount:
                 'X-Plex-Model': 'standalone',
                 'X-Plex-Provides': 'client,player,pubsub-player'}
 
-    def request(self, method, path, token=None, data=None, accept='application/json'):
+    def request(self, method, path, token=None, data=None, accept='application/json',
+                base=None):
         headers = dict(self.headers, Accept=accept)
         if token:
             headers['X-Plex-Token'] = token
         if data is not None:
             headers['Content-Type'] = 'application/x-www-form-urlencoded'
-        req = Request(self.base + path, data=data, headers=headers, method=method)
+        req = Request((base or self.base) + path, data=data, headers=headers, method=method)
         try:
             with self.opener.open(req, timeout=15) as response:
                 return response.read()
@@ -86,6 +89,12 @@ class PlexAccount:
         if not isinstance(user_id, (int, str)) or not str(user_id):
             raise AccountError('Plex returned no account ID.')
         return str(user_id)
+
+    def resources(self, token):
+        body = self.request('GET',
+                            '/api/v2/resources?includeHttps=1&includeRelay=1&includeIPv6=1',
+                            token=token, base=PLEX_CLIENTS)
+        return parse_resources(body)
 
     def device_id(self, token):
         root = ET.fromstring(self.request('GET', '/devices.xml', token=token,
