@@ -24,7 +24,20 @@ def wave_height(position, phase, frequency, amplitude, layer):
 
 def wave_frequency(layer):
     """Keep each line's wavelength fixed while its amplitude follows the music."""
-    return 1.55 * (0.90 + layer * 0.04)
+    return 3.5 * (0.88 + layer * 0.055)
+
+
+def wave_line_width(layer):
+    """Bass bands draw heavier strokes than the higher frequency bands."""
+    return 10.5 - layer * 0.8
+
+
+def wave_amplitude(height, energy, layer):
+    middle = height / 2
+    spread = min(height * 0.27, 160)
+    amplitude = spread * (0.68 + energy * 1.65) * (0.30 + layer * 0.15)
+    baseline_offset = abs((2.5 - layer) * 6)
+    return min(amplitude, max(0.0, (middle - baseline_offset - 8) / 1.25))
 
 
 FREQUENCY_RANGES = ((40, 160), (160, 400), (400, 1000),
@@ -61,12 +74,11 @@ class Waveform(Gtk.DrawingArea):
         self.colors = (rgb('#d080dc'), rgb('#e7a641'))
         self.target = [0.0] * 6
         self.energy = [0.0] * 6
-        self.pulse = [0.0] * 6
         self.phase = 0.0
         self.last_frame = time.monotonic()
         self.get_accessible().set_name('Live layered audio waves')
         self.connect('draw', self.draw_waveform)
-        GLib.timeout_add(33, self.animate)
+        GLib.timeout_add(16, self.animate)
 
     def set_colors(self, first, second):
         self.colors = rgb(first), rgb(second)
@@ -74,29 +86,26 @@ class Waveform(Gtk.DrawingArea):
 
     def push_spectrum(self, magnitudes, sample_rate):
         for index, level in enumerate(band_energies(magnitudes, sample_rate)):
-            self.pulse[index] = max(self.pulse[index], max(0.0, level - self.target[index]))
             self.target[index] = level
 
     def clear(self):
         self.target = [0.0] * 6
         self.energy = [0.0] * 6
-        self.pulse = [0.0] * 6
         self.queue_draw()
 
     def pause(self):
         self.target = [0.0] * 6
-        self.pulse = [0.0] * 6
 
     def animate(self):
         now = time.monotonic()
-        elapsed = min(now - self.last_frame, 0.1)
+        elapsed = max(0.0, min(now - self.last_frame, 0.1))
         self.last_frame = now
         if not self.get_mapped():
             return True
         for index in range(6):
-            response = 24 if self.target[index] > self.energy[index] else 9
-            self.energy[index] += (self.target[index] - self.energy[index]) * min(1.0, elapsed * response)
-            self.pulse[index] *= max(0.0, 1 - elapsed * 9)
+            response = 22 if self.target[index] > self.energy[index] else 12
+            blend = 1 - math.exp(-elapsed * response)
+            self.energy[index] += (self.target[index] - self.energy[index]) * blend
         self.phase += elapsed * 0.055
         self.queue_draw()
         return True
@@ -107,15 +116,13 @@ class Waveform(Gtk.DrawingArea):
         if width <= 0 or height <= 0:
             return False
         middle = height / 2
-        spread = min(height * 0.27, 160)
         for layer in range(6):
             mix = layer / 5
             color = tuple(a * (1 - mix) + b * mix for a, b in zip(*self.colors))
             alpha = 0.30 + mix * 0.30
             context.set_source_rgba(*color, alpha)
-            context.set_line_width(3.2 + mix * 2.0)
-            layer_amplitude = spread * (0.44 + self.energy[layer] * 0.72 + self.pulse[layer] * 0.34)
-            layer_amplitude *= 0.22 + layer * 0.17
+            context.set_line_width(wave_line_width(layer))
+            layer_amplitude = wave_amplitude(height, self.energy[layer], layer)
             layer_frequency = wave_frequency(layer)
             layer_phase = self.phase + layer * 0.05
             baseline = middle + (2.5 - layer) * 6

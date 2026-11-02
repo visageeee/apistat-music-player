@@ -31,5 +31,5 @@ def load_credentials():
 def save_credentials(address, token):
     value = json.dumps({'address': address, 'token': token})
     if not Secret.password_store_sync(SCHEMA, ATTRIBUTES, Secret.COLLECTION_DEFAULT,
-                                      'Plex Music server', value, None):
+                                      'Apistat server', value, None):
         raise RuntimeError('Could not save the connection in the desktop keyring.')

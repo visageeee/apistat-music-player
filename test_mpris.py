@@ -7,7 +7,7 @@ import gi
 gi.require_version('Gst', '1.0')
 from gi.repository import Gio, GLib, Gst
 
-from mpris import Mpris, NAME, PATH, PLAYER
+from mpris import Mpris, NAME, PATH, PLAYER, ROOT
 
 
 class FakeControl:
@@ -58,6 +58,12 @@ class FakePlayer:
 
 
 class MprisTests(unittest.TestCase):
+    def test_visible_identity_is_apistat(self):
+        service = Mpris.__new__(Mpris)
+        service.player = FakePlayer()
+        self.assertEqual(service._get(None, None, PATH, ROOT, 'Identity').unpack(),
+                         'Apistat')
+
     def test_metadata_and_controls_on_session_bus(self):
         if not os.environ.get('DBUS_SESSION_BUS_ADDRESS'):
             self.skipTest('Run under dbus-run-session')

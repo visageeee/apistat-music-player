@@ -1,9 +1,14 @@
 """Small Plex music client. No third-party Python dependencies."""
 from dataclasses import dataclass
+from urllib.error import HTTPError
 from urllib.parse import urlsplit, urlencode
 from urllib.request import Request, build_opener, HTTPRedirectHandler
 import re
 import xml.etree.ElementTree as ET
+
+
+ALBUM_SORT_ARTIST = ('artist.titleSort,album.titleSort,album.index,album.id,'
+                     'album.originallyAvailableAt')
 
 
 class NoRedirect(HTTPRedirectHandler):
@@ -39,7 +44,7 @@ class Item:
 
 class PlexClient:
     def __init__(self, address, token, identifier='linux-plex-music-prototype',
-                 device_name='Plex Music on Linux'):
+                 device_name='Apistat'):
         address = address.strip().rstrip('/')
         parsed = urlsplit(address)
         if (parsed.scheme not in ('http', 'https') or not parsed.hostname
@@ -59,7 +64,7 @@ class PlexClient:
 
     def request(self, method, path, **params):
         req = Request(self.url(path, **params), headers={
-            'X-Plex-Token': self.token, 'X-Plex-Product': 'Plex Music on Linux',
+            'X-Plex-Token': self.token, 'X-Plex-Product': 'Apistat',
             'X-Plex-Client-Identifier': self.identifier,
             'X-Plex-Device-Name': self.device_name,
             'Accept': 'application/xml'}, method=method)
@@ -77,8 +82,10 @@ class PlexClient:
                 for x in self.xml('/library/sections').findall('Directory')
                 if x.get('type') == 'artist']
 
-    def albums(self, section, start=0, title=''):
-        params = {'type': 9, 'sort': 'addedAt:desc',
+    def albums(self, section, start=0, title='', sort='addedAt:desc'):
+        if sort not in ('addedAt:desc', 'year:desc', ALBUM_SORT_ARTIST, 'titleSort'):
+            raise ValueError('Unsupported album sort')
+        params = {'type': 9, 'sort': sort,
                   'X-Plex-Container-Start': start, 'X-Plex-Container-Size': 100}
         if title:
             params['title'] = title
@@ -93,6 +100,56 @@ class PlexClient:
     def tracks(self, album):
         path = album.key if album.key.endswith('/children') else album.key + '/children'
         return [self.track_item(x, album.artist) for x in self.xml(path).findall('Track')]
+
+    def nearest_tracks(self, track, limit=50):
+        if not re.fullmatch(r'/library/metadata/\d+', track.key):
+            raise ValueError('Invalid Plex track key')
+        if type(limit) is not int or not 1 <= limit <= 100:
+            raise ValueError('Invalid similar-track limit')
+        root = self.xml(track.key + '/nearest', limit=limit)
+        elements = list(root.findall('Track')) + [
+            node for node in root.findall('Metadata') if node.get('type') == 'track']
+        return [self.track_item(node) for node in elements
+                if re.fullmatch(r'/library/metadata/\d+', node.get('key', ''))]
+
+    def metadata_similar_tracks(self, track, section, limit=50):
+        if not re.fullmatch(r'/library/metadata/\d+', track.key):
+            raise ValueError('Invalid Plex track key')
+        if not re.fullmatch(r'\d+', str(section)) or type(limit) is not int or not 1 <= limit <= 100:
+            raise ValueError('Invalid similar-track request')
+        filters = []
+        for genre in [part.strip() for part in track.genre.split(',') if part.strip()][:2]:
+            filters.append(('genre', genre))
+        for mood in [part.strip() for part in track.mood.split(',') if part.strip()][:2]:
+            filters.append(('mood', mood))
+        if track.artist:
+            filters.append(('artist.title', track.artist))
+        candidates = {}
+        for field, value in filters:
+            try:
+                root = self.xml('/library/sections/' + str(section) + '/all',
+                                type=10, sort='random', **{
+                                    field: value, 'X-Plex-Container-Start': 0,
+                                    'X-Plex-Container-Size': 100})
+            except HTTPError as error:
+                if error.code in (400, 404):
+                    continue
+                raise
+            for node in root.findall('Track'):
+                key = node.get('key', '')
+                if re.fullmatch(r'/library/metadata/\d+', key) and key != track.key:
+                    candidates[key] = self.track_item(node)
+        seed_genres = {tag.strip().casefold() for tag in track.genre.split(',') if tag.strip()}
+        seed_moods = {tag.strip().casefold() for tag in track.mood.split(',') if tag.strip()}
+        def score(candidate):
+            genres = {tag.strip().casefold() for tag in candidate.genre.split(',') if tag.strip()}
+            moods = {tag.strip().casefold() for tag in candidate.mood.split(',') if tag.strip()}
+            tag_score = 6 * len(seed_genres & genres) + 5 * len(seed_moods & moods)
+            artist_score = bool(track.artist and
+                                candidate.artist.casefold() == track.artist.casefold())
+            return tag_score or artist_score
+        ranked = [candidate for candidate in candidates.values() if score(candidate)]
+        return sorted(ranked, key=lambda candidate: -score(candidate))[:limit]
 
     @staticmethod
     def track_item(element, fallback_artist=''):

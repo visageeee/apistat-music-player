@@ -249,7 +249,7 @@ class GDM:
     def message(self, verb):
         clean = self.name.replace('\r', ' ').replace('\n', ' ')
         lines = [verb, f'Name: {clean}', f'Port: {self.port}',
-                 'Product: Plex Music on Linux', 'Version: 1.0.0', 'Protocol: plex',
+                 'Product: Apistat', 'Version: 1.0.0', 'Protocol: plex',
                  'Protocol-Version: 1', f'Protocol-Capabilities: {CAPABILITIES}',
                  'Device-Class: pc', f'Resource-Identifier: {self.identifier}',
                  'Content-Type: plex/media-player', 'Provides: client,player,pubsub-player', '', '']
@@ -357,7 +357,7 @@ class CompanionReceiver:
         player = ET.SubElement(root, 'Player', title=self.name, protocol='plex',
                                protocolVersion='1', protocolCapabilities=CAPABILITIES,
                                machineIdentifier=self.identifier,
-                               product='Plex Music on Linux', platform='Linux',
+                               product='Apistat', platform='Linux',
                                deviceClass='pc', state=self.state.get('state', 'stopped'),
                                address=address, port=str(self.port), version='1.0.0',
                                provides='client,player,pubsub-player')

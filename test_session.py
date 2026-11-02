@@ -31,7 +31,7 @@ class SessionTests(unittest.TestCase):
         data = {
             'version': 1,
             'window': {'width': 1440, 'height': 900, 'maximized': True},
-            'panel': 'now', 'settings_page': 'shortcuts',
+            'panel': 'now', 'settings_page': 'shortcuts', 'settings_tab': 3,
             'server': 'http://localhost:32400', 'section': '3',
             'playback': {'queue': [session.item_to_data(track)], 'index': 0,
                          'position_ms': 42500, 'album': session.item_to_data(album),
@@ -44,6 +44,7 @@ class SessionTests(unittest.TestCase):
         self.assertEqual(restored['window'], data['window'])
         self.assertEqual(restored['panel'], 'now')
         self.assertEqual(restored['settings_page'], 'shortcuts')
+        self.assertEqual(restored['settings_tab'], 3)
         self.assertEqual(restored['playback']['queue'], [track])
         self.assertEqual(restored['playback']['album'], album)
         self.assertEqual(restored['playback']['position_ms'], 42500)
@@ -69,6 +70,13 @@ class SessionTests(unittest.TestCase):
                 restored = session.load_session()
         self.assertEqual(restored['panel'], 'albums')
         self.assertNotIn('song_sort', restored)
+
+    def test_queue_panel_is_restored(self):
+        with tempfile.TemporaryDirectory() as directory:
+            with patch.object(session, 'SESSION_PATH', Path(directory) / 'session.json'):
+                session.save_session({'version': 1, 'panel': 'queue'})
+                restored = session.load_session()
+        self.assertEqual(restored['panel'], 'queue')
 
     def test_player_restores_queue_paused_at_saved_position(self):
         track = Item('/library/metadata/12', 'Song', duration=180000)
@@ -101,6 +109,7 @@ class SessionTests(unittest.TestCase):
             is_maximized=lambda: True, normal_size=(1260, 810),
             content_views=SimpleNamespace(get_visible_child_name=lambda: 'library'),
             settings_stack=SimpleNamespace(get_visible_child_name=lambda: 'main'),
+            settings_tabs=SimpleNamespace(get_current_page=lambda: 0),
             art_stack=SimpleNamespace(get_visible_child_name=lambda: 'waveform'),
             client=SimpleNamespace(address='http://localhost:32400'),
             library=SimpleNamespace(get_active_id=lambda: '2'),

@@ -19,7 +19,7 @@ bind_key() {
     fi
     xfconf-query -c xfce4-keyboard-shortcuts -p "$property" -n -t string \
         -s "$gdbus_path call --session --dest $destination --object-path $object_path --method $interface.$method"
-    echo "Bound $key to Plex Music $method."
+    echo "Bound $key to Apistat $method."
 }
 
 bind_key XF86AudioPlay PlayPause

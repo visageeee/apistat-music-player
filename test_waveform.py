@@ -11,22 +11,30 @@ import gi
 gi.require_version('Gst', '1.0')
 from gi.repository import Gst
 
-from waveform import Waveform, band_energies, spectrum_values, wave_frequency, wave_height
+from waveform import (Waveform, band_energies, spectrum_values, wave_amplitude,
+                      wave_frequency, wave_height, wave_line_width)
 
 
 class WaveformTests(unittest.TestCase):
+    def test_bass_wave_is_heavier_than_treble_wave(self):
+        self.assertGreater(wave_line_width(0), wave_line_width(5))
+        self.assertGreater(wave_line_width(5), 5.2)
+
     def test_layered_waves_respond_to_energy(self):
+        self.assertGreater(wave_frequency(0), 3.0)
         self.assertGreater(wave_frequency(5), wave_frequency(0))
         quiet = wave_height(0.35, 0.2, 1.7, 10, 2)
         loud = wave_height(0.35, 0.2, 1.7, 30, 2)
         self.assertAlmostEqual(loud, quiet * 3)
         self.assertNotEqual(wave_height(0.35, 0.2, 1.7, 30, 2),
                             wave_height(0.35, 0.2, 2.4, 30, 2))
+        self.assertGreater(wave_amplitude(320, 0.6, 2),
+                           wave_amplitude(320, 0.0, 2) * 2)
 
     def test_audio_energy_does_not_change_drift_speed(self):
         def frame(target):
             subject = SimpleNamespace(target=[target] * 6, energy=[0.0] * 6,
-                                      pulse=[0.0] * 6, phase=0.0, last_frame=1.0,
+                                      phase=0.0, last_frame=1.0,
                                       get_mapped=lambda: True, queue_draw=lambda: None)
             with patch('waveform.time.monotonic', return_value=1.05):
                 Waveform.animate(subject)
@@ -34,6 +42,17 @@ class WaveformTests(unittest.TestCase):
         quiet, loud = frame(0.0), frame(1.0)
         self.assertEqual(quiet.phase, loud.phase)
         self.assertGreater(loud.energy[0], quiet.energy[0])
+        self.assertGreater(loud.energy[0], 0.6)
+        self.assertLess(loud.energy[0], 0.8)
+
+    def test_amplitude_falls_smoothly_after_signal_stops(self):
+        subject = SimpleNamespace(target=[0.0] * 6, energy=[1.0] * 6,
+                                  phase=0.0, last_frame=1.0,
+                                  get_mapped=lambda: True, queue_draw=lambda: None)
+        with patch('waveform.time.monotonic', return_value=1.05):
+            Waveform.animate(subject)
+        self.assertGreater(subject.energy[0], 0.5)
+        self.assertLess(subject.energy[0], 1.0)
 
     def test_each_line_uses_its_own_frequency_range(self):
         magnitudes = [-90.0] * 512

@@ -12,6 +12,14 @@ import appearance
 
 
 class AppearanceTests(unittest.TestCase):
+    def test_theme_gradient_black_is_disabled_and_light_is_readable(self):
+        colors = ('#221144', '#334455')
+        self.assertEqual(appearance.theme_gradient_colors(colors, 'dark'), colors)
+        self.assertIsNone(appearance.theme_gradient_colors(colors, 'black'))
+        light = appearance.theme_gradient_colors(colors, 'light')
+        self.assertEqual(len(light), 2)
+        self.assertTrue(all(min(bytes.fromhex(color[1:])) > 190 for color in light))
+
     def test_album_age_uses_days_since_plex_added_timestamp(self):
         added = 1700000000
         self.assertEqual(appearance.added_age_label(added, added + 3600), 'Added today')
@@ -48,6 +56,13 @@ class AppearanceTests(unittest.TestCase):
             path = Path(directory) / 'settings.json'
             with patch.object(appearance, 'SETTINGS_PATH', path):
                 self.assertFalse(appearance.load_gradient_enabled())
+                self.assertEqual(appearance.load_theme(), 'dark')
+                appearance.save_theme('black')
+                self.assertEqual(appearance.load_theme(), 'black')
+                appearance.save_theme('light')
+                self.assertEqual(appearance.load_theme(), 'light')
+                with self.assertRaises(ValueError):
+                    appearance.save_theme('unknown')
                 appearance.save_gradient_enabled(True)
                 self.assertTrue(appearance.load_gradient_enabled())
                 self.assertFalse(appearance.load_album_details_enabled())

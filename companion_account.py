@@ -38,7 +38,7 @@ class PlexAccount:
     @property
     def headers(self):
         return {'Accept': 'application/json', 'X-Plex-Client-Identifier': self.identifier,
-                'X-Plex-Product': 'Plex Music on Linux', 'X-Plex-Version': '1.0.0',
+                'X-Plex-Product': 'Apistat', 'X-Plex-Version': '1.0.0',
                 'X-Plex-Platform': platform.system(), 'X-Plex-Device': 'Linux PC',
                 'X-Plex-Device-Name': self.name,
                 'X-Plex-Model': 'standalone',
@@ -107,7 +107,7 @@ def load_device_token(identifier):
 
 def save_device_token(identifier, token):
     if not Secret.password_store_sync(SCHEMA, {'identifier': identifier},
-                                      Secret.COLLECTION_DEFAULT, 'Plex Music remote control',
+                                      Secret.COLLECTION_DEFAULT, 'Apistat remote control',
                                       token, None):
         raise AccountError('Desktop keyring could not save the device link.')
 

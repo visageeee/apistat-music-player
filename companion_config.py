@@ -26,7 +26,9 @@ def load_config(path=CONFIG_PATH):
         identifier = str(uuid.uuid4())
     name = data.get('name')
     if not isinstance(name, str) or not name.strip() or len(name) > 80:
-        name = 'Plex Music on Linux'
+        name = 'Apistat'
+    elif name == 'Plex Music on Linux':
+        name = 'Apistat'
     result = {'identifier': identifier, 'name': name.strip(),
               'enabled': data.get('enabled') is True}
     if result != data:

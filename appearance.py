@@ -31,6 +31,8 @@ NOW_SIZE_RANGE = (220, 1000)
 DEFAULT_ALBUM_SIZE = 160
 DEFAULT_NOW_SIZE = 360
 DEFAULT_ACCENT_COLOR = '#e7a641'
+THEMES = ('dark', 'black', 'light')
+DEFAULT_SIDEBAR_ORDER = ('now', 'albums', 'library', 'queue', 'settings')
 COLOR_PATTERN = re.compile(r'^#[0-9a-fA-F]{6}$')
 _gradient_executor = ThreadPoolExecutor(max_workers=1)
 
@@ -82,6 +84,7 @@ class DitheredGradient(Gtk.DrawingArea):
     def __init__(self):
         super().__init__()
         self.colors = None
+        self.fallback_color = '#000000'
         self._cache = None
         self._rendering = False
         self._failed_key = None
@@ -94,6 +97,11 @@ class DitheredGradient(Gtk.DrawingArea):
         self._cache = None
         self._failed_key = None
         self.queue_draw()
+
+    def set_fallback_color(self, color):
+        if self.fallback_color != color:
+            self.fallback_color = color
+            self.queue_draw()
 
     def _start_render(self, key):
         self._rendering = True
@@ -119,7 +127,9 @@ class DitheredGradient(Gtk.DrawingArea):
     def draw_gradient(self, _widget, context):
         width = self.get_allocated_width()
         height = self.get_allocated_height()
-        context.set_source_rgb(0, 0, 0)
+        fallback = tuple(int(self.fallback_color[index:index + 2], 16) / 255
+                         for index in (1, 3, 5))
+        context.set_source_rgb(*fallback)
         context.paint()
         if not self.colors or width <= 0 or height <= 0:
             return False
@@ -148,6 +158,53 @@ def _read_settings():
 
 def load_gradient_enabled():
     return _read_settings().get('album_art_gradient') is True
+
+
+def load_theme():
+    theme = _read_settings().get('theme', 'dark')
+    return theme if theme in THEMES else 'dark'
+
+
+def save_theme(theme):
+    if theme not in THEMES:
+        raise ValueError('Invalid theme')
+    settings = _read_settings()
+    settings['theme'] = theme
+    _write_settings(settings)
+
+
+def theme_gradient_colors(colors, theme):
+    if theme == 'black' or colors is None:
+        return None
+    if theme != 'light':
+        return colors
+    return tuple('#' + ''.join(f'{round(int(color[index:index + 2], 16) * 0.22 + 255 * 0.78):02x}'
+                             for index in (1, 3, 5)) for color in colors)
+
+
+def load_timeline_waveform_enabled():
+    return _read_settings().get('waveform_timeline') is True
+
+
+def save_timeline_waveform_enabled(enabled):
+    settings = _read_settings()
+    settings['waveform_timeline'] = bool(enabled)
+    _write_settings(settings)
+
+
+def load_sidebar_order():
+    order = _read_settings().get('sidebar_order')
+    return list(order) if (isinstance(order, list) and len(order) == 5 and
+                           all(isinstance(item, str) for item in order) and
+                           set(order) == set(DEFAULT_SIDEBAR_ORDER)) else list(DEFAULT_SIDEBAR_ORDER)
+
+
+def save_sidebar_order(order):
+    if len(order) != 5 or set(order) != set(DEFAULT_SIDEBAR_ORDER):
+        raise ValueError('Invalid sidebar order')
+    settings = _read_settings()
+    settings['sidebar_order'] = list(order)
+    _write_settings(settings)
 
 
 def load_library_sort_buttons():

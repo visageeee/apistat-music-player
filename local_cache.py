@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 import re
+import struct
 import tempfile
 import time
 from dataclasses import asdict
@@ -12,7 +13,7 @@ from pathlib import Path
 import cairo
 from gi.repository import GLib
 
-from plex_client import Item
+from plex_client import Item, ALBUM_SORT_ARTIST
 
 
 CACHE_ROOT = Path(GLib.get_user_cache_dir()) / 'plex-music-prototype'
@@ -79,6 +80,24 @@ class LocalCache:
         data = json.dumps({'gradient': gradient, 'waveform': waveform}).encode('utf-8')
         _write_bytes(self.palette_path(thumb), data)
 
+    def waveform_path(self, key, duration):
+        return self.root / 'waveforms' / (_hash(key, duration) + '.peaks')
+
+    def read_waveform(self, key, duration):
+        try:
+            data = self.waveform_path(key, duration).read_bytes()
+            if len(data) != 512 * 4:
+                return None
+            peaks = struct.unpack('!512f', data)
+            return list(peaks) if all(0 <= peak <= 1 for peak in peaks) else None
+        except (OSError, ValueError, struct.error):
+            return None
+
+    def save_waveform(self, key, duration, peaks):
+        if len(peaks) != 512 or not all(0 <= peak <= 1 for peak in peaks):
+            raise ValueError('Invalid waveform peaks')
+        _write_bytes(self.waveform_path(key, duration), struct.pack('!512f', *peaks))
+
     def index_path(self, section):
         return self.root / 'index' / (_hash(section) + '.json')
 
@@ -103,14 +122,46 @@ class LocalCache:
                 'albums': [asdict(album) for album in albums]}
         _write_bytes(self.index_path(section), json.dumps(data).encode('utf-8'))
 
+    def album_page_path(self, section, sort):
+        return self.root / 'album-pages' / (_hash(section, sort) + '.json')
+
+    def read_album_page(self, section, sort, max_age=3600):
+        try:
+            data = json.loads(self.album_page_path(section, sort).read_text(encoding='utf-8'))
+            if (data.get('version') != 1 or data.get('section') != section or
+                    data.get('sort') != sort or
+                    time.time() - data.get('built_at', 0) > max_age or
+                    type(data.get('total')) is not int or data['total'] < 0 or
+                    not isinstance(data.get('albums'), list)):
+                return None
+            albums = []
+            for value in data['albums']:
+                if (not isinstance(value, dict) or
+                        not isinstance(value.get('key'), str) or
+                        not value['key'].startswith('/library/metadata/') or
+                        not isinstance(value.get('title'), str)):
+                    return None
+                albums.append(Item(**value))
+            return albums, data['total']
+        except (OSError, ValueError, TypeError, KeyError, AttributeError):
+            return None
+
+    def save_album_page(self, section, sort, albums, total):
+        data = {'version': 1, 'section': section, 'sort': sort,
+                'built_at': int(time.time()), 'total': total,
+                'albums': [asdict(album) for album in albums]}
+        _write_bytes(self.album_page_path(section, sort),
+                     json.dumps(data, separators=(',', ':')).encode('utf-8'))
+
     def song_index_path(self, section, playlist_key=None):
         return self.root / 'songs' / (_hash(section, playlist_key or '') + '.json')
 
-    def read_song_index(self, section, playlist_key=None):
+    def read_song_index(self, section, playlist_key=None, max_age=3600):
         try:
             data = json.loads(self.song_index_path(section, playlist_key).read_text(encoding='utf-8'))
             if (data.get('version') != 3 or data.get('section') != section or
-                    data.get('playlist') != playlist_key):
+                    data.get('playlist') != playlist_key or
+                    time.time() - data.get('built_at', 0) > max_age):
                 return None
             songs = []
             for value in data['songs']:
@@ -142,6 +193,32 @@ def search_albums(albums, query, start=0, page_size=100):
     matching = [album for album in albums if needle in album.title.casefold() or
                 needle in album.artist.casefold()]
     return matching[start:start + page_size], len(matching)
+
+
+def sort_albums(albums, sort):
+    if sort == 'addedAt:desc':
+        return sorted(albums, key=lambda album: (-album.added_at, album.title.casefold()))
+    if sort == 'year:desc':
+        return sorted(albums, key=lambda album: (
+            -(int(album.year) if str(album.year).isdigit() else 0),
+            album.artist.casefold(), album.title.casefold()))
+    if sort == ALBUM_SORT_ARTIST:
+        return sorted(albums, key=lambda album: (album.artist.casefold(), album.title.casefold()))
+    if sort == 'titleSort':
+        return sorted(albums, key=lambda album: (album.title.casefold(), album.artist.casefold()))
+    raise ValueError('Unsupported album sort')
+
+
+def cached_album_page(cache, client, section, sort):
+    page = cache.read_album_page(section, sort)
+    if page is not None:
+        return page
+    page = client.albums(section, sort=sort)
+    try:
+        cache.save_album_page(section, sort, *page)
+    except OSError:
+        pass
+    return page
 
 
 def build_album_index(client, section, valid=lambda: True):

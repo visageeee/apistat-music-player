@@ -24,11 +24,26 @@ class Handler(BaseHTTPRequestHandler):
             '/library/sections/2/all': '<MediaContainer totalSize="151"><Directory key="/library/metadata/10/children" title="Album &amp; More" parentTitle="Artist" year="2026" addedAt="1700000000"/></MediaContainer>',
             '/library/metadata/10/children': '<MediaContainer><Track key="/library/metadata/20" title="Song" index="2" parentIndex="1" duration="125000" grandparentTitle="Artist"/></MediaContainer>',
             '/library/metadata/20': '<MediaContainer><Track><Media><Part key="/library/parts/42/file.flac"/></Media></Track></MediaContainer>',
+            '/library/metadata/20/nearest': ('<MediaContainer>'
+                '<Track key="/library/metadata/21" title="Nearby One" grandparentTitle="Artist" parentTitle="Album" duration="90000"/>'
+                '<Metadata type="track" key="/library/metadata/22" title="Nearby Two"/>'
+                '<Track key="https://other.example/track" title="Invalid"/>'
+                '</MediaContainer>'),
             '/playlists': '<MediaContainer><Playlist key="/playlists/7/items" title="Favorites" playlistType="audio"/></MediaContainer>',
             '/playlists/7/items': '<MediaContainer totalSize="1"><Track key="/library/metadata/20" title="Playlist Song" grandparentTitle="Artist" parentTitle="Album" duration="125000"/></MediaContainer>',
         }
         if path == '/library/sections/2/all' and query.get('type') == ['10']:
             fixtures[path] = '<MediaContainer totalSize="151"><Track key="/library/metadata/20" title="Song" grandparentTitle="Artist" parentTitle="Album" duration="125000" thumb="/art" year="1999" addedAt="1700000000" lastViewedAt="1700000100" viewCount="3" userRating="10" originallyAvailableAt="1999-05-01" parentIndex="2" index="4"><Genre tag="Jazz"/><Mood tag="Calm"/><Label tag="Favorite"/><Media bitrate="320" audioCodec="flac"/></Track></MediaContainer>'
+            if query.get('genre') == ['Jazz']:
+                fixtures[path] = ('<MediaContainer>'
+                    '<Track key="/library/metadata/21" title="Same Artist and Genre" grandparentTitle="Artist"><Genre tag="Jazz"/></Track>'
+                    '<Track key="/library/metadata/22" title="Same Genre" grandparentTitle="Other"><Genre tag="Jazz"/></Track>'
+                    '</MediaContainer>')
+            elif query.get('artist.title') == ['Artist']:
+                fixtures[path] = ('<MediaContainer>'
+                    '<Track key="/library/metadata/21" title="Same Artist and Genre" grandparentTitle="Artist"><Genre tag="Jazz"/></Track>'
+                    '<Track key="/library/metadata/23" title="Same Artist" grandparentTitle="Artist"><Genre tag="Rock"/></Track>'
+                    '</MediaContainer>')
         self.send_response(200)
         self.send_header('Content-Type', 'application/xml')
         self.end_headers()
@@ -78,12 +93,45 @@ class ClientTests(unittest.TestCase):
         self.assertNotIn('test-secret', path)
         self.assertEqual(token, 'test-secret')
 
+    def test_album_sort_is_forwarded_and_invalid_sort_rejected(self):
+        sort = 'artist.titleSort,album.titleSort,album.index,album.id,album.originallyAvailableAt'
+        self.client.albums('2', sort=sort)
+        path, _token = Handler.requests[-1]
+        self.assertEqual(parse_qs(urlsplit(path).query)['sort'],
+                         [sort])
+        with self.assertRaises(ValueError):
+            self.client.albums('2', sort='titleSort:desc&foo=bar')
+
     def test_tracks_and_direct_stream(self):
         album = self.client.albums('2')[0][0]
         track = self.client.tracks(album)[0]
         self.assertEqual(track.duration, 125000)
         self.assertEqual(track.number, '1.2')
         self.assertEqual(self.client.stream(track), self.address + '/library/parts/42/file.flac')
+
+    def test_nearest_tracks_parse_only_local_track_keys(self):
+        seed = Item('/library/metadata/20', 'Seed')
+        nearby = self.client.nearest_tracks(seed, limit=12)
+        self.assertEqual([song.key for song in nearby],
+                         ['/library/metadata/21', '/library/metadata/22'])
+        path, _token = Handler.requests[-1]
+        self.assertEqual(parse_qs(urlsplit(path).query)['limit'], ['12'])
+        with self.assertRaises(ValueError):
+            self.client.nearest_tracks(Item('https://other.example/track', 'Unsafe'))
+        with self.assertRaises(ValueError):
+            self.client.nearest_tracks(seed, limit=101)
+
+    def test_metadata_similarity_uses_plex_genre_and_artist_filters(self):
+        seed = Item('/library/metadata/20', 'Seed', artist='Artist', genre='Jazz')
+        candidates = self.client.metadata_similar_tracks(seed, '2')
+        self.assertEqual([song.key for song in candidates],
+                         ['/library/metadata/21', '/library/metadata/22',
+                          '/library/metadata/23'])
+        request_queries = [parse_qs(urlsplit(path).query) for path, _token in Handler.requests[-2:]]
+        self.assertEqual([query['sort'] for query in request_queries],
+                         [['random'], ['random']])
+        with self.assertRaises(ValueError):
+            self.client.metadata_similar_tracks(seed, '../other')
 
     def test_songs_and_playlists(self):
         songs, total = self.client.songs('2', 100, 'artist.titleSort,titleSort')

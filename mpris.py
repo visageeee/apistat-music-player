@@ -105,7 +105,7 @@ class Mpris:
             values = {
                 'CanQuit': ('b', True), 'CanRaise': ('b', True),
                 'Fullscreen': ('b', False), 'CanSetFullscreen': ('b', False),
-                'HasTrackList': ('b', False), 'Identity': ('s', 'Plex Music'),
+                'HasTrackList': ('b', False), 'Identity': ('s', 'Apistat'),
                 'SupportedUriSchemes': ('as', []),
                 'SupportedMimeTypes': ('as', []),
             }

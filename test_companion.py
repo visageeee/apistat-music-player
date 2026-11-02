@@ -56,10 +56,26 @@ class CompanionTests(unittest.TestCase):
             save_config(first, path)
             self.assertEqual(load_config(path), first)
 
+    def test_default_name_migrates_without_changing_player_identifier(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'companion.json'
+            config = load_config(path)
+            self.assertEqual(config['name'], 'Apistat')
+            identifier = config['identifier']
+            config['name'] = 'Plex Music on Linux'
+            save_config(config, path)
+            migrated = load_config(path)
+            self.assertEqual((migrated['identifier'], migrated['name']),
+                             (identifier, 'Apistat'))
+            config['name'] = 'Living room Linux'
+            save_config(config, path)
+            self.assertEqual(load_config(path)['name'], 'Living room Linux')
+
     def test_gdm_advertises_same_receiver_identity_and_working_capabilities(self):
         message = GDM('stable-player-id', 'Living room', 32500).message('HELLO * HTTP/1.0')
         self.assertIn(b'Resource-Identifier: stable-player-id', message)
         self.assertIn(b'Port: 32500', message)
+        self.assertIn(b'Product: Apistat', message)
         self.assertIn(b'Protocol-Capabilities: timeline,playback', message)
         self.assertNotIn(b'playqueues-creation', message)
 
