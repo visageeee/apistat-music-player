@@ -6,7 +6,7 @@ from pathlib import Path
 root = Path.cwd()
 gst_plugins = [
     'app', 'audioconvert', 'audioresample', 'audioparsers', 'autodetect',
-    'coreelements', 'directsound', 'flac', 'id3demux', 'libav', 'mpg123',
+    'coreelements', 'directsound', 'faad', 'flac', 'id3demux', 'mpg123',
     'ogg', 'playback', 'soup', 'spectrum', 'typefindfunctions', 'volume',
     'vorbis', 'wasapi', 'wavparse',
 ]

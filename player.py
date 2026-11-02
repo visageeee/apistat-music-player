@@ -4482,6 +4482,13 @@ def runtime_self_test():
     required = ('playbin', 'appsink', 'audioconvert', 'audioresample',
                 'spectrum', 'souphttpsrc', 'autoaudiosink')
     missing = [name for name in required if Gst.ElementFactory.find(name) is None]
+    if os.name == 'nt':
+        for decoder in ('flacdec', 'mpg123audiodec', 'faad'):
+            if Gst.ElementFactory.find(decoder) is None:
+                missing.append(decoder)
+        if not any(Gst.ElementFactory.find(name) for name in
+                   ('wasapi2sink', 'wasapisink', 'directsoundsink')):
+            missing.append('Windows audio sink')
     if missing:
         raise RuntimeError('Missing GStreamer elements: ' + ', '.join(missing))
 
