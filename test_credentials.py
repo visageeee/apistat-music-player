@@ -1,24 +1,33 @@
 import unittest
+import os
 from unittest.mock import patch
 
 import credentials
 
 
 class CredentialTests(unittest.TestCase):
-    def test_save_and_restore_connection(self):
+    @unittest.skipIf(os.name == 'nt', 'Secret Service is Linux only')
+    def test_linux_secret_service_backend(self):
         with patch.object(credentials, 'Secret') as secret:
             secret.COLLECTION_DEFAULT = 'default'
             secret.password_store_sync.return_value = True
+            credentials._save_value('test-value')
+            secret.password_lookup_sync.return_value = 'test-value'
+            self.assertEqual(credentials._load_value(), 'test-value')
+
+    def test_save_and_restore_connection(self):
+        with patch.object(credentials, '_save_value') as save, \
+             patch.object(credentials, '_load_value') as load:
             credentials.save_credentials('https://plex.example:32400', 'test-secret')
-            saved = secret.password_store_sync.call_args.args[4]
-            secret.password_lookup_sync.return_value = saved
+            saved = save.call_args.args[0]
+            load.return_value = saved
             self.assertEqual(credentials.load_credentials(),
                              ('https://plex.example:32400', 'test-secret'))
 
     def test_missing_or_invalid_connection(self):
-        with patch.object(credentials, 'Secret') as secret:
+        with patch.object(credentials, '_load_value') as load:
             for value in (None, '', '{}', '{bad json}', '{"address": 5, "token": "x"}'):
-                secret.password_lookup_sync.return_value = value
+                load.return_value = value
                 self.assertIsNone(credentials.load_credentials())
 
 

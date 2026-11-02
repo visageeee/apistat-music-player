@@ -1,10 +1,11 @@
 """Opt-in plex.tv PIN linking and device connection publication.
 
-Only the device token lives in Secret Service. A missing keyring is an error;
-there is deliberately no plaintext token fallback.
+The device token lives in Secret Service on Linux and Credential Manager on
+Windows. There is no plaintext token fallback.
 """
 
 import json
+import os
 import platform
 import re
 import xml.etree.ElementTree as ET
@@ -12,17 +13,26 @@ from urllib.error import HTTPError
 from urllib.parse import quote
 from urllib.request import Request, build_opener
 
-import gi
+if os.name == 'nt':
+    from windows_vault import read_secret, write_secret, delete_secret
+    Secret = None
+else:
+    import gi
 
-gi.require_version('Secret', '1')
-from gi.repository import Secret
+    gi.require_version('Secret', '1')
+    from gi.repository import Secret
 
 from plex_client import NoRedirect
 
 
 PLEX_TV = 'https://plex.tv'
-SCHEMA = Secret.Schema.new('org.plexmusicprototype.companion', Secret.SchemaFlags.NONE,
-                           {'identifier': Secret.SchemaAttributeType.STRING})
+SCHEMA = (Secret.Schema.new('org.plexmusicprototype.companion', Secret.SchemaFlags.NONE,
+                            {'identifier': Secret.SchemaAttributeType.STRING})
+          if Secret is not None else None)
+
+
+def _windows_target(identifier):
+    return f'Apistat/Companion/{identifier}'
 
 
 class AccountError(Exception):
@@ -39,7 +49,8 @@ class PlexAccount:
     def headers(self):
         return {'Accept': 'application/json', 'X-Plex-Client-Identifier': self.identifier,
                 'X-Plex-Product': 'Apistat', 'X-Plex-Version': '1.0.0',
-                'X-Plex-Platform': platform.system(), 'X-Plex-Device': 'Linux PC',
+                'X-Plex-Platform': platform.system(),
+                'X-Plex-Device': 'Windows PC' if os.name == 'nt' else 'Linux PC',
                 'X-Plex-Device-Name': self.name,
                 'X-Plex-Model': 'standalone',
                 'X-Plex-Provides': 'client,player,pubsub-player'}
@@ -102,10 +113,15 @@ class PlexAccount:
 
 
 def load_device_token(identifier):
+    if os.name == 'nt':
+        return read_secret(_windows_target(identifier))
     return Secret.password_lookup_sync(SCHEMA, {'identifier': identifier}, None)
 
 
 def save_device_token(identifier, token):
+    if os.name == 'nt':
+        write_secret(_windows_target(identifier), token)
+        return
     if not Secret.password_store_sync(SCHEMA, {'identifier': identifier},
                                       Secret.COLLECTION_DEFAULT, 'Apistat remote control',
                                       token, None):
@@ -113,4 +129,7 @@ def save_device_token(identifier, token):
 
 
 def clear_device_token(identifier):
+    if os.name == 'nt':
+        delete_secret(_windows_target(identifier))
+        return
     Secret.password_clear_sync(SCHEMA, {'identifier': identifier}, None)

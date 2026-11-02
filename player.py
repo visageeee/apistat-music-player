@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import os
 import random
 import math
 import hmac
@@ -19,7 +20,10 @@ gi.require_version('Gst', '1.0')
 from gi.repository import Gtk, Gst, GLib, GdkPixbuf, Gdk, Pango
 from plex_client import PlexClient, ALBUM_SORT_ARTIST
 from credentials import load_credentials, save_credentials
-from mpris import Mpris
+if os.name != 'nt':
+    from mpris import Mpris
+else:
+    Mpris = None
 from appearance import (ALBUM_SIZE_RANGE, ALBUM_COLUMN_RANGE, NOW_SIZE_RANGE,
                         DitheredGradient, added_age_label, album_cover_size, gradient_colors,
                         load_accent_color, load_album_columns, load_album_details_enabled,
@@ -673,7 +677,7 @@ class Player(Gtk.Window):
             self.refresh_shortcuts()
         if window.get('maximized'):
             self.maximize()
-        self.mpris = Mpris(self) if mpris_enabled else InactiveMpris()
+        self.mpris = Mpris(self) if mpris_enabled and Mpris else InactiveMpris()
         GLib.timeout_add(500, self.tick)
         GLib.timeout_add(33, self.animate_timeline)
         GLib.timeout_add_seconds(3600, self.refresh_album_ages)
@@ -2146,7 +2150,9 @@ class Player(Gtk.Window):
         connection_button = self.button('Change connection…', self.connect_dialog)
         connection_button.set_halign(Gtk.Align.START)
         panel.pack_start(connection_button, False, False, 0)
-        info = Gtk.Label(label='Server login is stored in your desktop keyring after a successful connection.', xalign=0)
+        credential_store = ('Windows Credential Manager' if os.name == 'nt'
+                            else 'your desktop keyring')
+        info = Gtk.Label(label=f'Server login is stored in {credential_store} after a successful connection.', xalign=0)
         info.set_line_wrap(True)
         panel.pack_start(info, False, False, 0)
         panel.pack_start(Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL), False, False, 0)
@@ -2286,7 +2292,10 @@ class Player(Gtk.Window):
         heading = Gtk.Label(label='Global keyboard shortcuts', xalign=0)
         heading.set_name('now-title')
         shortcut_page.pack_start(heading, False, False, 0)
-        description = Gtk.Label(label='These Xfce shortcuts control Apistat while it is running.', xalign=0)
+        description = Gtk.Label(label=(
+            'Global shortcut editing is currently available on Xfce/Linux. '
+            'The window shortcuts still work on Windows.' if os.name == 'nt' else
+            'These Xfce shortcuts control Apistat while it is running.'), xalign=0)
         description.set_line_wrap(True)
         shortcut_page.pack_start(description, False, False, 0)
         rows = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
@@ -2327,7 +2336,9 @@ class Player(Gtk.Window):
 
     def refresh_shortcuts(self):
         if not shortcuts.available():
-            self.shortcut_status.set_text('Shortcut editing requires an Xfce desktop with xfconf-query and gdbus.')
+            self.shortcut_status.set_text(
+                'Global shortcut editing is unavailable on Windows.' if os.name == 'nt' else
+                'Shortcut editing requires an Xfce desktop with xfconf-query and gdbus.')
             for current, set_button, clear_button in self.shortcut_rows.values():
                 current.set_text('Unavailable')
                 set_button.set_sensitive(False)
@@ -3635,7 +3646,8 @@ class Player(Gtk.Window):
         if current:
             address.set_text(current[0])
         box.pack_start(address, False, False, 0)
-        box.pack_start(Gtk.Label(label='X-Plex-Token (saved in desktop keyring)', xalign=0), False, False, 0)
+        token_store = 'Windows Credential Manager' if os.name == 'nt' else 'desktop keyring'
+        box.pack_start(Gtk.Label(label=f'X-Plex-Token (saved in {token_store})', xalign=0), False, False, 0)
         token = Gtk.Entry(visibility=False, input_purpose=Gtk.InputPurpose.PASSWORD)
         if current:
             token.set_text(current[1])
@@ -4465,6 +4477,19 @@ class Player(Gtk.Window):
         Gtk.main_quit()
 
 
+def runtime_self_test():
+    """Check bundled GTK/GStreamer imports and the media elements used by playback."""
+    required = ('playbin', 'appsink', 'audioconvert', 'audioresample',
+                'spectrum', 'souphttpsrc', 'autoaudiosink')
+    missing = [name for name in required if Gst.ElementFactory.find(name) is None]
+    if missing:
+        raise RuntimeError('Missing GStreamer elements: ' + ', '.join(missing))
+
+
 if __name__ == '__main__':
-    Player(mpris_enabled=True)
-    Gtk.main()
+    import sys
+    if '--self-test' in sys.argv:
+        runtime_self_test()
+    else:
+        Player(mpris_enabled=os.name != 'nt')
+        Gtk.main()

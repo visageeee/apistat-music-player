@@ -1,21 +1,42 @@
-"""Store the Plex connection in the desktop Secret Service keyring."""
+"""Store the Plex connection in the operating system's credential vault."""
 
 import json
+import os
 
-import gi
+if os.name == 'nt':
+    from windows_vault import read_secret, write_secret
+    Secret = None
+else:
+    import gi
 
-gi.require_version('Secret', '1')
-from gi.repository import Secret
+    gi.require_version('Secret', '1')
+    from gi.repository import Secret
 
 
-SCHEMA = Secret.Schema.new('org.plexmusicprototype.connection',
-                           Secret.SchemaFlags.NONE,
-                           {'application': Secret.SchemaAttributeType.STRING})
+SCHEMA = (Secret.Schema.new('org.plexmusicprototype.connection',
+                            Secret.SchemaFlags.NONE,
+                            {'application': Secret.SchemaAttributeType.STRING})
+          if Secret is not None else None)
 ATTRIBUTES = {'application': 'plex-music-prototype'}
+WINDOWS_TARGET = 'Apistat/PlexServer'
+
+
+def _load_value():
+    if os.name == 'nt':
+        return read_secret(WINDOWS_TARGET)
+    return Secret.password_lookup_sync(SCHEMA, ATTRIBUTES, None)
+
+
+def _save_value(value):
+    if os.name == 'nt':
+        write_secret(WINDOWS_TARGET, value)
+    elif not Secret.password_store_sync(SCHEMA, ATTRIBUTES, Secret.COLLECTION_DEFAULT,
+                                        'Apistat server', value, None):
+        raise RuntimeError('Could not save the connection in the desktop keyring.')
 
 
 def load_credentials():
-    value = Secret.password_lookup_sync(SCHEMA, ATTRIBUTES, None)
+    value = _load_value()
     if not value:
         return None
     try:
@@ -30,6 +51,4 @@ def load_credentials():
 
 def save_credentials(address, token):
     value = json.dumps({'address': address, 'token': token})
-    if not Secret.password_store_sync(SCHEMA, ATTRIBUTES, Secret.COLLECTION_DEFAULT,
-                                      'Apistat server', value, None):
-        raise RuntimeError('Could not save the connection in the desktop keyring.')
+    _save_value(value)
