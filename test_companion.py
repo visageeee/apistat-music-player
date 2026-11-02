@@ -1,4 +1,5 @@
 import tempfile
+import os
 import threading
 import unittest
 import xml.etree.ElementTree as ET
@@ -10,7 +11,7 @@ from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
 from companion import (CompanionReceiver, GDM, ProtocolError, load_media, parse_command,
-                       timeline_xml)
+                       same_lan_peer, local_ip, timeline_xml)
 from companion_account import PlexAccount
 from companion_config import load_config, save_config
 from plex_client import PlexClient
@@ -45,6 +46,14 @@ class FakePlex:
 
 
 class CompanionTests(unittest.TestCase):
+    @unittest.skipUnless(os.name == 'nt', 'Windows interface lookup test')
+    def test_windows_lan_lookup_uses_active_interface_mask(self):
+        address = local_ip()
+        if address.startswith('127.'):
+            self.skipTest('No active LAN interface on this runner')
+        self.assertTrue(same_lan_peer(address))
+        self.assertFalse(same_lan_peer('8.8.8.8'))
+
     def test_identity_is_stable_and_remote_starts_disabled(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / 'companion.json'

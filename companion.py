@@ -5,7 +5,7 @@ Plex server. No controller-provided URL or token is used to fetch media.
 """
 
 import ipaddress
-import fcntl
+import os
 import re
 import socket
 import struct
@@ -18,6 +18,11 @@ from urllib.parse import parse_qs, urlsplit
 from urllib.request import Request, build_opener
 
 from plex_client import NoRedirect, PlexClient
+
+if os.name == 'nt':
+    import psutil
+else:
+    import fcntl
 
 
 CAPABILITIES = 'timeline,playback'
@@ -217,6 +222,19 @@ def same_lan_peer(address):
     if peer.is_loopback:
         return True
     if not isinstance(peer, ipaddress.IPv4Address) or published.is_loopback:
+        return False
+    if os.name == 'nt':
+        for addresses in psutil.net_if_addrs().values():
+            for entry in addresses:
+                if entry.family != socket.AF_INET or not entry.netmask:
+                    continue
+                try:
+                    if ipaddress.ip_address(entry.address) == published:
+                        network = ipaddress.ip_network(
+                            f'{entry.address}/{entry.netmask}', strict=False)
+                        return peer in network
+                except ValueError:
+                    continue
         return False
     try:
         interfaces = socket.if_nameindex()
