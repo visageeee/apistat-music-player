@@ -78,6 +78,11 @@ def load_session():
     for name in ('server', 'section', 'playlist', 'art_mode'):
         if isinstance(data.get(name), str):
             result[name] = data[name]
+    history = data.get('history')
+    if isinstance(history, list) and len(history) <= 5:
+        tracks = [item_from_data(item) for item in history]
+        if all(tracks):
+            result['history'] = tracks
     sort = data.get('song_sort')
     if isinstance(sort, str) and sort in SORTS:
         result['song_sort'] = sort

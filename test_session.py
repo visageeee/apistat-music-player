@@ -33,6 +33,7 @@ class SessionTests(unittest.TestCase):
             'window': {'width': 1440, 'height': 900, 'maximized': True},
             'panel': 'now', 'settings_page': 'shortcuts', 'settings_tab': 3,
             'server': 'http://localhost:32400', 'section': '3',
+            'history': [session.item_to_data(track)],
             'playback': {'queue': [session.item_to_data(track)], 'index': 0,
                          'position_ms': 42500, 'album': session.item_to_data(album),
                          'shuffle': True, 'repeat': False},
@@ -48,6 +49,7 @@ class SessionTests(unittest.TestCase):
         self.assertEqual(restored['playback']['queue'], [track])
         self.assertEqual(restored['playback']['album'], album)
         self.assertEqual(restored['playback']['position_ms'], 42500)
+        self.assertEqual(restored['history'], [track])
 
     def test_invalid_saved_queue_does_not_break_window_restore(self):
         data = {'version': 1, 'window': {'width': 1200, 'height': 750},

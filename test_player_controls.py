@@ -1,5 +1,5 @@
 import unittest
-from collections import OrderedDict
+from collections import OrderedDict, deque
 import weakref
 import threading
 from types import SimpleNamespace
@@ -14,9 +14,51 @@ from gi.repository import Gdk, Gst, Gtk
 from player import Player
 import appearance
 from plex_client import Item
+from test_smart_playlists import definition as smart_definition
 
 
 class PlayerControlTests(unittest.TestCase):
+    def test_queue_shows_five_prior_tracks_in_dim_text_before_current(self):
+        history = deque((Item(f'/library/metadata/{index}', f'Played {index}')
+                         for index in range(6)), maxlen=5)
+        queue = [Item('/library/metadata/20', 'Older queue item'),
+                 Item('/library/metadata/21', 'Current'),
+                 Item('/library/metadata/22', 'Next')]
+        store = Gtk.ListStore(int, str, str, str, str, str, str, str, str, bool, str)
+        labels = []
+        player = SimpleNamespace(
+            queue_store=store, play_history=history, queue=queue, index=1,
+            theme='dark', stream_open=True, remote_opening=False,
+            content_views=SimpleNamespace(get_visible_child_name=lambda: 'queue'),
+            queue_count=SimpleNamespace(set_text=labels.append))
+        Player.refresh_queue_view(player)
+        rows = list(store)
+        self.assertEqual(len(rows), 7)
+        self.assertEqual([row[2] for row in rows[:5]],
+                         [f'Played {index}' for index in range(1, 6)])
+        self.assertTrue(all(row[9] and row[10] == '#7a7a7a' for row in rows[:5]))
+        self.assertEqual([row[2] for row in rows[5:]], ['Current', 'Next'])
+        self.assertIn('5 previously played', labels[-1])
+
+    def test_smart_playlist_filters_catalog_before_library_display(self):
+        client = object()
+        songs = [Item('/library/metadata/1', 'Blue', genre='Jazz', user_rating=10),
+                 Item('/library/metadata/2', 'Other', genre='Jazz', user_rating=0),
+                 Item('/library/metadata/3', 'Rock', genre='Rock', user_rating=10)]
+        shown = []
+        player = SimpleNamespace(
+            client=client, library=SimpleNamespace(get_active_id=lambda: 'music'),
+            active_playlist=None, active_smart_playlist=smart_definition(checked_only=True),
+            library_album_filter=None, library_search=SimpleNamespace(get_text=lambda: ''),
+            song_generation=0, song_store=object(),
+            song_view=SimpleNamespace(set_model=lambda _model: None),
+            song_view_cache=OrderedDict(), song_view_key=None,
+            song_catalog_source=(client, 'music', None, None), song_catalog=songs,
+            effective_library_sort=lambda: None,
+            display_song_page=lambda results, *_args: shown.extend(results))
+        Player.load_songs(player)
+        self.assertEqual([song.key for song in shown], ['/library/metadata/1'])
+
     def test_theme_styles_parse_and_cover_selection_and_hover_states(self):
         for theme in ('black', 'light'):
             provider = Gtk.CssProvider()
@@ -26,9 +68,9 @@ class PlayerControlTests(unittest.TestCase):
             Player.apply_theme(SimpleNamespace(theme=theme, theme_provider=provider))
             self.assertEqual(errors, [])
             css = provider.to_string()
-            for selector in ('#song-view:selected.view', '#queue-view:selected.view',
-                             '#album-track-view:selected.view'):
-                self.assertIn(selector, css)
+            for selector in ('#song-view', '#queue-view', '#album-track-view'):
+                self.assertTrue(f'{selector}:selected.view' in css or
+                                f'{selector}.view:selected' in css)
         self.assertIn('#album-sort-bar button:hover', css)
         self.assertIn('#song-view header button:hover', css)
         self.assertIn('#settings-tabs header tab:hover', css)

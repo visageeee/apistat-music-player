@@ -247,6 +247,10 @@ def load_title_bar_hidden():
     return _read_settings().get('hide_title_bar') is True
 
 
+def load_window_buttons_enabled():
+    return _read_settings().get('compact_window_buttons') is True
+
+
 def load_text_size():
     size = _read_settings().get('text_size')
     return size if type(size) is int and 10 <= size <= 24 else 14
@@ -397,6 +401,12 @@ def save_search_index_enabled(enabled):
 def save_title_bar_hidden(hidden):
     settings = _read_settings()
     settings['hide_title_bar'] = bool(hidden)
+    _write_settings(settings)
+
+
+def save_window_buttons_enabled(enabled):
+    settings = _read_settings()
+    settings['compact_window_buttons'] = bool(enabled)
     _write_settings(settings)
 
 

@@ -8,6 +8,7 @@ import hashlib
 import threading
 import time
 import weakref
+from collections import deque
 from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import Future
@@ -38,16 +39,18 @@ from appearance import (ALBUM_SIZE_RANGE, ALBUM_COLUMN_RANGE, NOW_SIZE_RANGE,
                         theme_gradient_colors,
                         load_timeline_waveform_enabled, save_timeline_waveform_enabled,
                         load_single_flip_enabled,
-                        load_text_size, load_title_bar_hidden,
+                        load_text_size, load_title_bar_hidden, load_window_buttons_enabled,
                         save_accent_color, save_album_columns, save_album_details_enabled,
                         save_art_accent_enabled, save_custom_font, save_tooltips_hidden,
                         save_gradient_enabled, save_now_art_size,
                         save_search_index_enabled,
                         save_single_flip_enabled, save_text_size,
-                        save_title_bar_hidden, waveform_colors)
+                        save_title_bar_hidden, save_window_buttons_enabled, waveform_colors)
 from local_cache import (LocalCache, build_album_index, cached_album_page,
                          search_albums, sort_albums)
 from library_catalog import build_song_catalog, filter_sort_songs
+from smart_playlists import apply_definition, load_for_scope, save_for_scope
+from smart_playlist_dialog import SmartPlaylistDialog
 from play_queue import (insert_items, move_items, remove_items,
                         select_similar_tracks)
 from drag_payload import encode_track_keys, decode_track_keys
@@ -107,6 +110,7 @@ class Player(Gtk.Window):
         self.normal_size = (window.get('width', 1080), window.get('height', 720))
         self.set_default_size(*self.normal_size)
         self.hide_title_bar = load_title_bar_hidden()
+        self.window_buttons_enabled = load_window_buttons_enabled()
         self.set_decorated(not self.hide_title_bar)
         self.connect('size-allocate', self.window_allocated)
         self.client = None
@@ -147,6 +151,10 @@ class Player(Gtk.Window):
         self.albums = []
         self.tracks = []
         self.queue = []
+        self.play_history = deque(maxlen=5)
+        self.current_played_track = None
+        self.smart_playlists = []
+        self.active_smart_playlist = None
         self.index = -1
         self.generation = 0
         self.album_generation = 0
@@ -227,9 +235,10 @@ class Player(Gtk.Window):
             #album-grid button:hover { background: rgba(255, 255, 255, 0.12); }
             #album-results-back, #album-results-back:hover { background: transparent;
                 border: 0; box-shadow: none; }
-            #album-sort-bar { background: rgba(12, 12, 12, 0.48); min-height: 28px; }
+            #album-sort-bar { background: transparent; min-height: 28px; }
             #album-sort-bar button { background: rgba(0, 0, 0, 0.32); border: 0;
                 border-radius: 0; box-shadow: none; color: #c8c8c8; padding: 3px 10px; }
+            #album-sort-bar #album-search-button { margin: 2px 12px 2px 0; padding: 2px 7px; }
             #album-sort-bar button.sort-divider { border-right: 1px solid rgba(255, 255, 255, 0.18); }
             #album-sort-bar button:hover { background: rgba(255, 255, 255, 0.12); }
             #album-sort-bar button.active { color: #fff; font-weight: bold; }
@@ -253,6 +262,11 @@ class Player(Gtk.Window):
             #album-track-number { font-weight: bold; }
             #bar-track-title { font-weight: bold; }
             #bar-track-artist { color: #bbb; }
+            #window-controls button { background: rgba(20, 20, 20, 0.55); border: 0;
+                border-radius: 0; box-shadow: none; min-width: 22px; min-height: 22px;
+                padding: 2px; }
+            #window-controls button:hover { background: rgba(100, 100, 100, 0.5); }
+            #window-controls button.close:hover { background: #b83d46; }
             #border-timeline { margin: 0; padding: 0 0 16px 0; min-height: 24px; }
             #border-timeline trough { background: #383838; border: 0;
                 border-radius: 0; min-height: 8px; }
@@ -274,11 +288,12 @@ class Player(Gtk.Window):
             #library-split { background: #181818; border: 0; box-shadow: none; }
             #library-split separator { background: #181818; border: 0;
                 box-shadow: none; min-width: 14px; }
-            #playlist-panel { background: #181818; border: 0; }
+            #playlist-panel, #smart-playlist-panel { background: #181818; border: 0; }
             #playlist-scroll, #playlist-scroll viewport, #playlist-list,
+            #smart-playlist-scroll, #smart-playlist-scroll viewport, #smart-playlist-list,
             #song-scroll, #song-scroll viewport, #song-view {
                 background: #111; border: 0; box-shadow: none; }
-            #playlist-panel row, #song-panel row { color: #eee; }
+            #playlist-panel row, #smart-playlist-panel row, #song-panel row { color: #eee; }
             #settings-panel, #settings-tabs, #settings-tabs scrolledwindow,
             #settings-tabs viewport, #settings-tabs header { background: #181818; }
             #song-panel { background: #181818; border: 0; }
@@ -413,11 +428,32 @@ class Player(Gtk.Window):
         self.busy_spinner.set_halign(Gtk.Align.END)
         self.busy_spinner.set_valign(Gtk.Align.START)
         self.busy_spinner.set_margin_top(12)
-        self.busy_spinner.set_margin_end(14)
+        self.busy_spinner.set_margin_end(90 if self.window_buttons_enabled and self.hide_title_bar
+                                        else 14)
         self.busy_spinner.set_no_show_all(True)
         self.content_overlay.add_overlay(self.busy_spinner)
         self.busy = BusyIndicator(self.busy_spinner)
         self.busy.begin()
+        self.window_controls = Gtk.Box(spacing=0)
+        self.window_controls.set_name('window-controls')
+        self.window_controls.set_halign(Gtk.Align.END)
+        self.window_controls.set_valign(Gtk.Align.START)
+        self.window_controls.set_margin_top(4)
+        self.window_controls.set_margin_end(4)
+        self.window_controls.set_no_show_all(True)
+        for icon, label, callback in (
+                ('window-minimize-symbolic', 'Minimize', lambda *_: self.iconify()),
+                ('window-maximize-symbolic', 'Maximize', self.toggle_window_maximize),
+                ('window-close-symbolic', 'Close', lambda *_: self.destroy())):
+            button = self.icon_button(icon, label, callback)
+            if label == 'Maximize':
+                self.maximize_button = button
+            if label == 'Close':
+                button.get_style_context().add_class('close')
+            button.get_image().set_pixel_size(13)
+            self.window_controls.pack_start(button, False, False, 0)
+        self.content_overlay.add_overlay(self.window_controls)
+        self.connect('window-state-event', self.window_state_changed)
         self.buffering_busy = False
         self.album_panel = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
         self.content_views.add_named(self.album_panel, 'albums')
@@ -455,6 +491,10 @@ class Player(Gtk.Window):
             sort_buttons.pack_start(button, False, False, 0)
             self.album_sort_buttons[sort] = button
         sort_bar.set_center_widget(sort_buttons)
+        self.search_button = self.icon_button('system-search-symbolic', 'Search albums',
+                                              self.toggle_album_search)
+        self.search_button.set_name('album-search-button')
+        sort_bar.pack_end(self.search_button, False, False, 0)
         self.album_sort_bar = sort_bar
         self.update_album_sort_buttons()
         self.artist_filter_bar = Gtk.Box(spacing=10)
@@ -654,14 +694,12 @@ class Player(Gtk.Window):
         self.pipeline.set_property('volume', 0.8)
         volume.connect('value-changed', self.volume_changed)
         utilities.pack_start(volume, False, False, 0)
-        self.search_button = self.icon_button('system-search-symbolic', 'Search albums',
-                                              self.toggle_album_search)
-        utilities.pack_start(self.search_button, False, False, 0)
         self.status = Gtk.Label(label='Connect to your Plex server')
         self.status.connect('notify::label', self.status_changed)
         self.status_changed()
         self.apply_theme()
         self.show_all()
+        self.update_window_controls()
         self.timeline_stack.set_visible_child_name(
             'waveform' if self.timeline_waveform_enabled else 'line')
         self.content_views.set_sensitive(False)
@@ -746,6 +784,7 @@ class Player(Gtk.Window):
             #player-bar button:checked image, #side-nav button.active image {{ color: {color}; }}
             #side-nav button.active, #song-panel button:checked,
             #song-panel treeview.view:selected, #queue-view:selected {{ background: {wash}; }}
+            #smart-playlist-list row:selected {{ background: {wash}; }}
             #side-nav button.queue-pulse image {{ color: {color}; }}
             #song-panel button:checked {{ border-bottom: 2px solid {color}; }}
             #album-card-back button.playing-track {{ background: {wash}; }}
@@ -757,23 +796,26 @@ class Player(Gtk.Window):
         if self.theme == 'black':
             css = '''
                 #plex-player, #side-nav, #player-bar, #library-split,
-                #library-split separator, #playlist-panel, #song-panel,
+                #library-split separator, #playlist-panel, #smart-playlist-panel, #song-panel,
                 #playlist-scroll, #playlist-scroll viewport, #playlist-list,
+                #smart-playlist-scroll, #smart-playlist-scroll viewport, #smart-playlist-list,
                 #song-scroll, #song-scroll viewport, #song-view,
                 #settings-panel, #queue-panel, #queue-scroll, #queue-view,
-                #startup-loading, #album-sort-bar, #album-sort-bar button,
+                #startup-loading, #album-sort-bar button,
                 #settings-tabs, #settings-tabs scrolledwindow, #settings-tabs viewport,
                 #settings-tabs header, #plex-player entry,
                 #plex-player notebook, #plex-player notebook header {
                     background: #000; }
-                #playlist-list row, #playlist-list row:hover { background: #000; }
+                #playlist-list row, #playlist-list row:hover,
+                #smart-playlist-list row, #smart-playlist-list row:hover { background: #000; }
                 #album-grid button:hover { background: #000; }
                 #song-view.view:selected, #queue-view.view:selected,
                 #album-track-view.view:selected { background: #303030; color: #fff; }
+                #smart-playlist-list row:selected { background: #303030; color: #fff; }
             '''
         elif self.theme == 'light':
             css = '''
-                #plex-player, #settings-panel, #playlist-panel, #song-panel,
+                #plex-player, #settings-panel, #playlist-panel, #smart-playlist-panel, #song-panel,
                 #startup-loading,
                 #library-split, #library-split separator { background: #f5f5f3; color: #202326; }
                 #plex-player label, #album-grid #album-title, #album-grid #album-meta,
@@ -781,15 +823,18 @@ class Player(Gtk.Window):
                 #side-nav, #player-bar { background: #e9e9e6; color: #202326; }
                 #side-nav image, #player-bar image { color: #202326; }
                 #playlist-scroll, #playlist-scroll viewport, #playlist-list,
+                #smart-playlist-scroll, #smart-playlist-scroll viewport, #smart-playlist-list,
                 #song-scroll, #song-scroll viewport, #song-view,
                 #queue-scroll, #queue-scroll viewport, #queue-view {
                     background: #fff; color: #202326; }
                 #queue-panel { background: transparent; }
-                #album-sort-bar { background: rgba(245, 245, 243, 0.88); }
+                #album-sort-bar { background: transparent; }
                 #album-sort-bar button { background: #e2e2de; color: #202326; }
                 #album-sort-bar button.sort-divider { border-right-color: #c6c6c1; }
                 #album-sort-bar button:hover { background: #cecec9; }
                 #album-sort-bar button.active { color: #101010; }
+                #window-controls button { background: rgba(225, 225, 220, 0.8);
+                    color: #202326; }
                 #song-view header button, #queue-view header button {
                     background: #e9e9e6; color: #202326; border-color: #c6c6c1; }
                 #song-view header button:hover, #queue-view header button:hover {
@@ -808,6 +853,7 @@ class Player(Gtk.Window):
                 #album-grid button:hover { background: rgba(0, 0, 0, 0.08); }
                 #song-view.view:selected, #queue-view.view:selected,
                 #album-track-view.view:selected { background: #c6d9ed; color: #172638; }
+                #smart-playlist-list row:selected { background: #c6d9ed; color: #172638; }
             '''
         else:
             css = ''
@@ -829,6 +875,8 @@ class Player(Gtk.Window):
             self.render_gradient()
         if hasattr(self, 'song_view'):
             self.song_view.queue_draw()
+        if hasattr(self, 'queue_store'):
+            self.refresh_queue_view()
 
     def background_drag_pressed(self, _widget, event):
         if event.button == 1 and self.can_drag_window_from(Gtk.get_event_widget(event)):
@@ -1983,6 +2031,28 @@ class Player(Gtk.Window):
         split = Gtk.Paned(orientation=Gtk.Orientation.HORIZONTAL)
         split.set_name('library-split')
         split.set_position(225)
+        sidebar_panels = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+        smart_panel = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8, margin=12)
+        smart_panel.set_name('smart-playlist-panel')
+        smart_header = Gtk.Box(spacing=4)
+        smart_header.pack_start(Gtk.Label(label='SMART PLAYLISTS', xalign=0), True, True, 0)
+        self.new_smart_playlist_button = Gtk.Button.new_from_icon_name(
+            'list-add-symbolic', Gtk.IconSize.BUTTON)
+        self.set_tooltip(self.new_smart_playlist_button, 'Create a local smart playlist')
+        self.new_smart_playlist_button.get_accessible().set_name('Create smart playlist')
+        self.new_smart_playlist_button.connect('clicked', self.create_smart_playlist_dialog)
+        smart_header.pack_end(self.new_smart_playlist_button, False, False, 0)
+        smart_panel.pack_start(smart_header, False, False, 0)
+        self.smart_playlist_list = Gtk.ListBox()
+        self.smart_playlist_list.set_name('smart-playlist-list')
+        self.smart_playlist_list.set_selection_mode(Gtk.SelectionMode.SINGLE)
+        self.smart_playlist_list.connect('row-selected', self.select_smart_playlist)
+        smart_scroll = self.scroll(self.smart_playlist_list)
+        smart_scroll.set_name('smart-playlist-scroll')
+        smart_scroll.set_shadow_type(Gtk.ShadowType.NONE)
+        smart_scroll.set_size_request(-1, 140)
+        smart_panel.pack_start(smart_scroll, True, True, 0)
+        sidebar_panels.pack_start(smart_panel, False, False, 0)
         playlists = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8, margin=12)
         playlists.set_name('playlist-panel')
         playlists.set_size_request(170, -1)
@@ -2003,7 +2073,8 @@ class Player(Gtk.Window):
         playlist_scroll.set_shadow_type(Gtk.ShadowType.NONE)
         playlists.pack_start(playlist_scroll, True, True, 0)
         self.all_songs_row = self.playlist_row('All songs', None)
-        split.pack1(playlists, False, False)
+        sidebar_panels.pack_start(playlists, True, True, 0)
+        split.pack1(sidebar_panels, False, False)
 
         songs_panel = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10, margin=16)
         songs_panel.set_name('song-panel')
@@ -2067,6 +2138,7 @@ class Player(Gtk.Window):
         self.content_views.add_named(split, 'library')
         self.playlists = []
         self.active_playlist = None
+        self.active_smart_playlist = None
         self.playlist_restore_key = None
         self.songs = []
         self.song_total = 0
@@ -2088,16 +2160,22 @@ class Player(Gtk.Window):
         self.queue_count = Gtk.Label(label='No tracks queued', xalign=0)
         self.queue_count.set_margin_start(20)
         panel.pack_start(self.queue_count, False, False, 0)
-        self.queue_store = Gtk.ListStore(int, str, str, str, str, str, str, str, str)
+        self.queue_store = Gtk.ListStore(int, str, str, str, str, str, str, str, str,
+                                         bool, str)
         self.queue_view = Gtk.TreeView(model=self.queue_store)
         self.queue_view.set_name('queue-view')
         self.queue_view.set_headers_visible(True)
         self.queue_view.get_selection().set_mode(Gtk.SelectionMode.MULTIPLE)
+        self.queue_view.get_selection().set_select_function(
+            lambda _selection, model, path, _selected, _data: model[path][0] >= 0)
         columns = (('#', 1, 55), ('Track', 2, 260), ('Artist', 3, 180),
                    ('Album', 4, 210), ('Time', 5, 75), ('Year', 6, 70),
                    ('Genre', 7, 150), ('Added', 8, 105))
         for label, column_index, width in columns:
-            column = Gtk.TreeViewColumn(label, Gtk.CellRendererText(), text=column_index)
+            renderer = Gtk.CellRendererText()
+            column = Gtk.TreeViewColumn(label, renderer, text=column_index)
+            column.add_attribute(renderer, 'foreground-set', 9)
+            column.add_attribute(renderer, 'foreground', 10)
             column.set_expand(label == 'Track')
             column.set_resizable(True)
             column.set_sizing(Gtk.TreeViewColumnSizing.FIXED)
@@ -2135,20 +2213,44 @@ class Player(Gtk.Window):
                 self.content_views.get_visible_child_name() != 'queue'):
             return
         self.queue_store.clear()
-        for index, track in enumerate(self.queue):
+        history_color = '#7a7a7a' if self.theme == 'dark' else (
+            '#666666' if self.theme == 'black' else '#777b80')
+        for history_index, track in enumerate(self.play_history):
+            added = time.strftime('%Y-%m-%d', time.localtime(track.added_at)) if track.added_at else ''
+            self.queue_store.append([-history_index - 1, '↶', track.title, track.artist,
+                                     track.album, clock(track.duration / 1000) if track.duration else '',
+                                     str(track.year), track.genre, added, True, history_color])
+        first = max(0, self.index)
+        for index in range(first, len(self.queue)):
+            track = self.queue[index]
             marker = ('▶' if index == self.index and
                       (self.stream_open or self.remote_opening) else str(index + 1))
             added = time.strftime('%Y-%m-%d', time.localtime(track.added_at)) if track.added_at else ''
             self.queue_store.append([index, marker, track.title, track.artist,
                                      track.album, clock(track.duration / 1000) if track.duration else '',
-                                     str(track.year), track.genre, added])
+                                     str(track.year), track.genre, added, False, ''])
         remaining = max(0, len(self.queue) - max(0, self.index + 1))
-        self.queue_count.set_text(f'{remaining} upcoming · Drag tracks to rearrange'
-                                  if self.queue else 'No tracks queued')
+        self.queue_count.set_text(
+            f'{len(self.play_history)} previously played · {remaining} upcoming · Drag tracks to rearrange'
+            if self.queue or self.play_history else 'No tracks queued')
 
     def activate_queue_track(self, _view, path, _column):
-        index = path.get_indices()[0]
-        self.play_queue_track(index)
+        index = self.queue_store[path][0]
+        if index < 0:
+            self.play_history_track(-index - 1)
+        else:
+            self.play_queue_track(index)
+
+    def play_history_track(self, history_index):
+        history = list(self.play_history)
+        if not 0 <= history_index < len(history):
+            return
+        if not self.queue or not (self.stream_open or self.remote_opening):
+            self.enqueue_tracks([history[history_index]], play_next=True)
+            return
+        self.enqueue_tracks([history[history_index]], play_next=True)
+        self.index += 1
+        self.start_track()
 
     def play_queue_track(self, index):
         if 0 <= index < len(self.queue):
@@ -2163,6 +2265,15 @@ class Player(Gtk.Window):
             return False
         path = hit[0]
         index = self.queue_store[path][0]
+        if index < 0:
+            history_index = -index - 1
+            history = list(self.play_history)
+            if history_index < len(history):
+                track = history[history_index]
+                self.show_song_context_menu(event, track, None,
+                                            lambda: self.play_history_track(history_index))
+                return True
+            return False
         if not 0 <= index < len(self.queue):
             return False
         selection = view.get_selection()
@@ -2175,7 +2286,7 @@ class Player(Gtk.Window):
 
     def selected_queue_indices(self):
         model, paths = self.queue_view.get_selection().get_selected_rows()
-        return [model[path][0] for path in paths]
+        return [model[path][0] for path in paths if model[path][0] >= 0]
 
     def queue_drag_data_get(self, _view, _context, selection, info, _time):
         indices = self.selected_queue_indices()
@@ -2199,7 +2310,7 @@ class Player(Gtk.Window):
                 hit = self.queue_view.get_dest_row_at_pos(x, y)
                 if hit and hit[0] is not None:
                     path, position = hit
-                    destination = self.queue_store[path][0]
+                    destination = max(0, self.queue_store[path][0])
                     if position in (Gtk.TreeViewDropPosition.AFTER,
                                     Gtk.TreeViewDropPosition.INTO_OR_AFTER):
                         destination += 1
@@ -2370,6 +2481,11 @@ class Player(Gtk.Window):
         self.title_bar_toggle.set_active(self.hide_title_bar)
         self.title_bar_toggle.connect('toggled', self.title_bar_changed)
         panel.pack_start(self.title_bar_toggle, False, False, 0)
+        self.window_buttons_toggle = Gtk.CheckButton(
+            label='Show small window buttons when the title bar is hidden')
+        self.window_buttons_toggle.set_active(self.window_buttons_enabled)
+        self.window_buttons_toggle.connect('toggled', self.window_buttons_changed)
+        panel.pack_start(self.window_buttons_toggle, False, False, 0)
         panel.pack_start(Gtk.Label(label='Text size', xalign=0), False, False, 0)
         self.text_size_scale = Gtk.Scale.new_with_range(Gtk.Orientation.HORIZONTAL, 10, 24, 1)
         self.text_size_scale.set_value(self.text_size)
@@ -2674,10 +2790,38 @@ class Player(Gtk.Window):
     def title_bar_changed(self, button):
         self.hide_title_bar = button.get_active()
         self.set_decorated(not self.hide_title_bar)
+        self.update_window_controls()
         try:
             save_title_bar_hidden(self.hide_title_bar)
         except OSError:
             self.status.set_text('Could not save title bar setting.')
+
+    def toggle_window_maximize(self, *_):
+        self.unmaximize() if self.is_maximized() else self.maximize()
+
+    def window_state_changed(self, _window, event):
+        maximized = bool(event.new_window_state & Gdk.WindowState.MAXIMIZED)
+        name = 'Restore' if maximized else 'Maximize'
+        icon = 'window-restore-symbolic' if maximized else 'window-maximize-symbolic'
+        self.maximize_button.set_image(Gtk.Image.new_from_icon_name(icon,
+                                                                    Gtk.IconSize.BUTTON))
+        self.maximize_button.get_image().set_pixel_size(13)
+        self.set_tooltip(self.maximize_button, name)
+        self.maximize_button.get_accessible().set_name(name)
+        return False
+
+    def update_window_controls(self):
+        visible = self.window_buttons_enabled and self.hide_title_bar
+        self.window_controls.set_visible(visible)
+        self.busy_spinner.set_margin_end(90 if visible else 14)
+
+    def window_buttons_changed(self, button):
+        self.window_buttons_enabled = button.get_active()
+        self.update_window_controls()
+        try:
+            save_window_buttons_enabled(self.window_buttons_enabled)
+        except OSError:
+            self.status.set_text('Could not save window button setting.')
 
     def text_size_changed(self, scale):
         self.text_size = round(scale.get_value())
@@ -2835,6 +2979,119 @@ class Player(Gtk.Window):
             row.connect('drag-data-received', self.playlist_drop_received)
         row.show_all()
         return row
+
+    def smart_playlist_row(self, definition):
+        row = Gtk.ListBoxRow()
+        row.definition = definition
+        row.add(Gtk.Label(label=definition['name'], xalign=0, margin=8))
+        row.connect('button-press-event', self.smart_playlist_pressed)
+        self.smart_playlist_list.add(row)
+        row.show_all()
+        return row
+
+    def load_smart_playlist_definitions(self):
+        section = self.library.get_active_id()
+        self.active_smart_playlist = None
+        if self.client and section:
+            self.smart_playlists = load_for_scope(self.remote_server_machine,
+                                                  self.client.address, section)
+        else:
+            self.smart_playlists = []
+        self.refresh_smart_playlist_rows()
+
+    def refresh_smart_playlist_rows(self, selected_id=None):
+        self.smart_list_rebuilding = True
+        for row in self.smart_playlist_list.get_children():
+            row.destroy()
+        selected_row = None
+        for definition in self.smart_playlists:
+            row = self.smart_playlist_row(definition)
+            if definition['id'] == selected_id:
+                selected_row = row
+        self.smart_list_rebuilding = False
+        if selected_row:
+            self.smart_playlist_list.select_row(selected_row)
+
+    def save_smart_playlist_definitions(self):
+        if not self.client or not self.library.get_active_id():
+            return False
+        try:
+            save_for_scope(self.remote_server_machine, self.client.address,
+                           self.library.get_active_id(), self.smart_playlists)
+        except (OSError, ValueError):
+            self.song_count.set_text('Could not save smart playlists on this device')
+            return False
+        return True
+
+    def create_smart_playlist_dialog(self, *_):
+        if not self.client or not self.library.get_active_id():
+            self.song_count.set_text('Connect to Plex to create a smart playlist')
+            return
+        definition = SmartPlaylistDialog(self, checked_label='Only loved songs').run()
+        if definition is None:
+            return
+        self.smart_playlists.append(definition)
+        if self.save_smart_playlist_definitions():
+            self.refresh_smart_playlist_rows(definition['id'])
+        else:
+            self.smart_playlists.pop()
+
+    def edit_smart_playlist_dialog(self, definition):
+        edited = SmartPlaylistDialog(self, definition,
+                                     checked_label='Only loved songs').run()
+        if edited is None:
+            return
+        index = next((i for i, item in enumerate(self.smart_playlists)
+                      if item['id'] == definition['id']), None)
+        if index is None:
+            return
+        self.smart_playlists[index] = edited
+        if self.save_smart_playlist_definitions():
+            self.song_view_cache.clear()
+            self.refresh_smart_playlist_rows(edited['id'])
+        else:
+            self.smart_playlists[index] = definition
+
+    def delete_smart_playlist(self, definition):
+        old = self.smart_playlists
+        self.smart_playlists = [item for item in old if item['id'] != definition['id']]
+        if self.save_smart_playlist_definitions():
+            self.song_view_cache.clear()
+            self.active_smart_playlist = None
+            self.refresh_smart_playlist_rows()
+            self.playlist_list.select_row(self.all_songs_row)
+        else:
+            self.smart_playlists = old
+
+    def smart_playlist_pressed(self, row, event):
+        if event.button != 3:
+            return False
+        self.smart_playlist_list.select_row(row)
+        menu = Gtk.Menu()
+        menu.attach_to_widget(self, None)
+        for label, action in (
+                ('Edit smart playlist…', lambda: self.edit_smart_playlist_dialog(row.definition)),
+                ('Delete smart playlist', lambda: self.delete_smart_playlist(row.definition))):
+            item = Gtk.MenuItem.new_with_label(label)
+            item.connect('activate', lambda _item, callback=action: callback())
+            menu.append(item)
+        menu.connect('selection-done', lambda selected: selected.destroy())
+        menu.show_all()
+        menu.popup_at_pointer(event)
+        return True
+
+    def select_smart_playlist(self, _list, row):
+        if row is None or getattr(self, 'smart_list_rebuilding', False):
+            return
+        self.playlist_list.unselect_all()
+        self.invalidate_song_catalog()
+        self.active_playlist = None
+        self.active_smart_playlist = row.definition
+        self.library_album_filter = None
+        self.library_back_button.hide()
+        self.songs_heading.set_text(row.definition['name'])
+        self.apply_library_layout()
+        self.load_songs()
 
     def create_playlist_dialog(self, *_):
         if not self.client:
@@ -3123,7 +3380,9 @@ class Player(Gtk.Window):
         section = self.library.get_active_id()
         if not self.client or not section:
             return None
-        source = (self.active_playlist.key if self.active_playlist else
+        smart = getattr(self, 'active_smart_playlist', None)
+        source = (smart['id'] if smart else
+                  self.active_playlist.key if self.active_playlist else
                   self.library_album_filter.key if self.library_album_filter else 'all')
         parts = (self.client.address, self.client.token, section, source)
         return hashlib.sha256('\0'.join(parts).encode('utf-8')).hexdigest()
@@ -3332,6 +3591,8 @@ class Player(Gtk.Window):
     def select_playlist(self, _list, row):
         if row is None:
             return
+        self.smart_playlist_list.unselect_all()
+        self.active_smart_playlist = None
         self.invalidate_song_catalog()
         self.library_album_filter = None
         self.library_back_button.hide()
@@ -3363,6 +3624,7 @@ class Player(Gtk.Window):
         self.artist_filter_bar.hide()
         self.library_album_filter = None
         self.library_back_button.hide()
+        self.load_smart_playlist_definitions()
         self.apply_library_layout()
         self.ensure_search_index()
         self.load_albums()
@@ -3835,6 +4097,8 @@ class Player(Gtk.Window):
             self.index_status.set_text('Choose a music library to build the index'
                                        if self.search_index_enabled else 'Index is off')
             self.restored_credentials = None
+            self.play_history.clear()
+            self.current_played_track = None
             store = 'Windows Credential Manager' if os.name == 'nt' else 'desktop keyring'
             self.credential_warning = '' if saved else f'{store} could not save this login.'
             self.sections = sections
@@ -4007,6 +4271,9 @@ class Player(Gtk.Window):
         if self.saved_session.get('server') != self.client.address:
             return
         self.session_applied = True
+        if not hasattr(self, 'play_history'):
+            self.play_history = deque(maxlen=5)
+        self.play_history.extend(self.saved_session.get('history', []))
         sort = self.saved_session.get('song_sort')
         if sort == 'titleSort':
             self.choose_library_sort('title', False)
@@ -4037,12 +4304,14 @@ class Player(Gtk.Window):
         generation = self.song_generation
         client = self.client
         playlist = self.active_playlist
+        smart = getattr(self, 'active_smart_playlist', None)
         album_filter = self.library_album_filter
         query = self.library_search.get_text().strip()
         source = (client, section, playlist.key if playlist else None,
                   album_filter.key if album_filter else None)
         sort = self.effective_library_sort()
-        view_key = (*source, query, sort)
+        view_key = ((*source, smart['id'], query, sort) if smart
+                    else (*source, query, sort))
         cached_view = self.song_view_cache.get(view_key)
         if cached_view is not None and time.monotonic() - cached_view.get('built_at', 0) >= 3600:
             del self.song_view_cache[view_key]
@@ -4080,12 +4349,18 @@ class Player(Gtk.Window):
         def ready(results):
             self.song_results = results
             self.display_song_page(results, len(results), playlist, album_filter, query)
+        def filtered():
+            loved = (song.key for song in catalog if song.user_rating >= 9.5)
+            # Keep random membership stable while the user searches this smart list.
+            selected = (apply_definition(catalog, smart, loved,
+                                         random.Random(smart['id'])) if smart else catalog)
+            return filter_sort_songs(selected, query, sort)
         if len(catalog) > 2000:
             self.song_count.set_text('Sorting songs…')
-            self.async_work(lambda: filter_sort_songs(catalog, query, sort), ready,
+            self.async_work(filtered, ready,
                             lambda: generation == self.song_generation and client is self.client)
         else:
-            ready(filter_sort_songs(catalog, query, sort))
+            ready(filtered())
 
     def display_song_page(self, songs, total, playlist, album_filter, query):
         self.song_total = total
@@ -4093,6 +4368,8 @@ class Player(Gtk.Window):
             message = f'{total} of {total} tracks in {album_filter.title}'
         elif query:
             message = f'{total} of {total} matching songs'
+        elif getattr(self, 'active_smart_playlist', None):
+            message = f'{total} of {total} songs in {self.active_smart_playlist["name"]}'
         else:
             message = (f'{total} of {total} songs' +
                        (' • Playlist order' if playlist and
@@ -4191,7 +4468,10 @@ class Player(Gtk.Window):
         if source.find_property('timeout'):
             source.set_property('timeout', 15)
 
-    def stop(self):
+    def stop(self, remember=True):
+        if remember and self.current_played_track is not None:
+            self.play_history.append(self.current_played_track)
+            self.current_played_track = None
         self.waveform_generation += 1
         self.current_stream_uri = ''
         self.wave_timeline.set_peaks(None)
@@ -4222,12 +4502,16 @@ class Player(Gtk.Window):
         self.mpris.changed()
 
     def start_track(self, resume_paused=False, resume_position_ms=0):
-        self.stop()
+        previous_track = self.current_played_track
+        self.stop(remember=False)
+        self.current_played_track = None
         if not 0 <= self.index < len(self.queue):
             return
         self.remote_opening = True
         self.playback_position_ms = max(0, resume_position_ms)
         track = self.queue[self.index]
+        if previous_track is not None:
+            self.play_history.append(previous_track)
         self.refresh_queue_view()
         self.timeline_base_position = self.playback_position_ms / 1000
         self.timeline_base_time = time.monotonic()
@@ -4269,6 +4553,7 @@ class Player(Gtk.Window):
                 self.prepare_track_waveform(client, track, uri, generation)
             self.remote_opening = False
             self.stream_open = True
+            self.current_played_track = track
             self.playing = not resume_paused
             self.pending_resume_seek_ms = self.playback_position_ms
             self.pipeline.set_state(Gst.State.PAUSED if resume_paused else Gst.State.PLAYING)
@@ -4534,6 +4819,8 @@ class Player(Gtk.Window):
         }
         if self.client:
             data['server'] = self.client.address
+            data['history'] = [item_to_data(track)
+                               for track in getattr(self, 'play_history', ())]
             data['section'] = self.library.get_active_id()
             data['playlist'] = self.active_playlist.key if self.active_playlist else None
             data['song_sort'] = self.song_sort
@@ -4557,6 +4844,9 @@ class Player(Gtk.Window):
             for name in ('server', 'section', 'playlist', 'song_sort'):
                 if name in self.saved_session:
                     data[name] = self.saved_session[name]
+            if self.saved_session.get('history'):
+                data['history'] = [item_to_data(track)
+                                   for track in self.saved_session['history']]
             if self.saved_session.get('album_detail'):
                 data['album_detail'] = item_to_data(self.saved_session['album_detail'])
             old = self.saved_session.get('playback')
