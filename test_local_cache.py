@@ -1,4 +1,5 @@
 import io
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -133,8 +134,9 @@ class LocalCacheTests(unittest.TestCase):
             self.assertIsNone(cache.read_index('other'))
             result, total = local_cache.search_albums(cache.read_index('music'), 'COLTRANE')
             self.assertEqual((result, total), ([albums[0], albums[2]], 2))
-            self.assertEqual(cache.index_path('music').stat().st_mode & 0o777, 0o600)
-            self.assertEqual(cache.index_path('music').parent.stat().st_mode & 0o777, 0o700)
+            if os.name != 'nt':
+                self.assertEqual(cache.index_path('music').stat().st_mode & 0o777, 0o600)
+                self.assertEqual(cache.index_path('music').parent.stat().st_mode & 0o777, 0o700)
             cache.clear_indices()
             self.assertIsNone(cache.read_index('music'))
 
@@ -153,7 +155,8 @@ class LocalCacheTests(unittest.TestCase):
             self.assertEqual(cache.read_song_index('music', '/playlists/7/items'), songs[:1])
             self.assertIsNone(cache.read_song_index('other'))
             self.assertIsNone(local_cache.LocalCache(other).read_song_index('music'))
-            self.assertEqual(cache.song_index_path('music').stat().st_mode & 0o777, 0o600)
+            if os.name != 'nt':
+                self.assertEqual(cache.song_index_path('music').stat().st_mode & 0o777, 0o600)
             with patch('local_cache.time.time', return_value=10**12):
                 self.assertIsNone(cache.read_song_index('music'))
 
