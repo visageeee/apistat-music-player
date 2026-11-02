@@ -1,16 +1,6 @@
 name: Windows build
 
 on:
-  push:
-    paths:
-      - '**.py'
-      - 'windows/**'
-      - '.github/workflows/windows.yml'
-  pull_request:
-    paths:
-      - '**.py'
-      - 'windows/**'
-      - '.github/workflows/windows.yml'
   workflow_dispatch:
 
 permissions:
