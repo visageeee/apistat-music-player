@@ -4,7 +4,8 @@ from unittest.mock import patch
 
 import gi
 gi.require_version('Gdk', '3.0')
-from gi.repository import Gdk
+gi.require_version('Gtk', '3.0')
+from gi.repository import Gdk, Gtk
 
 from play_queue import (insert_items, move_items, remove_items, reorder_items,
                         select_similar_tracks)
@@ -13,6 +14,21 @@ from plex_client import Item
 
 
 class PlayQueueTests(unittest.TestCase):
+    def test_queue_selection_callback_accepts_gtk_arguments(self):
+        model = Gtk.ListStore(int)
+        model.append([-1])
+        model.append([0])
+        model.append([1])
+        view = Gtk.TreeView(model=model)
+        selection = view.get_selection()
+        selection.set_mode(Gtk.SelectionMode.MULTIPLE)
+        selection.set_select_function(Player.queue_row_selectable)
+        selection.select_path(Gtk.TreePath.new_from_indices([0]))
+        selection.select_path(Gtk.TreePath.new_from_indices([1]))
+        selection.select_path(Gtk.TreePath.new_from_indices([2]))
+        _, paths = selection.get_selected_rows()
+        self.assertEqual([path.get_indices()[0] for path in paths], [1, 2])
+
     def test_similar_songs_adds_ten_unique_tracks_after_seed(self):
         seed = Item('/library/metadata/1', 'Seed')
         nearby = [seed] + [Item(f'/library/metadata/{number}', f'Song {number}')
@@ -201,63 +217,52 @@ class PlayQueueTests(unittest.TestCase):
         self.assertEqual([call.args[1] for call in finish.call_args_list],
                          [True, True, False, False])
 
-    def test_queue_drag_exports_all_selected_tracks(self):
-        tracks = [Item('/library/metadata/1', 'One'),
-                  Item('/library/metadata/2', 'Two'),
-                  Item('/library/metadata/3', 'Three')]
-        data = []
-        selection = SimpleNamespace(get_target=lambda: 'target',
-                                    set=lambda _target, _format, value: data.append(value))
-        player = SimpleNamespace(queue=tracks, selected_queue_indices=lambda: [0, 2])
-        Player.queue_drag_data_get(player, None, None, selection, 0, 0)
-        self.assertEqual(data, [b'/library/metadata/1\n/library/metadata/3'])
-
-    def test_queue_drag_keeps_multi_selection_after_pointer_press(self):
-        selected = [1, 3]
+    def test_queue_pointer_press_keeps_multi_selection_for_reorder(self):
         selection = SimpleNamespace(path_is_selected=lambda _path: True)
         view = SimpleNamespace(get_path_at_pos=lambda _x, _y: ('row', None, None, None),
                                get_selection=lambda: selection)
-        player = SimpleNamespace(selected_queue_indices=lambda: list(selected),
-                                 queue_drag_candidate_indices=[])
+        player = SimpleNamespace(queue_store={'row': [1]},
+                                 selected_queue_indices=lambda: [1, 3])
         event = SimpleNamespace(button=1, x=8, y=12, state=0)
         self.assertFalse(Player.queue_song_pressed(player, view, event))
-        selected[:] = [3]  # GTK may collapse the selection after the press event.
-        Player.queue_drag_begin(player, view, None)
-        self.assertEqual(player.queue_drag_indices, [1, 3])
-        Player.queue_drag_end(player, view, None)
-        self.assertEqual(player.queue_drag_indices, [])
+        self.assertEqual(player.queue_pointer_drag['indices'], [1, 3])
 
-    def test_queue_drag_motion_accepts_internal_move_target(self):
-        target = object()
-        dest = []
-        view = SimpleNamespace(drag_dest_find_target=lambda _context, _targets: target,
-                               get_dest_row_at_pos=lambda _x, _y: ('row', 'before'),
-                               set_drag_dest_row=lambda *args: dest.append(args))
-        with patch('player.Gdk.drag_status') as status:
-            self.assertTrue(Player.queue_drag_motion(SimpleNamespace(), view,
-                                                     object(), 10, 15, 42))
-        self.assertEqual(dest, [('row', 'before')])
-        self.assertEqual(status.call_args.args[1:], (Gdk.DragAction.MOVE, 42))
-
-    def test_queue_drop_moves_selected_rows_together(self):
+    def test_queue_pointer_reorders_selected_rows_together(self):
         tracks = [Item(f'/library/metadata/{index}', str(index)) for index in range(5)]
         changed = []
+        markers = []
+        view = SimpleNamespace(set_drag_dest_row=lambda *args: markers.append(args))
         player = SimpleNamespace(
-            queue=tracks, index=2,
-            queue_view=SimpleNamespace(get_dest_row_at_pos=lambda _x, _y: None),
+            queue=tracks, index=2, queue_pointer_drag={
+                'indices': [1, 3], 'x': 5, 'y': 5, 'active': False},
+            queue_pointer_destination=lambda _view, _x, _y, show_marker=False: 5,
             clear_remote_queue=lambda: changed.append('clear'),
             shuffle=SimpleNamespace(get_active=lambda: False),
             refresh_queue_view=lambda: changed.append('refresh'),
             mpris=SimpleNamespace(changed=lambda: changed.append('mpris')),
             persist_session=lambda **_kwargs: changed.append('save'),
         )
-        selection = SimpleNamespace(get_data=lambda: b'1\n3')
-        with patch('player.Gtk.drag_finish') as finish:
-            Player.queue_list_drop_received(player, None, None, 0, 0, selection, 2, 1)
+        motion = SimpleNamespace(x=20, y=30, state=Gdk.ModifierType.BUTTON1_MASK)
+        self.assertTrue(Player.queue_pointer_motion(player, view, motion))
+        self.assertTrue(player.queue_pointer_drag['active'])
+        self.assertTrue(Player.queue_pointer_release(
+            player, view, SimpleNamespace(button=1, x=20, y=30)))
         self.assertEqual([track.title for track in player.queue], ['0', '2', '4', '1', '3'])
         self.assertEqual(player.index, 1)
-        self.assertTrue(finish.call_args.args[1])
+        self.assertEqual(markers, [(None, Gtk.TreeViewDropPosition.BEFORE)])
         self.assertEqual(changed, ['clear', 'refresh', 'mpris', 'save'])
+
+    def test_queue_pointer_destination_uses_queue_index_after_history(self):
+        marks = []
+        view = SimpleNamespace(
+            get_path_at_pos=lambda _x, _y: ('next', None, None, None),
+            get_background_area=lambda _path, _column: SimpleNamespace(y=20, height=20),
+            set_drag_dest_row=lambda *args: marks.append(args))
+        player = SimpleNamespace(queue_store={'next': [4]}, queue=[object()] * 5,
+                                 index=2, play_history=[object()] * 2)
+        self.assertEqual(Player.queue_pointer_destination(
+            player, view, 12, 35, show_marker=True), 5)
+        self.assertEqual(marks, [('next', Gtk.TreeViewDropPosition.AFTER)])
 
     def test_playlist_drop_adds_every_selected_track(self):
         tracks = [Item('/library/metadata/1', 'One'),

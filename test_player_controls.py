@@ -19,13 +19,27 @@ from test_smart_playlists import definition as smart_definition
 
 class PlayerControlTests(unittest.TestCase):
     def test_window_controls_follow_option_with_title_bar_visible(self):
-        shown = []
+        controls = Gtk.Box()
+        buttons = [Gtk.Button(label=label) for label in ('−', '□', '×')]
+        for button in buttons:
+            controls.pack_start(button, False, False, 0)
+        controls.set_no_show_all(True)
+        controls.show_all()
+        self.assertFalse(any(button.get_visible() for button in buttons))
         margins = []
         player = SimpleNamespace(window_buttons_enabled=True, hide_title_bar=False,
-                                 window_controls=SimpleNamespace(set_visible=shown.append),
+                                 window_controls=controls,
                                  busy_spinner=SimpleNamespace(set_margin_end=margins.append))
         Player.update_window_controls(player)
-        self.assertEqual((shown, margins), ([True], [90]))
+        self.assertTrue(controls.get_visible())
+        self.assertTrue(all(button.get_visible() for button in buttons))
+        self.assertEqual(margins, [90])
+        player.window_buttons_enabled = False
+        Player.update_window_controls(player)
+        self.assertFalse(controls.get_visible())
+        player.window_buttons_enabled = True
+        Player.update_window_controls(player)
+        self.assertTrue(all(button.get_visible() for button in buttons))
 
     def test_queue_shows_five_prior_tracks_in_dim_text_before_current(self):
         history = deque((Item(f'/library/metadata/{index}', f'Played {index}')

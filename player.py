@@ -40,12 +40,14 @@ from appearance import (ALBUM_SIZE_RANGE, ALBUM_COLUMN_RANGE, NOW_SIZE_RANGE,
                         load_timeline_waveform_enabled, save_timeline_waveform_enabled,
                         load_single_flip_enabled,
                         load_text_size, load_title_bar_hidden, load_window_buttons_enabled,
+                        load_rounded_corners_enabled,
                         save_accent_color, save_album_columns, save_album_details_enabled,
                         save_art_accent_enabled, save_custom_font, save_tooltips_hidden,
                         save_gradient_enabled, save_now_art_size,
                         save_search_index_enabled,
                         save_single_flip_enabled, save_text_size,
-                        save_title_bar_hidden, save_window_buttons_enabled, waveform_colors)
+                        save_title_bar_hidden, save_window_buttons_enabled,
+                        save_rounded_corners_enabled, waveform_colors)
 from local_cache import (LocalCache, build_album_index, cached_album_page,
                          search_albums, sort_albums)
 from library_catalog import build_song_catalog, filter_sort_songs
@@ -55,6 +57,7 @@ from play_queue import (insert_items, move_items, remove_items,
                         select_similar_tracks)
 from drag_payload import encode_track_keys, decode_track_keys
 from waveform import Waveform, spectrum_values
+from window_shape import rounded_region
 from track_waveform import TrackWaveform, analyze_track_waveform
 from album_card import FlipCard
 from busy_indicator import BusyIndicator
@@ -111,8 +114,12 @@ class Player(Gtk.Window):
         self.set_default_size(*self.normal_size)
         self.hide_title_bar = load_title_bar_hidden()
         self.window_buttons_enabled = load_window_buttons_enabled()
+        self.rounded_corners_enabled = load_rounded_corners_enabled()
+        self._window_shape_state = None
         self.set_decorated(not self.hide_title_bar)
         self.connect('size-allocate', self.window_allocated)
+        self.connect('size-allocate', self.window_shape_allocated)
+        self.connect('realize', self.window_realized)
         self.client = None
         self.remote_config = load_config()
         self.remote_account = PlexAccount(self.remote_config['identifier'],
@@ -1011,6 +1018,33 @@ class Player(Gtk.Window):
     def window_allocated(self, _window, allocation):
         if not self.is_maximized() and allocation.width >= 640 and allocation.height >= 480:
             self.normal_size = allocation.width, allocation.height
+
+    def window_shape_allocated(self, _window, _allocation):
+        self.refresh_window_shape()
+
+    def window_realized(self, *_):
+        self._window_shape_state = None
+        GLib.idle_add(self.refresh_window_shape)
+
+    def refresh_window_shape(self):
+        window = self.get_window()
+        if window is None:
+            return False
+        allocation = self.get_allocation()
+        if allocation.width < 1 or allocation.height < 1:
+            return False
+        state = window.get_state()
+        rounded = self.rounded_corners_enabled and not bool(
+            state & (Gdk.WindowState.MAXIMIZED | Gdk.WindowState.FULLSCREEN))
+        shape = allocation.width, allocation.height, rounded
+        if shape != self._window_shape_state:
+            region = (rounded_region(allocation.width, allocation.height)
+                      if rounded else None)
+            window.shape_combine_region(region, 0, 0)
+            window.input_shape_combine_region(
+                region or rounded_region(allocation.width, allocation.height, 0), 0, 0)
+            self._window_shape_state = shape
+        return False
 
     def restore_connection(self):
         self.status.set_text('Looking for saved server login…')
@@ -2184,8 +2218,7 @@ class Player(Gtk.Window):
         self.queue_view.set_name('queue-view')
         self.queue_view.set_headers_visible(True)
         self.queue_view.get_selection().set_mode(Gtk.SelectionMode.MULTIPLE)
-        self.queue_view.get_selection().set_select_function(
-            lambda _selection, model, path, _selected, _data: model[path][0] >= 0)
+        self.queue_view.get_selection().set_select_function(self.queue_row_selectable)
         columns = (('#', 1, 55), ('Track', 2, 260), ('Artist', 3, 180),
                    ('Album', 4, 210), ('Time', 5, 75), ('Year', 6, 70),
                    ('Genre', 7, 150), ('Added', 8, 105))
@@ -2201,21 +2234,11 @@ class Player(Gtk.Window):
             self.queue_view.append_column(column)
         self.queue_view.connect('row-activated', self.activate_queue_track)
         self.queue_view.connect('button-press-event', self.queue_song_pressed)
+        self.queue_view.add_events(Gdk.EventMask.POINTER_MOTION_MASK |
+                                   Gdk.EventMask.BUTTON_RELEASE_MASK)
+        self.queue_view.connect('motion-notify-event', self.queue_pointer_motion)
+        self.queue_view.connect('button-release-event', self.queue_pointer_release)
         self.queue_view.connect('key-press-event', self.queue_key_pressed)
-        queue_drag_targets = [
-            Gtk.TargetEntry.new('application/x-plex-queue-indices', Gtk.TargetFlags.SAME_APP, 2),
-            Gtk.TargetEntry.new('application/x-plex-song-key', Gtk.TargetFlags.SAME_APP, 0),
-        ]
-        self.queue_view.drag_source_set(Gdk.ModifierType.BUTTON1_MASK,
-                                        queue_drag_targets,
-                                        Gdk.DragAction.COPY | Gdk.DragAction.MOVE)
-        self.queue_view.connect('drag-begin', self.queue_drag_begin)
-        self.queue_view.connect('drag-end', self.queue_drag_end)
-        self.queue_view.connect('drag-data-get', self.queue_drag_data_get)
-        self.queue_view.drag_dest_set(Gtk.DestDefaults.DROP,
-                                      [queue_drag_targets[0]], Gdk.DragAction.MOVE)
-        self.queue_view.connect('drag-motion', self.queue_drag_motion)
-        self.queue_view.connect('drag-data-received', self.queue_list_drop_received)
         queue_scroll = self.scroll(self.queue_view)
         queue_scroll.set_name('queue-scroll')
         queue_scroll.set_shadow_type(Gtk.ShadowType.NONE)
@@ -2236,6 +2259,7 @@ class Player(Gtk.Window):
         self.queue_store.clear()
         history_color = '#7a7a7a' if self.theme == 'dark' else (
             '#666666' if self.theme == 'black' else '#777b80')
+        normal_color = '#202326' if self.theme == 'light' else '#eeeeee'
         for history_index, track in enumerate(self.play_history):
             added = time.strftime('%Y-%m-%d', time.localtime(track.added_at)) if track.added_at else ''
             self.queue_store.append([-history_index - 1, '↶', track.title, track.artist,
@@ -2249,7 +2273,7 @@ class Player(Gtk.Window):
             added = time.strftime('%Y-%m-%d', time.localtime(track.added_at)) if track.added_at else ''
             self.queue_store.append([index, marker, track.title, track.artist,
                                      track.album, clock(track.duration / 1000) if track.duration else '',
-                                     str(track.year), track.genre, added, False, ''])
+                                     str(track.year), track.genre, added, False, normal_color])
         remaining = max(0, len(self.queue) - max(0, self.index + 1))
         self.queue_count.set_text(
             f'{len(self.play_history)} previously played · {remaining} upcoming · Drag tracks to rearrange'
@@ -2283,9 +2307,13 @@ class Player(Gtk.Window):
             hit = view.get_path_at_pos(int(event.x), int(event.y))
             selected = view.get_selection()
             modifiers = Gdk.ModifierType.SHIFT_MASK | Gdk.ModifierType.CONTROL_MASK
-            self.queue_drag_candidate_indices = (
-                self.selected_queue_indices() if hit and selected.path_is_selected(hit[0])
-                and not (event.state & modifiers) else [])
+            row_index = self.queue_store[hit[0]][0] if hit else -1
+            selected_indices = (self.selected_queue_indices()
+                                if hit and selected.path_is_selected(hit[0]) else [])
+            self.queue_pointer_drag = (
+                {'indices': selected_indices or [row_index],
+                 'x': event.x, 'y': event.y, 'active': False}
+                if row_index >= 0 and not (event.state & modifiers) else None)
             return False
         if event.button != 3:
             return False
@@ -2317,68 +2345,67 @@ class Player(Gtk.Window):
         model, paths = self.queue_view.get_selection().get_selected_rows()
         return [model[path][0] for path in paths if model[path][0] >= 0]
 
-    def queue_drag_begin(self, _view, _context):
-        self.queue_drag_indices = (getattr(self, 'queue_drag_candidate_indices', None)
-                                   or self.selected_queue_indices())
+    @staticmethod
+    def queue_row_selectable(_selection, model, path, _selected):
+        return model[path][0] >= 0
 
-    def queue_drag_end(self, _view, _context):
-        self.queue_drag_indices = []
-        self.queue_drag_candidate_indices = []
-
-    def queue_drag_motion(self, view, context, x, y, event_time):
-        target = view.drag_dest_find_target(context, None)
-        if target is None:
-            Gdk.drag_status(context, Gdk.DragAction(0), event_time)
-            return True
-        hit = view.get_dest_row_at_pos(x, y)
+    def queue_pointer_destination(self, view, x, y, show_marker=False):
+        hit = view.get_path_at_pos(int(x), int(y))
         if hit:
-            view.set_drag_dest_row(*hit)
-        elif len(self.queue_store):
+            path = hit[0]
+            row_index = self.queue_store[path][0]
+            if row_index < 0:
+                first_queue_row = len(self.play_history)
+                if show_marker and first_queue_row < len(self.queue_store):
+                    path = Gtk.TreePath.new_from_indices([first_queue_row])
+                    view.set_drag_dest_row(path, Gtk.TreeViewDropPosition.BEFORE)
+                return max(0, self.index + 1)
+            area = view.get_background_area(path, None)
+            after = y >= area.y + area.height / 2
+            if show_marker:
+                view.set_drag_dest_row(path, Gtk.TreeViewDropPosition.AFTER if after
+                                       else Gtk.TreeViewDropPosition.BEFORE)
+            return row_index + int(after)
+        if show_marker and len(self.queue_store):
             path = Gtk.TreePath.new_from_indices([len(self.queue_store) - 1])
             view.set_drag_dest_row(path, Gtk.TreeViewDropPosition.AFTER)
-        Gdk.drag_status(context, Gdk.DragAction.MOVE, event_time)
+        return len(self.queue)
+
+    def queue_pointer_motion(self, view, event):
+        drag = getattr(self, 'queue_pointer_drag', None)
+        if not drag or not (event.state & Gdk.ModifierType.BUTTON1_MASK):
+            return False
+        if not drag['active']:
+            if abs(event.x - drag['x']) < 5 and abs(event.y - drag['y']) < 5:
+                return False
+            drag['active'] = True
+        self.queue_pointer_destination(view, event.x, event.y, show_marker=True)
         return True
 
-    def queue_drag_data_get(self, _view, _context, selection, info, _time):
-        indices = getattr(self, 'queue_drag_indices', None) or self.selected_queue_indices()
-        if not indices:
-            return
-        if info == 2:
-            data = '\n'.join(map(str, indices)).encode('ascii')
-        elif info == 0:
-            data = encode_track_keys([self.queue[index].key for index in indices])
-        else:
-            return
-        if data:
-            selection.set(selection.get_target(), 8, data)
+    def queue_pointer_release(self, view, event):
+        if event.button != 1:
+            return False
+        drag = getattr(self, 'queue_pointer_drag', None)
+        self.queue_pointer_drag = None
+        if not drag or not drag['active']:
+            return False
+        destination = self.queue_pointer_destination(view, event.x, event.y)
+        view.set_drag_dest_row(None, Gtk.TreeViewDropPosition.BEFORE)
+        return Player.move_queue_indices(self, drag['indices'], destination)
 
-    def queue_list_drop_received(self, _view, context, x, y, selection, info, event_time):
-        moved = None
-        if info == 2:
-            try:
-                indices = [int(value) for value in
-                           bytes(selection.get_data() or b'').decode('ascii').splitlines()]
-                hit = self.queue_view.get_dest_row_at_pos(x, y)
-                if hit and hit[0] is not None:
-                    path, position = hit
-                    destination = max(0, self.queue_store[path][0])
-                    if position in (Gtk.TreeViewDropPosition.AFTER,
-                                    Gtk.TreeViewDropPosition.INTO_OR_AFTER):
-                        destination += 1
-                else:
-                    destination = len(self.queue)
-                moved = move_items(self.queue, self.index, indices, destination)
-            except (ValueError, UnicodeDecodeError, TypeError, IndexError):
-                pass
-        Gtk.drag_finish(context, moved is not None, False, event_time)
-        if moved is not None:
-            self.queue, self.index = moved
-            self.clear_remote_queue()
-            if self.shuffle.get_active():
-                self.shuffle.set_active(False)
-            self.refresh_queue_view()
-            self.mpris.changed()
-            self.persist_session(force=True)
+    def move_queue_indices(self, indices, destination):
+        try:
+            updated, index = move_items(self.queue, self.index, indices, destination)
+        except ValueError:
+            return False
+        self.queue, self.index = updated, index
+        self.clear_remote_queue()
+        if self.shuffle.get_active():
+            self.shuffle.set_active(False)
+        self.refresh_queue_view()
+        self.mpris.changed()
+        self.persist_session(force=True)
+        return True
 
     def queue_key_pressed(self, _view, event):
         if event.keyval != Gdk.KEY_BackSpace:
@@ -2537,6 +2564,10 @@ class Player(Gtk.Window):
         self.window_buttons_toggle.set_active(self.window_buttons_enabled)
         self.window_buttons_toggle.connect('toggled', self.window_buttons_changed)
         panel.pack_start(self.window_buttons_toggle, False, False, 0)
+        self.rounded_corners_toggle = Gtk.CheckButton(label='Round window corners')
+        self.rounded_corners_toggle.set_active(self.rounded_corners_enabled)
+        self.rounded_corners_toggle.connect('toggled', self.rounded_corners_changed)
+        panel.pack_start(self.rounded_corners_toggle, False, False, 0)
         panel.pack_start(Gtk.Label(label='Text size', xalign=0), False, False, 0)
         self.text_size_scale = Gtk.Scale.new_with_range(Gtk.Orientation.HORIZONTAL, 10, 24, 1)
         self.text_size_scale.set_value(self.text_size)
@@ -2842,6 +2873,8 @@ class Player(Gtk.Window):
         self.hide_title_bar = button.get_active()
         self.set_decorated(not self.hide_title_bar)
         self.update_window_controls()
+        self._window_shape_state = None
+        self.refresh_window_shape()
         try:
             save_title_bar_hidden(self.hide_title_bar)
         except OSError:
@@ -2856,11 +2889,18 @@ class Player(Gtk.Window):
         self.maximize_button.set_label('❐' if maximized else '□')
         self.set_tooltip(self.maximize_button, name)
         self.maximize_button.get_accessible().set_name(name)
+        self._window_shape_state = None
+        GLib.idle_add(self.refresh_window_shape)
         return False
 
     def update_window_controls(self):
         visible = self.window_buttons_enabled
-        self.window_controls.set_visible(visible)
+        if visible:
+            self.window_controls.set_no_show_all(False)
+            self.window_controls.show_all()
+        else:
+            self.window_controls.hide()
+            self.window_controls.set_no_show_all(True)
         self.busy_spinner.set_margin_end(90 if visible else 14)
 
     def window_buttons_changed(self, button):
@@ -2870,6 +2910,15 @@ class Player(Gtk.Window):
             save_window_buttons_enabled(self.window_buttons_enabled)
         except OSError:
             self.status.set_text('Could not save window button setting.')
+
+    def rounded_corners_changed(self, button):
+        self.rounded_corners_enabled = button.get_active()
+        self._window_shape_state = None
+        self.refresh_window_shape()
+        try:
+            save_rounded_corners_enabled(self.rounded_corners_enabled)
+        except OSError:
+            self.status.set_text('Could not save rounded corner setting.')
 
     def text_size_changed(self, scale):
         self.text_size = round(scale.get_value())

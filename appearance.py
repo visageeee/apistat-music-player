@@ -251,6 +251,10 @@ def load_window_buttons_enabled():
     return _read_settings().get('compact_window_buttons') is True
 
 
+def load_rounded_corners_enabled():
+    return _read_settings().get('rounded_window_corners') is True
+
+
 def load_text_size():
     size = _read_settings().get('text_size')
     return size if type(size) is int and 10 <= size <= 24 else 14
@@ -407,6 +411,12 @@ def save_title_bar_hidden(hidden):
 def save_window_buttons_enabled(enabled):
     settings = _read_settings()
     settings['compact_window_buttons'] = bool(enabled)
+    _write_settings(settings)
+
+
+def save_rounded_corners_enabled(enabled):
+    settings = _read_settings()
+    settings['rounded_window_corners'] = bool(enabled)
     _write_settings(settings)
 
 
