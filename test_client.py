@@ -30,7 +30,7 @@ class Handler(BaseHTTPRequestHandler):
                 '<Track key="https://other.example/track" title="Invalid"/>'
                 '</MediaContainer>'),
             '/playlists': '<MediaContainer><Playlist key="/playlists/7/items" title="Favorites" playlistType="audio"/></MediaContainer>',
-            '/playlists/7/items': '<MediaContainer totalSize="1"><Track key="/library/metadata/20" title="Playlist Song" grandparentTitle="Artist" parentTitle="Album" duration="125000"/></MediaContainer>',
+            '/playlists/7/items': '<MediaContainer totalSize="1"><Track key="/library/metadata/20" title="Playlist Song" grandparentTitle="Artist" parentTitle="Album" duration="125000" playlistItemID="81"/></MediaContainer>',
         }
         if path == '/library/sections/2/all' and query.get('type') == ['10']:
             fixtures[path] = '<MediaContainer totalSize="151"><Track key="/library/metadata/20" title="Song" grandparentTitle="Artist" parentTitle="Album" duration="125000" thumb="/art" year="1999" addedAt="1700000000" lastViewedAt="1700000100" viewCount="3" userRating="10" originallyAvailableAt="1999-05-01" parentIndex="2" index="4"><Genre tag="Jazz"/><Mood tag="Calm"/><Label tag="Favorite"/><Media bitrate="320" audioCodec="flac"/></Track></MediaContainer>'
@@ -153,6 +153,20 @@ class ClientTests(unittest.TestCase):
         self.assertEqual([item.title for item in playlists], ['Favorites'])
         items, total = self.client.playlist_items(playlists[0])
         self.assertEqual((items[0].title, total), ('Playlist Song', 1))
+        self.assertEqual(items[0].playlist_item_id, 81)
+
+    def test_move_playlist_entry_uses_plex_entry_ids(self):
+        playlist = Item('/playlists/7/items', 'Favorites')
+        self.client.move_playlist_item(playlist, 81, 80)
+        method, path, token = Handler.requests[-1]
+        self.assertEqual((method, urlsplit(path).path, token),
+                         ('PUT', '/playlists/7/items/81/move', 'test-secret'))
+        self.assertEqual(parse_qs(urlsplit(path).query), {'after': ['80']})
+        self.client.move_playlist_item(playlist, 81)
+        self.assertEqual(parse_qs(urlsplit(Handler.requests[-1][1]).query), {})
+        for item_id, after_id in ((0, None), (81, 81), (81, -1)):
+            with self.assertRaises(ValueError):
+                self.client.move_playlist_item(playlist, item_id, after_id)
 
     def test_create_playlist_and_add_song(self):
         track = Item('/library/metadata/20', 'Song')

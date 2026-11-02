@@ -77,6 +77,7 @@ class PlayerControlTests(unittest.TestCase):
             song_view=SimpleNamespace(set_model=lambda _model: None),
             song_view_cache=OrderedDict(), song_view_key=None,
             song_catalog_source=(client, 'music', None, None), song_catalog=songs,
+            update_song_drag_mode=lambda: None,
             effective_library_sort=lambda: None,
             display_song_page=lambda results, *_args: shown.extend(results))
         Player.load_songs(player)
@@ -165,6 +166,7 @@ class PlayerControlTests(unittest.TestCase):
             song_view_cache=OrderedDict(), song_view_key=None,
             song_catalog_source=source,
             song_catalog=[Item(f'/library/metadata/{index}', 'Song') for index in range(2001)],
+            update_song_drag_mode=lambda: None,
             effective_library_sort=lambda: None,
             song_count=SimpleNamespace(set_text=lambda _text: None),
             async_work=lambda work, done, valid: scheduled.append((work, done, valid)))
@@ -189,6 +191,7 @@ class PlayerControlTests(unittest.TestCase):
             song_store=object(),
             song_view=SimpleNamespace(set_model=displayed.append),
             song_catalog_source=None, song_catalog=None,
+            update_song_drag_mode=lambda: None,
             effective_library_sort=lambda: None,
             song_count=SimpleNamespace(set_text=displayed.append),
             start_song_catalog=lambda *_args: self.fail('Requeried server'),
@@ -403,9 +406,13 @@ class PlayerControlTests(unittest.TestCase):
     def test_library_artist_left_click_keeps_current_view(self):
         row = Gtk.TreePath.new_from_indices([0])
         artist_column = Gtk.TreeViewColumn('Artist')
-        view = SimpleNamespace(get_path_at_pos=lambda *_: (row, artist_column, 0, 0))
+        view = SimpleNamespace(get_path_at_pos=lambda *_: (row, artist_column, 0, 0),
+                               get_selection=lambda: SimpleNamespace(
+                                   path_is_selected=lambda _path: False))
         event = SimpleNamespace(button=1, x=10, y=10)
-        self.assertFalse(Player.library_artist_pressed(SimpleNamespace(), view, event))
+        player = SimpleNamespace(playlist_pointer_mode=lambda: False)
+        self.assertFalse(Player.library_artist_pressed(player, view, event))
+        self.assertEqual(player.song_drag_candidate_indices, [0])
 
     def test_hidden_tooltips_stay_hidden_when_dynamic_text_changes(self):
         root = Gtk.Box()

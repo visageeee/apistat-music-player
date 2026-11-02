@@ -34,6 +34,25 @@ def move_items(queue, current_index, selected, destination):
     return reorder_items(queue, current_index, order)
 
 
+def playlist_move_plan(items, selected, destination):
+    """Return the new order and Plex moves needed to keep selected entries together."""
+    ids = [item.playlist_item_id for item in items]
+    if any(type(item_id) is not int or item_id <= 0 for item_id in ids) or len(set(ids)) != len(ids):
+        raise ValueError('Playlist entries need unique Plex item IDs')
+    updated, _ = move_items(items, -1, selected, destination)
+    if updated == list(items):
+        return updated, []
+    selected_ids = {ids[index] for index in selected}
+    first = next(index for index, item in enumerate(updated)
+                 if item.playlist_item_id in selected_ids)
+    after = updated[first - 1].playlist_item_id if first else None
+    moves = []
+    for item in updated[first:first + len(selected_ids)]:
+        moves.append((item.playlist_item_id, after))
+        after = item.playlist_item_id
+    return updated, moves
+
+
 def remove_items(queue, current_index, selected):
     indices = set(selected)
     if any(index < 0 or index >= len(queue) for index in indices):

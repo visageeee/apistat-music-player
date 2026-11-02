@@ -40,6 +40,8 @@ class Item:
     user_rating: float = 0.0
     bitrate: int = 0
     codec: str = ''
+    playlist_item_id: int = 0
+    smart: bool = False
 
 
 class PlexClient:
@@ -185,7 +187,8 @@ class PlexClient:
                     last_played_at=integer('lastViewedAt'),
                     play_count=integer('viewCount'), user_rating=user_rating,
                     bitrate=integer('bitrate', media),
-                    codec=media.get('audioCodec', '') if media is not None else '')
+                    codec=media.get('audioCodec', '') if media is not None else '',
+                    playlist_item_id=integer('playlistItemID'))
 
     def songs(self, section, start=0, sort='addedAt:desc'):
         if sort not in ('addedAt:desc', 'titleSort', 'artist.titleSort,titleSort'):
@@ -197,7 +200,8 @@ class PlexClient:
 
     def playlists(self):
         root = self.xml('/playlists', playlistType='audio')
-        return [Item(x.attrib['key'], x.get('title', 'Untitled playlist'))
+        return [Item(x.attrib['key'], x.get('title', 'Untitled playlist'),
+                     smart=x.get('smart') == '1')
                 for x in root.findall('Playlist') if x.get('key', '').startswith('/playlists/')]
 
     def track_uri(self, track):
@@ -228,6 +232,15 @@ class PlexClient:
             raise ValueError('Invalid playlist or song.')
         uri = self.track_uri(track)
         self.request('PUT', f'/playlists/{match.group(1)}/items', uri=uri)
+
+    def move_playlist_item(self, playlist, item_id, after_id=None):
+        match = re.fullmatch(r'/playlists/(\d+)/items', playlist.key)
+        if not match or type(item_id) is not int or item_id <= 0 or (
+                after_id is not None and (type(after_id) is not int or after_id <= 0
+                                          or after_id == item_id)):
+            raise ValueError('Invalid playlist move.')
+        path = f'/playlists/{match.group(1)}/items/{item_id}/move'
+        self.request('PUT', path, **({'after': after_id} if after_id is not None else {}))
 
     def rate_track(self, track, loved=True):
         match = re.fullmatch(r'/library/metadata/(\d+)', track.key)

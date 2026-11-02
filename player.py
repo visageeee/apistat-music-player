@@ -54,7 +54,7 @@ from library_catalog import build_song_catalog, filter_sort_songs
 from smart_playlists import apply_definition, load_for_scope, save_for_scope
 from smart_playlist_dialog import SmartPlaylistDialog
 from play_queue import (insert_items, move_items, remove_items,
-                        select_similar_tracks)
+                        playlist_move_plan, select_similar_tracks)
 from drag_payload import encode_track_keys, decode_track_keys
 from waveform import Waveform, spectrum_values
 from window_shape import rounded_region
@@ -287,7 +287,8 @@ class Player(Gtk.Window):
                 box-shadow: none; min-width: 0; min-height: 0; opacity: 0; }
             #wave-timeline { background: transparent; margin: 8px 0; }
             #plex-player *:focus { outline: none; box-shadow: none; }
-            #side-nav { background: #101010; border: 0; }
+            #side-nav, #side-nav-surface { background: #101010; border: 0;
+                box-shadow: none; }
             #side-nav button { background: transparent; border: 0; box-shadow: none;
                 padding: 12px; border-radius: 8px; }
             #side-nav button.active { background: #35302a; }
@@ -305,8 +306,15 @@ class Player(Gtk.Window):
             #song-scroll, #song-scroll viewport, #song-view {
                 background: #111; border: 0; box-shadow: none; }
             #playlist-panel row, #smart-playlist-panel row, #song-panel row { color: #eee; }
-            #settings-panel, #settings-tabs, #settings-tabs scrolledwindow,
-            #settings-tabs viewport, #settings-tabs header { background: #181818; }
+            #settings-panel, #settings-background, #settings-stack, #settings-tabs,
+            #settings-tabs scrolledwindow, #settings-tabs viewport,
+            #settings-tabs header { background: #181818; border: 0;
+                box-shadow: none; }
+            #settings-panel { padding: 24px; }
+            #settings-tabs > border { border: 0; box-shadow: none; }
+            #song-drag-ghost { background: #292929; color: #f3f3f3;
+                border: 1px solid #777; border-radius: 4px;
+                box-shadow: 0 3px 10px rgba(0, 0, 0, 0.35); padding: 5px 10px; }
             #song-panel { background: #181818; border: 0; }
             #queue-panel, #queue-scroll, #queue-scroll viewport, #queue-view {
                 background: transparent; border: 0; box-shadow: none; }
@@ -373,7 +381,8 @@ class Player(Gtk.Window):
         self.sidebar_overlay = Gtk.Overlay()
         self.sidebar_overlay.add(self.sidebar)
         self.sidebar_drop_surface = Gtk.EventBox()
-        self.sidebar_drop_surface.set_visible_window(False)
+        self.sidebar_drop_surface.set_visible_window(True)
+        self.sidebar_drop_surface.set_name('side-nav-surface')
         self.sidebar_drop_surface.add(self.sidebar_overlay)
         layout.pack_start(self.sidebar_drop_surface, False, False, 0)
         self.nav_drop_target = Gtk.TargetEntry.new('application/x-plex-sidebar-view',
@@ -425,6 +434,15 @@ class Player(Gtk.Window):
         self.content_overlay = Gtk.Overlay()
         self.content_overlay.add(self.content_views)
         main.pack_start(self.content_overlay, True, True, 0)
+        self.song_drag_overlay = Gtk.Fixed()
+        self.song_drag_overlay.set_halign(Gtk.Align.FILL)
+        self.song_drag_overlay.set_valign(Gtk.Align.FILL)
+        self.content_overlay.add_overlay(self.song_drag_overlay)
+        self.content_overlay.set_overlay_pass_through(self.song_drag_overlay, True)
+        self.song_drag_ghost = Gtk.Label()
+        self.song_drag_ghost.set_name('song-drag-ghost')
+        self.song_drag_ghost.set_no_show_all(True)
+        self.song_drag_overlay.put(self.song_drag_ghost, 0, 0)
         self.loading_overlay = Gtk.EventBox()
         self.loading_overlay.set_name('startup-loading')
         loading_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
@@ -711,6 +729,7 @@ class Player(Gtk.Window):
         self.status_changed()
         self.apply_theme()
         self.show_all()
+        self.song_drag_ghost.hide()
         self.update_window_controls()
         self.timeline_stack.set_visible_child_name(
             'waveform' if self.timeline_waveform_enabled else 'line')
@@ -807,12 +826,13 @@ class Player(Gtk.Window):
     def apply_theme(self):
         if self.theme == 'black':
             css = '''
-                #plex-player, #side-nav, #player-bar, #library-split,
+                #plex-player, #side-nav, #side-nav-surface, #player-bar, #library-split,
                 #library-split separator, #playlist-panel, #smart-playlist-panel, #song-panel,
                 #playlist-scroll, #playlist-scroll viewport, #playlist-list,
                 #smart-playlist-scroll, #smart-playlist-scroll viewport, #smart-playlist-list,
                 #song-scroll, #song-scroll viewport, #song-view,
-                #settings-panel, #queue-panel, #queue-scroll, #queue-view,
+                #settings-panel, #settings-background, #settings-stack,
+                #queue-panel, #queue-scroll, #queue-view,
                 #startup-loading, #album-sort-bar button,
                 #settings-tabs, #settings-tabs scrolledwindow, #settings-tabs viewport,
                 #settings-tabs header, #plex-player entry,
@@ -825,16 +845,22 @@ class Player(Gtk.Window):
                 #song-view.view:selected, #queue-view.view:selected,
                 #album-track-view.view:selected { background: #303030; color: #fff; }
                 #smart-playlist-list row:selected { background: #303030; color: #fff; }
+                #song-drag-ghost { background: #111; color: #fff; border-color: #666; }
             '''
         elif self.theme == 'light':
             css = '''
-                #plex-player, #settings-panel, #playlist-panel, #smart-playlist-panel, #song-panel,
+                #plex-player, #settings-panel, #settings-background,
+                #settings-stack, #playlist-panel,
+                #smart-playlist-panel, #song-panel,
                 #startup-loading,
                 #library-split, #library-split separator { background: #f5f5f3; color: #202326; }
                 #library-side-split separator { background: #c9c9c5; }
                 #plex-player label, #album-grid #album-title, #album-grid #album-meta,
                 #now-album, #bar-track-artist { color: #202326; }
-                #side-nav, #player-bar { background: #e9e9e6; color: #202326; }
+                #side-nav, #side-nav-surface, #player-bar {
+                    background: #e9e9e6; color: #202326; }
+                #song-drag-ghost { background: #fff; color: #202326;
+                    border-color: #999; }
                 #side-nav image, #player-bar image { color: #202326; }
                 #playlist-scroll, #playlist-scroll viewport, #playlist-list,
                 #smart-playlist-scroll, #smart-playlist-scroll viewport, #smart-playlist-list,
@@ -980,7 +1006,7 @@ class Player(Gtk.Window):
         self._album_wall_width = allocation.width
         if not getattr(self, '_album_layout_pending', False):
             self._album_layout_pending = True
-            GLib.idle_add(self.apply_album_grid_layout)
+            GLib.idle_add(self.apply_album_grid_columns)
 
     def album_scroll_changed(self, *_):
         self.maybe_load_more_albums()
@@ -996,13 +1022,24 @@ class Player(Gtk.Window):
             self.load_albums(True)
         return False
 
-    def apply_album_grid_layout(self):
+    def apply_album_grid_columns(self):
         self._album_layout_pending = False
+        width = self.wall_scroll.get_allocated_width()
+        usable = max(0, width - 2 * self.album_margin - 18)
+        columns = max(1, min(ALBUM_COLUMN_RANGE[1],
+                             (usable + self.album_spacing) //
+                             max(1, self.album_art_size + self.album_spacing)))
+        if columns != getattr(self, '_album_display_columns', None):
+            self._album_display_columns = columns
+            self.grid.set_min_children_per_line(columns)
+            self.grid.set_max_children_per_line(columns)
+        return False
+
+    def apply_album_grid_layout(self):
         size = album_cover_size(self.wall_scroll.get_allocated_width(), self.album_columns,
                                 self.album_margin, self.album_spacing)
-        self.grid.set_min_children_per_line(self.album_columns)
-        self.grid.set_max_children_per_line(self.album_columns)
         if size == self.album_art_size:
+            self.apply_album_grid_columns()
             return False
         self.album_art_size = size
         for child in self.grid.get_children():
@@ -1013,6 +1050,7 @@ class Player(Gtk.Window):
             tile.heading_button.set_visible(size >= 100)
             tile.cover_button.set_label('‹' if size < 100 else '‹ Cover')
         self.grid.queue_resize()
+        self.apply_album_grid_columns()
         return False
 
     def window_allocated(self, _window, allocation):
@@ -1769,6 +1807,18 @@ class Player(Gtk.Window):
 
     def library_artist_pressed(self, view, event):
         hit = view.get_path_at_pos(int(event.x), int(event.y))
+        if event.button == 1:
+            selected = view.get_selection()
+            self.song_drag_candidate_indices = (
+                self.selected_song_indices() if hit and selected.path_is_selected(hit[0])
+                else [hit[0].get_indices()[0]] if hit else [])
+            modifiers = Gdk.ModifierType.SHIFT_MASK | Gdk.ModifierType.CONTROL_MASK
+            self.song_pointer_drag = (
+                {'indices': self.song_drag_candidate_indices, 'x': event.x,
+                 'y': event.y, 'active': False}
+                if self.playlist_pointer_mode() and self.song_drag_candidate_indices
+                and not (getattr(event, 'state', 0) & modifiers) else None)
+            return False
         if event.button == 3 and hit:
             index = hit[0].get_indices()[0]
             if 0 <= index < len(self.songs):
@@ -2172,11 +2222,18 @@ class Player(Gtk.Window):
         self.song_view.connect('columns-changed', self.library_columns_changed)
         self.song_view.connect('row-activated', self.activate_song)
         self.song_view.connect('button-press-event', self.library_artist_pressed)
-        song_target = [Gtk.TargetEntry.new('application/x-plex-song-key',
-                                           Gtk.TargetFlags.SAME_APP, 0)]
+        self.song_drag_targets = [Gtk.TargetEntry.new('application/x-plex-song-key',
+                                                      Gtk.TargetFlags.SAME_APP, 0)]
         self.song_view.enable_model_drag_source(Gdk.ModifierType.BUTTON1_MASK,
-                                                 song_target, Gdk.DragAction.COPY)
+                                                 self.song_drag_targets, Gdk.DragAction.COPY)
+        self.song_native_drag_enabled = True
+        self.song_view.connect('drag-begin', self.song_drag_begin)
+        self.song_view.connect('drag-end', self.song_drag_end)
         self.song_view.connect('drag-data-get', self.song_drag_data_get)
+        self.song_view.add_events(Gdk.EventMask.POINTER_MOTION_MASK |
+                                  Gdk.EventMask.BUTTON_RELEASE_MASK)
+        self.song_view.connect('motion-notify-event', self.song_pointer_motion)
+        self.song_view.connect('button-release-event', self.song_pointer_release)
         song_scroll = self.scroll(self.song_view)
         song_scroll.set_name('song-scroll')
         song_scroll.set_shadow_type(Gtk.ShadowType.NONE)
@@ -2196,6 +2253,7 @@ class Player(Gtk.Window):
         self.song_total = 0
         self.song_generation = 0
         self.playlist_generation = 0
+        self.playlist_reorder_pending = False
         self.current_library_layout_key = None
         self.library_layout_restoring = False
         self.library_layout_save_timeout = 0
@@ -2346,6 +2404,26 @@ class Player(Gtk.Window):
         return [model[path][0] for path in paths if model[path][0] >= 0]
 
     @staticmethod
+    def song_drag_description(tracks, indices):
+        if not indices:
+            return ''
+        title = tracks[indices[0]].title
+        return title if len(indices) == 1 else f'{title}  +{len(indices) - 1}'
+
+    def show_song_drag_ghost(self, view, event, tracks, indices):
+        self.song_drag_ghost.set_text(self.song_drag_description(tracks, indices))
+        self.song_drag_ghost.set_no_show_all(False)
+        self.song_drag_ghost.show_all()
+        translated = view.translate_coordinates(self.song_drag_overlay,
+                                                int(event.x), int(event.y))
+        if translated:
+            x, y = translated[-2:]
+            self.song_drag_overlay.move(self.song_drag_ghost, x + 12, y + 12)
+
+    def hide_song_drag_ghost(self):
+        self.song_drag_ghost.hide()
+
+    @staticmethod
     def queue_row_selectable(_selection, model, path, _selected):
         return model[path][0] >= 0
 
@@ -2379,6 +2457,7 @@ class Player(Gtk.Window):
             if abs(event.x - drag['x']) < 5 and abs(event.y - drag['y']) < 5:
                 return False
             drag['active'] = True
+        self.show_song_drag_ghost(view, event, self.queue, drag['indices'])
         self.queue_pointer_destination(view, event.x, event.y, show_marker=True)
         return True
 
@@ -2387,6 +2466,7 @@ class Player(Gtk.Window):
             return False
         drag = getattr(self, 'queue_pointer_drag', None)
         self.queue_pointer_drag = None
+        self.hide_song_drag_ghost()
         if not drag or not drag['active']:
             return False
         destination = self.queue_pointer_destination(view, event.x, event.y)
@@ -2441,9 +2521,11 @@ class Player(Gtk.Window):
 
     def build_settings_view(self):
         self.settings_stack = Gtk.Stack()
+        self.settings_stack.set_name('settings-stack')
         self.settings_tabs = Gtk.Notebook()
         self.settings_tabs.set_name('settings-tabs')
-        panel = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=18, margin=24)
+        self.settings_tabs.set_show_border(False)
+        panel = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=18)
         panel.set_name('settings-panel')
         heading = Gtk.Label(label='Settings', xalign=0)
         heading.set_name('now-title')
@@ -2493,7 +2575,7 @@ class Player(Gtk.Window):
         self.remote_request_status.set_line_wrap(True)
         panel.pack_start(self.remote_request_status, False, False, 0)
         self.settings_tabs.append_page(self.scroll(panel), Gtk.Label(label='Connection'))
-        panel = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=18, margin=24)
+        panel = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=18)
         panel.set_name('settings-panel')
         appearance_heading = Gtk.Label(label='Appearance', xalign=0)
         appearance_heading.set_name('now-title')
@@ -2585,7 +2667,7 @@ class Player(Gtk.Window):
         self.font_button.connect('font-set', self.custom_font_changed)
         panel.pack_start(self.font_button, False, False, 0)
         self.settings_tabs.append_page(self.scroll(panel), Gtk.Label(label='Appearance'))
-        panel = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=18, margin=24)
+        panel = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=18)
         panel.set_name('settings-panel')
         library_heading = Gtk.Label(label='Library and Search', xalign=0)
         library_heading.set_name('now-title')
@@ -2607,7 +2689,7 @@ class Player(Gtk.Window):
         panel.pack_start(shortcuts_button, False, False, 0)
         self.settings_tabs.append_page(self.scroll(panel), Gtk.Label(label='Library'))
 
-        shortcut_page = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=16, margin=24)
+        shortcut_page = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=16)
         shortcut_page.set_name('settings-panel')
         heading = Gtk.Label(label='Global keyboard shortcuts', xalign=0)
         heading.set_name('now-title')
@@ -2641,7 +2723,10 @@ class Player(Gtk.Window):
         self.shortcut_scroll = self.scroll(shortcut_page)
         self.settings_tabs.append_page(self.shortcut_scroll, Gtk.Label(label='Keyboard'))
         self.settings_tabs.connect('switch-page', self.settings_tab_changed)
-        self.settings_stack.add_named(self.settings_tabs, 'main')
+        settings_background = Gtk.EventBox()
+        settings_background.set_name('settings-background')
+        settings_background.add(self.settings_tabs)
+        self.settings_stack.add_named(settings_background, 'main')
         self.content_views.add_named(self.settings_stack, 'settings')
 
     def show_shortcuts_page(self, *_):
@@ -2850,7 +2935,7 @@ class Player(Gtk.Window):
         self.album_wall.set_spacing(self.album_spacing)
         self.grid.set_row_spacing(self.album_spacing)
         self.grid.set_column_spacing(self.album_spacing)
-        self.apply_album_grid_layout()
+        self.apply_album_grid_columns()
         try:
             save_album_margins(self.album_margin, self.album_spacing)
         except OSError:
@@ -3271,13 +3356,174 @@ class Player(Gtk.Window):
                         lambda: self.song_count.set_text(
                             'Could not create playlist. ' + self.status.get_text()))
 
-    def song_drag_data_get(self, _view, _context, selection, _info, _time):
+    def selected_song_indices(self):
         _model, paths = self.song_view.get_selection().get_selected_rows()
-        keys = [self.songs[index].key for path in paths
+        return [index for path in paths
                 if 0 <= (index := path.get_indices()[0]) < len(self.songs)]
-        data = encode_track_keys(keys)
+
+    def song_drag_begin(self, _view, context):
+        indices = (getattr(self, 'song_drag_candidate_indices', None)
+                   or self.selected_song_indices())
+        self.song_drag_indices = indices
+        if not indices:
+            return
+        icon = Gtk.Label(label=self.song_drag_description(self.songs, indices))
+        icon.set_name('song-drag-ghost')
+        icon.set_max_width_chars(36)
+        icon.set_ellipsize(Pango.EllipsizeMode.END)
+        icon.show()
+        Gtk.drag_set_icon_widget(context, icon, 10, 10)
+
+    def song_drag_end(self, _view, _context):
+        self.song_drag_indices = []
+        self.song_drag_candidate_indices = []
+
+    def song_drag_data_get(self, _view, _context, selection, info, _time):
+        indices = getattr(self, 'song_drag_indices', None) or self.selected_song_indices()
+        data = encode_track_keys([self.songs[index].key for index in indices])
         if data:
             selection.set(selection.get_target(), 8, data)
+
+    def playlist_pointer_mode(self):
+        return bool(self.active_playlist and not self.active_playlist.smart and
+                    not self.active_smart_playlist and
+                    self.library_album_filter is None and
+                    not self.library_search.get_text().strip() and
+                    self.effective_library_sort() is None)
+
+    def update_song_drag_mode(self):
+        native = not self.playlist_pointer_mode()
+        if native == self.song_native_drag_enabled:
+            return
+        self.song_native_drag_enabled = native
+        if native:
+            self.song_view.enable_model_drag_source(
+                Gdk.ModifierType.BUTTON1_MASK, self.song_drag_targets, Gdk.DragAction.COPY)
+        else:
+            self.song_view.unset_rows_drag_source()
+
+    def playlist_reorder_allowed(self):
+        return bool(self.client and self.playlist_pointer_mode() and
+                    len(self.songs) == self.song_total and
+                    not getattr(self, 'playlist_reorder_pending', False) and
+                    all(song.playlist_item_id > 0 for song in self.songs))
+
+    def song_drop_position(self, x, y, show_marker=False):
+        hit = self.song_view.get_path_at_pos(int(x), int(y))
+        if hit:
+            path = hit[0]
+            area = self.song_view.get_background_area(path, None)
+            after = y >= area.y + area.height / 2
+            if show_marker:
+                self.song_view.set_drag_dest_row(
+                    path, Gtk.TreeViewDropPosition.AFTER if after
+                    else Gtk.TreeViewDropPosition.BEFORE)
+            return path.get_indices()[0] + int(after)
+        if show_marker and self.songs:
+            path = Gtk.TreePath.new_from_indices([len(self.songs) - 1])
+            self.song_view.set_drag_dest_row(path, Gtk.TreeViewDropPosition.AFTER)
+        return len(self.songs)
+
+    def song_pointer_motion(self, view, event):
+        drag = getattr(self, 'song_pointer_drag', None)
+        if not drag or not (event.state & Gdk.ModifierType.BUTTON1_MASK):
+            return False
+        if not drag['active']:
+            if abs(event.x - drag['x']) < 5 and abs(event.y - drag['y']) < 5:
+                return False
+            drag['active'] = True
+        self.show_song_drag_ghost(view, event, self.songs, drag['indices'])
+        if self.playlist_reorder_allowed():
+            self.song_drop_position(event.x, event.y, show_marker=True)
+        return True
+
+    def pointer_position_in(self, widget, event):
+        if not hasattr(event, 'x_root') or not widget.get_mapped():
+            return None
+        origin = self.get_window().get_origin()[-2:]
+        translated = widget.translate_coordinates(self, 0, 0)
+        if not translated:
+            return None
+        offset_x, offset_y = translated[-2:]
+        x = event.x_root - origin[0] - offset_x
+        y = event.y_root - origin[1] - offset_y
+        if 0 <= x < widget.get_allocated_width() and 0 <= y < widget.get_allocated_height():
+            return x, y
+        return None
+
+    def song_pointer_release(self, view, event):
+        if event.button != 1:
+            return False
+        drag = getattr(self, 'song_pointer_drag', None)
+        self.song_pointer_drag = None
+        self.hide_song_drag_ghost()
+        view.set_drag_dest_row(None, Gtk.TreeViewDropPosition.BEFORE)
+        if not drag or not drag['active']:
+            return False
+        if self.pointer_position_in(self.queue_nav, event) is not None:
+            self.enqueue_tracks([self.songs[index] for index in drag['indices']])
+            return True
+        playlist_position = self.pointer_position_in(self.playlist_list, event)
+        if playlist_position is not None:
+            row = self.playlist_list.get_row_at_y(int(playlist_position[1]))
+            if row is not None and row.playlist is not None:
+                self.add_tracks_to_playlist(
+                    row.playlist, [self.songs[index] for index in drag['indices']])
+                return True
+        if self.pointer_position_in(view, event) is None:
+            return True
+        if self.playlist_reorder_allowed():
+            return self.move_playlist_rows(drag['indices'],
+                                           self.song_drop_position(event.x, event.y))
+        return True
+
+    def move_playlist_rows(self, indices, destination):
+        try:
+            updated, moves = playlist_move_plan(self.songs, indices, destination)
+        except ValueError:
+            return False
+        if not moves:
+            return False
+        playlist = self.active_playlist
+        client = self.client
+        section = self.library.get_active_id()
+        old_positions = {song.playlist_item_id: index for index, song in enumerate(self.songs)}
+        self.song_store.reorder([old_positions[song.playlist_item_id] for song in updated])
+        self.songs[:] = updated
+        self.song_results = list(updated)
+        cached = self.song_view_cache.get(self.song_view_key)
+        if cached is not None:
+            cached['results'] = list(updated)
+        for key in list(self.song_view_cache):
+            if key[2] == playlist.key and key != self.song_view_key:
+                del self.song_view_cache[key]
+        if self.song_catalog_source == (client, section, playlist.key, None):
+            self.song_catalog = list(updated)
+        self.playlist_reorder_pending = True
+        self.song_count.set_text(f'Saving order in {playlist.title}…')
+        def work():
+            for item_id, after_id in moves:
+                client.move_playlist_item(playlist, item_id, after_id)
+            LocalCache(client).save_song_index(section, updated, playlist.key)
+        def saved(_result):
+            self.playlist_reorder_pending = False
+            if client is self.client and self.active_playlist is playlist:
+                self.song_count.set_text(f'{len(updated)} of {len(updated)} songs • Playlist order')
+        def failed():
+            self.playlist_reorder_pending = False
+            try:
+                LocalCache(client).song_index_path(section, playlist.key).unlink(missing_ok=True)
+            except OSError:
+                pass
+            for key in list(self.song_view_cache):
+                if key[2] == playlist.key:
+                    del self.song_view_cache[key]
+            if client is self.client and self.active_playlist and self.active_playlist.key == playlist.key:
+                self.invalidate_song_catalog()
+                self.load_songs()
+                self.status.set_text('Could not save playlist order on Plex')
+        self.async_work(work, saved, lambda: True, failed)
+        return True
 
     def drag_media_key(self, _widget, _context, selection, _info, _time, key):
         selection.set(selection.get_target(), 8, key.encode('utf-8'))
@@ -3396,6 +3642,9 @@ class Player(Gtk.Window):
             Gtk.drag_finish(context, False, False, event_time)
             return
         Gtk.drag_finish(context, True, False, event_time)
+        Player.add_tracks_to_playlist(self, playlist, tracks)
+
+    def add_tracks_to_playlist(self, playlist, tracks):
         client = self.client
         self.song_count.set_text(f'Adding {len(tracks)} track(s) to {playlist.title}…')
         def work():
@@ -4078,6 +4327,7 @@ class Player(Gtk.Window):
 
     def scroll(self, child):
         scroll = Gtk.ScrolledWindow()
+        scroll.set_shadow_type(Gtk.ShadowType.NONE)
         scroll.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
         scroll.add(child)
         return scroll
@@ -4400,6 +4650,7 @@ class Player(Gtk.Window):
                              resume_position_ms=playback['position_ms'])
 
     def load_songs(self):
+        self.update_song_drag_mode()
         section = self.library.get_active_id()
         if not self.client or not section:
             self.song_count.set_text('Connect to a server to browse songs')

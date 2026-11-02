@@ -7,13 +7,100 @@ gi.require_version('Gdk', '3.0')
 gi.require_version('Gtk', '3.0')
 from gi.repository import Gdk, Gtk
 
-from play_queue import (insert_items, move_items, remove_items, reorder_items,
+from play_queue import (insert_items, move_items, playlist_move_plan,
+                        remove_items, reorder_items,
                         select_similar_tracks)
 from player import Player
 from plex_client import Item
 
 
 class PlayQueueTests(unittest.TestCase):
+    def test_playlist_move_plan_preserves_duplicate_song_entries(self):
+        songs = [Item('/library/metadata/1', 'Same', playlist_item_id=10),
+                 Item('/library/metadata/1', 'Same', playlist_item_id=11),
+                 Item('/library/metadata/2', 'Other', playlist_item_id=12),
+                 Item('/library/metadata/3', 'Last', playlist_item_id=13)]
+        updated, moves = playlist_move_plan(songs, [1, 2], 4)
+        self.assertEqual([song.playlist_item_id for song in updated], [10, 13, 11, 12])
+        self.assertEqual(moves, [(11, 13), (12, 11)])
+        updated, moves = playlist_move_plan(songs, [2, 3], 0)
+        self.assertEqual([song.playlist_item_id for song in updated], [12, 13, 10, 11])
+        self.assertEqual(moves, [(12, None), (13, 12)])
+        with self.assertRaises(ValueError):
+            playlist_move_plan([Item('/library/metadata/1', 'Missing ID')], [0], 1)
+
+    def test_playlist_drag_updates_rows_and_saves_order_on_server(self):
+        songs = [Item(f'/library/metadata/{index}', str(index), playlist_item_id=10 + index)
+                 for index in range(4)]
+        store = Gtk.ListStore(str)
+        for song in songs:
+            store.append([song.title])
+        playlist = Item('/playlists/7/items', 'Favorites')
+        calls = []
+        class Client:
+            def move_playlist_item(self, _playlist, item_id, after):
+                calls.append((item_id, after))
+        client = Client()
+        source = (client, '2', playlist.key, None)
+        key = (*source, '', None)
+        cache = {key: {'rows': songs, 'results': list(songs)}}
+        player = SimpleNamespace(
+            songs=songs, song_store=store, song_results=list(songs),
+            song_view_cache=cache, song_view_key=key, song_catalog_source=source,
+            song_catalog=list(songs), active_playlist=playlist, client=client,
+            library=SimpleNamespace(get_active_id=lambda: '2'),
+            song_count=SimpleNamespace(set_text=lambda _text: None),
+            async_work=lambda work, done, *_args: done(work()))
+        with patch('player.LocalCache') as local_cache:
+            self.assertTrue(Player.move_playlist_rows(player, [1], 4))
+            local_cache.return_value.save_song_index.assert_called_once()
+        self.assertEqual([row[0] for row in store], ['0', '2', '3', '1'])
+        self.assertEqual([song.title for song in player.songs], ['0', '2', '3', '1'])
+        self.assertEqual(calls, [(11, 13)])
+
+    def test_library_drag_exports_selected_songs_for_queue_icon(self):
+        songs = [Item('/library/metadata/1', 'First'),
+                 Item('/library/metadata/2', 'Second'),
+                 Item('/library/metadata/3', 'Third')]
+        payloads = []
+        selection = SimpleNamespace(get_target=lambda: 'application/x-plex-song-key',
+                                    set=lambda _target, _format, data: payloads.append(data))
+        player = SimpleNamespace(songs=songs, song_drag_indices=[0, 2])
+        Player.song_drag_data_get(player, None, None, selection, 0, 0)
+        self.assertEqual(payloads, [b'/library/metadata/1\n/library/metadata/3'])
+
+    def test_playlist_view_switches_to_pointer_drag_and_back(self):
+        calls = []
+        view = SimpleNamespace(
+            unset_rows_drag_source=lambda: calls.append('pointer'),
+            enable_model_drag_source=lambda *_args: calls.append('native'))
+        player = SimpleNamespace(song_view=view, song_native_drag_enabled=True,
+                                 song_drag_targets=[], playlist_pointer_mode=lambda: True)
+        Player.update_song_drag_mode(player)
+        Player.update_song_drag_mode(player)
+        self.assertEqual(calls, ['pointer'])
+        player.playlist_pointer_mode = lambda: False
+        Player.update_song_drag_mode(player)
+        self.assertEqual(calls, ['pointer', 'native'])
+
+    def test_playlist_pointer_release_uses_insertion_position(self):
+        movements = []
+        view = SimpleNamespace(set_drag_dest_row=lambda *_args: None)
+        queue_icon = object()
+        playlist_list = object()
+        player = SimpleNamespace(
+            song_pointer_drag={'indices': [1, 2], 'active': True},
+            hide_song_drag_ghost=lambda: None,
+            queue_nav=queue_icon, playlist_list=playlist_list,
+            pointer_position_in=lambda widget, _event: (5, 5) if widget is view else None,
+            playlist_reorder_allowed=lambda: True,
+            song_drop_position=lambda _x, _y: 4,
+            move_playlist_rows=lambda indices, destination:
+                movements.append((indices, destination)) or True)
+        self.assertTrue(Player.song_pointer_release(
+            player, view, SimpleNamespace(button=1, x=10, y=20)))
+        self.assertEqual(movements, [([1, 2], 4)])
+
     def test_queue_selection_callback_accepts_gtk_arguments(self):
         model = Gtk.ListStore(int)
         model.append([-1])
@@ -236,6 +323,8 @@ class PlayQueueTests(unittest.TestCase):
             queue=tracks, index=2, queue_pointer_drag={
                 'indices': [1, 3], 'x': 5, 'y': 5, 'active': False},
             queue_pointer_destination=lambda _view, _x, _y, show_marker=False: 5,
+            show_song_drag_ghost=lambda *_args: None,
+            hide_song_drag_ghost=lambda: None,
             clear_remote_queue=lambda: changed.append('clear'),
             shuffle=SimpleNamespace(get_active=lambda: False),
             refresh_queue_view=lambda: changed.append('refresh'),

@@ -11,6 +11,21 @@ from player import Player
 
 
 class ArtZoomTests(unittest.TestCase):
+    def test_window_resize_changes_columns_without_changing_cover_pixels(self):
+        widths = [1200, 800]
+        columns = []
+        grid = SimpleNamespace(set_min_children_per_line=lambda value: columns.append(value),
+                               set_max_children_per_line=lambda _value: None)
+        player = SimpleNamespace(_album_layout_pending=True, album_art_size=120,
+                                 album_margin=20, album_spacing=12,
+                                 wall_scroll=SimpleNamespace(get_allocated_width=lambda: widths[0]),
+                                 grid=grid)
+        Player.apply_album_grid_columns(player)
+        widths[0] = 800
+        Player.apply_album_grid_columns(player)
+        self.assertEqual(player.album_art_size, 120)
+        self.assertEqual(columns, [8, 5])
+
     def test_ctrl_wheel_changes_each_view_independently(self):
         resized = []
         layouts = []
