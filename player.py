@@ -315,6 +315,8 @@ class Player(Gtk.Window):
             #song-drag-ghost { background: #292929; color: #f3f3f3;
                 border: 1px solid #777; border-radius: 4px;
                 box-shadow: 0 3px 10px rgba(0, 0, 0, 0.35); padding: 5px 10px; }
+            #song-drop-line { background: #e7a641; min-height: 4px;
+                box-shadow: 0 0 5px rgba(0, 0, 0, 0.75); }
             #song-panel { background: #181818; border: 0; }
             #queue-panel, #queue-scroll, #queue-scroll viewport, #queue-view {
                 background: transparent; border: 0; box-shadow: none; }
@@ -439,6 +441,12 @@ class Player(Gtk.Window):
         self.song_drag_overlay.set_valign(Gtk.Align.FILL)
         self.content_overlay.add_overlay(self.song_drag_overlay)
         self.content_overlay.set_overlay_pass_through(self.song_drag_overlay, True)
+        self.song_drop_line = Gtk.EventBox()
+        self.song_drop_line.set_name('song-drop-line')
+        self.song_drop_line.set_visible_window(True)
+        self.song_drop_line.set_size_request(1, 4)
+        self.song_drop_line.set_no_show_all(True)
+        self.song_drag_overlay.put(self.song_drop_line, 0, 0)
         self.song_drag_ghost = Gtk.Label()
         self.song_drag_ghost.set_name('song-drag-ghost')
         self.song_drag_ghost.set_no_show_all(True)
@@ -730,6 +738,7 @@ class Player(Gtk.Window):
         self.apply_theme()
         self.show_all()
         self.song_drag_ghost.hide()
+        self.song_drop_line.hide()
         self.update_window_controls()
         self.timeline_stack.set_visible_child_name(
             'waveform' if self.timeline_waveform_enabled else 'line')
@@ -819,6 +828,7 @@ class Player(Gtk.Window):
             #side-nav button.queue-pulse image {{ color: {color}; }}
             #song-panel button:checked {{ border-bottom: 2px solid {color}; }}
             #album-card-back button.playing-track {{ background: {wash}; }}
+            #song-drop-line {{ background: {color}; }}
         '''.encode())
         if hasattr(self, 'wave_timeline'):
             self.wave_timeline.set_color(color)
@@ -998,6 +1008,10 @@ class Player(Gtk.Window):
 
     def window_focus_out(self, *_):
         self.space_held = False
+        self.queue_pointer_drag = None
+        self.song_pointer_drag = None
+        self.hide_song_drag_ghost()
+        self.hide_song_drop_line()
         return False
 
     def album_wall_allocated(self, _widget, allocation):
@@ -2423,6 +2437,22 @@ class Player(Gtk.Window):
     def hide_song_drag_ghost(self):
         self.song_drag_ghost.hide()
 
+    def show_song_drop_line(self, view, boundary_y):
+        bin_window = view.get_bin_window()
+        overlay_window = self.song_drag_overlay.get_window()
+        if bin_window is None or overlay_window is None:
+            return
+        bin_x, bin_y = bin_window.get_origin()[-2:]
+        overlay_x, overlay_y = overlay_window.get_origin()[-2:]
+        self.song_drop_line.set_size_request(max(1, view.get_allocated_width()), 4)
+        self.song_drag_overlay.move(self.song_drop_line, bin_x - overlay_x,
+                                    bin_y - overlay_y + round(boundary_y) - 2)
+        self.song_drop_line.set_no_show_all(False)
+        self.song_drop_line.show()
+
+    def hide_song_drop_line(self):
+        self.song_drop_line.hide()
+
     @staticmethod
     def queue_row_selectable(_selection, model, path, _selected):
         return model[path][0] >= 0
@@ -2437,16 +2467,21 @@ class Player(Gtk.Window):
                 if show_marker and first_queue_row < len(self.queue_store):
                     path = Gtk.TreePath.new_from_indices([first_queue_row])
                     view.set_drag_dest_row(path, Gtk.TreeViewDropPosition.BEFORE)
+                    area = view.get_background_area(path, None)
+                    self.show_song_drop_line(view, area.y)
                 return max(0, self.index + 1)
             area = view.get_background_area(path, None)
             after = y >= area.y + area.height / 2
             if show_marker:
                 view.set_drag_dest_row(path, Gtk.TreeViewDropPosition.AFTER if after
                                        else Gtk.TreeViewDropPosition.BEFORE)
+                self.show_song_drop_line(view, area.y + (area.height if after else 0))
             return row_index + int(after)
         if show_marker and len(self.queue_store):
             path = Gtk.TreePath.new_from_indices([len(self.queue_store) - 1])
             view.set_drag_dest_row(path, Gtk.TreeViewDropPosition.AFTER)
+            area = view.get_background_area(path, None)
+            self.show_song_drop_line(view, area.y + area.height)
         return len(self.queue)
 
     def queue_pointer_motion(self, view, event):
@@ -2467,6 +2502,7 @@ class Player(Gtk.Window):
         drag = getattr(self, 'queue_pointer_drag', None)
         self.queue_pointer_drag = None
         self.hide_song_drag_ghost()
+        self.hide_song_drop_line()
         if not drag or not drag['active']:
             return False
         destination = self.queue_pointer_destination(view, event.x, event.y)
@@ -2602,7 +2638,7 @@ class Player(Gtk.Window):
         accent_row.pack_start(Gtk.Label(label='Pick accent color', xalign=0), False, False, 0)
         self.accent_color_button = Gtk.ColorButton()
         self.accent_color_button.set_title('Pick accent color')
-        self.accent_color_button.set_use_alpha(False)
+        Gtk.ColorChooser.set_use_alpha(self.accent_color_button, False)
         rgba = Gdk.RGBA()
         rgba.parse(self.accent_color)
         self.accent_color_button.set_rgba(rgba)
@@ -2662,7 +2698,7 @@ class Player(Gtk.Window):
         panel.pack_start(self.font_toggle, False, False, 0)
         self.font_button = Gtk.FontButton()
         self.font_button.set_show_size(False)
-        self.font_button.set_font_name(self.custom_font or 'Sans')
+        Gtk.FontChooser.set_font(self.font_button, self.custom_font or 'Sans')
         self.font_button.set_sensitive(bool(self.custom_font))
         self.font_button.connect('font-set', self.custom_font_changed)
         panel.pack_start(self.font_button, False, False, 0)
@@ -3028,7 +3064,8 @@ class Player(Gtk.Window):
         self.save_custom_font_setting()
 
     def selected_font_family(self):
-        description = Pango.FontDescription.from_string(self.font_button.get_font_name())
+        description = Pango.FontDescription.from_string(
+            Gtk.FontChooser.get_font(self.font_button))
         return description.get_family() or 'Sans'
 
     def save_custom_font_setting(self):
@@ -3418,10 +3455,14 @@ class Player(Gtk.Window):
                 self.song_view.set_drag_dest_row(
                     path, Gtk.TreeViewDropPosition.AFTER if after
                     else Gtk.TreeViewDropPosition.BEFORE)
+                self.show_song_drop_line(
+                    self.song_view, area.y + (area.height if after else 0))
             return path.get_indices()[0] + int(after)
         if show_marker and self.songs:
             path = Gtk.TreePath.new_from_indices([len(self.songs) - 1])
             self.song_view.set_drag_dest_row(path, Gtk.TreeViewDropPosition.AFTER)
+            area = self.song_view.get_background_area(path, None)
+            self.show_song_drop_line(self.song_view, area.y + area.height)
         return len(self.songs)
 
     def song_pointer_motion(self, view, event):
@@ -3457,6 +3498,7 @@ class Player(Gtk.Window):
         drag = getattr(self, 'song_pointer_drag', None)
         self.song_pointer_drag = None
         self.hide_song_drag_ghost()
+        self.hide_song_drop_line()
         view.set_drag_dest_row(None, Gtk.TreeViewDropPosition.BEFORE)
         if not drag or not drag['active']:
             return False

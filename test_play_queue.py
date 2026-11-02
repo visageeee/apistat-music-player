@@ -91,6 +91,7 @@ class PlayQueueTests(unittest.TestCase):
         player = SimpleNamespace(
             song_pointer_drag={'indices': [1, 2], 'active': True},
             hide_song_drag_ghost=lambda: None,
+            hide_song_drop_line=lambda: None,
             queue_nav=queue_icon, playlist_list=playlist_list,
             pointer_position_in=lambda widget, _event: (5, 5) if widget is view else None,
             playlist_reorder_allowed=lambda: True,
@@ -325,6 +326,7 @@ class PlayQueueTests(unittest.TestCase):
             queue_pointer_destination=lambda _view, _x, _y, show_marker=False: 5,
             show_song_drag_ghost=lambda *_args: None,
             hide_song_drag_ghost=lambda: None,
+            hide_song_drop_line=lambda: None,
             clear_remote_queue=lambda: changed.append('clear'),
             shuffle=SimpleNamespace(get_active=lambda: False),
             refresh_queue_view=lambda: changed.append('refresh'),
@@ -343,15 +345,32 @@ class PlayQueueTests(unittest.TestCase):
 
     def test_queue_pointer_destination_uses_queue_index_after_history(self):
         marks = []
+        lines = []
         view = SimpleNamespace(
             get_path_at_pos=lambda _x, _y: ('next', None, None, None),
             get_background_area=lambda _path, _column: SimpleNamespace(y=20, height=20),
             set_drag_dest_row=lambda *args: marks.append(args))
         player = SimpleNamespace(queue_store={'next': [4]}, queue=[object()] * 5,
-                                 index=2, play_history=[object()] * 2)
+                                 index=2, play_history=[object()] * 2,
+                                 show_song_drop_line=lambda _view, y: lines.append(y))
         self.assertEqual(Player.queue_pointer_destination(
             player, view, 12, 35, show_marker=True), 5)
         self.assertEqual(marks, [('next', Gtk.TreeViewDropPosition.AFTER)])
+        self.assertEqual(lines, [40])
+
+    def test_playlist_pointer_destination_draws_line_between_rows(self):
+        marks = []
+        lines = []
+        path = Gtk.TreePath.new_from_indices([1])
+        view = SimpleNamespace(
+            get_path_at_pos=lambda _x, _y: (path, None, None, None),
+            get_background_area=lambda _path, _column: SimpleNamespace(y=30, height=20),
+            set_drag_dest_row=lambda *args: marks.append(args))
+        player = SimpleNamespace(song_view=view, songs=[object()] * 3,
+                                 show_song_drop_line=lambda _view, y: lines.append(y))
+        self.assertEqual(Player.song_drop_position(player, 5, 45, True), 2)
+        self.assertEqual(marks, [(path, Gtk.TreeViewDropPosition.AFTER)])
+        self.assertEqual(lines, [50])
 
     def test_playlist_drop_adds_every_selected_track(self):
         tracks = [Item('/library/metadata/1', 'One'),
