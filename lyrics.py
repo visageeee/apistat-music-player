@@ -79,7 +79,7 @@ def lookup_lyrics(title, artist, album='', duration_ms=0, opener=urlopen):
     if 1000 <= duration_ms <= 3600000:
         params['duration'] = round(duration_ms / 1000)
     request = Request('https://lrclib.net/api/get?' + urlencode(params),
-                      headers={'User-Agent': 'Apistat/1.0 (https://github.com/visageeee/plex-music-prototype)',
+                      headers={'User-Agent': 'Apistat/1.0 (https://github.com/visageeee/apistat-music-player)',
                                'Accept': 'application/json'})
     try:
         with opener(request, timeout=8) as response:
@@ -108,7 +108,7 @@ def lookup_lyrics_ovh(title, artist, opener=urlopen):
         return None
     path = '/'.join(quote(value.strip(), safe='') for value in (artist, title))
     request = Request('https://api.lyrics.ovh/v1/' + path,
-                      headers={'User-Agent': 'Apistat/1.0 (https://github.com/visageeee/plex-music-prototype)',
+                      headers={'User-Agent': 'Apistat/1.0 (https://github.com/visageeee/apistat-music-player)',
                                'Accept': 'application/json'})
     try:
         with opener(request, timeout=8) as response:

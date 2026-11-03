@@ -38,7 +38,7 @@ class LyricsTests(unittest.TestCase):
         self.assertEqual(parse_qs(url.query), {'track_name': ['A & B'], 'artist_name': ['Artist'],
                                                'album_name': ['Album'], 'duration': ['123']})
         self.assertEqual(timeout, 8)
-        self.assertIn('github.com/visageeee/plex-music-prototype', request.get_header('User-agent'))
+        self.assertIn('github.com/visageeee/apistat-music-player', request.get_header('User-agent'))
         self.assertEqual(result.text, 'First\nSecond')
         self.assertEqual(result.lines, ((1.0, 'First'), (3.2, 'Second')))
 

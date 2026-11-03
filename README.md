@@ -11,7 +11,7 @@ sudo apt update
 sudo apt install python3-gi python3-cairo python3-gi-cairo gir1.2-gtk-3.0 gir1.2-gstreamer-1.0 gir1.2-secret-1 gnome-keyring gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-plugins-bad gstreamer1.0-plugins-ugly gstreamer1.0-libav
 ```
 
-Extract this archive, open a terminal in `plex-music-prototype`, and run:
+Extract this archive, open a terminal in the extracted project directory, and run:
 
 ```bash
 /usr/bin/python3 player.py
