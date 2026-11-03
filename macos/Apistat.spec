@@ -11,9 +11,9 @@ a = Analysis(
     datas=[(str(root / 'apistat.png'), '.'),
            (str(root / 'fonts' / 'Nunito-wght.ttf'), 'fonts'),
            (str(root / 'fonts' / 'OFL.txt'), 'fonts')],
-    hiddenimports=['keyring.backends.macOS'], hookspath=[],
+    hiddenimports=['keyring.backends.macOS', 'gi.repository.Soup'], hookspath=[],
     hooksconfig={'gi': {'icons': ['Adwaita'], 'themes': ['Adwaita'],
-                        'languages': ['en'], 'module-versions': {'Gtk': '3.0'}},
+                        'languages': ['en'], 'module-versions': {'Gtk': '3.0', 'Soup': '3.0'}},
                  'gstreamer': {'include_plugins': plugins}},
     noarchive=False,
 )

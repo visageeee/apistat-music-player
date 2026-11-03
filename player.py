@@ -102,6 +102,13 @@ from companion_account import (PlexAccount, load_device_token, save_device_token
                                clear_device_token)
 from companion_config import load_config, save_config
 
+if sys.platform == 'darwin' and getattr(sys, 'frozen', False):
+    # GStreamer's HTTP plugin loads libsoup dynamically; preload the bundled
+    # library and scan plugins in-process so its symbols are available there.
+    os.environ['GST_REGISTRY_FORK'] = 'no'
+    gi.require_version('Soup', '3.0')
+    from gi.repository import Soup
+    _macos_soup_session = Soup.Session.new()
 Gst.init(None)
 
 
