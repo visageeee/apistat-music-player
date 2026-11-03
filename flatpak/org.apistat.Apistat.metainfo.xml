@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>org.apistat.Apistat</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <name>Apistat</name>
+  <summary>Play music from a Plex server</summary>
+  <description>
+    <p>Browse and play music from your Plex library in a native desktop player.</p>
+    <p>Explore albums, playlists, styles and moods, and manage your play queue.</p>
+  </description>
+  <launchable type="desktop-id">org.apistat.Apistat.desktop</launchable>
+  <url type="homepage">https://github.com/visageeee/plex-music-prototype</url>
+  <content_rating type="oars-1.1"/>
+</component>

@@ -13,7 +13,7 @@ from plex_client import Item
 
 
 SESSION_PATH = Path(GLib.get_user_config_dir()) / 'plex-music-prototype' / 'session.json'
-PANELS = {'now', 'albums', 'library', 'queue', 'settings'}
+PANELS = {'now', 'albums', 'library', 'styles', 'queue', 'lyrics', 'settings'}
 SORTS = {'addedAt:desc', 'titleSort', 'artist.titleSort,titleSort'}
 
 
@@ -73,13 +73,13 @@ def load_session():
               'panel': panel if isinstance(panel, str) and panel in PANELS else 'albums'}
     if data.get('settings_page') in ('main', 'shortcuts'):
         result['settings_page'] = data['settings_page']
-    if type(data.get('settings_tab')) is int and 0 <= data['settings_tab'] <= 3:
+    if type(data.get('settings_tab')) is int and 0 <= data['settings_tab'] <= 4:
         result['settings_tab'] = data['settings_tab']
-    for name in ('server', 'section', 'playlist', 'art_mode'):
+    for name in ('server', 'section', 'playlist'):
         if isinstance(data.get(name), str):
             result[name] = data[name]
     history = data.get('history')
-    if isinstance(history, list) and len(history) <= 5:
+    if isinstance(history, list) and len(history) <= 200:
         tracks = [item_from_data(item) for item in history]
         if all(tracks):
             result['history'] = tracks

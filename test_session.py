@@ -64,6 +64,17 @@ class SessionTests(unittest.TestCase):
         self.assertEqual(restored['panel'], 'library')
         self.assertNotIn('playback', restored)
 
+    def test_more_than_five_previous_tracks_survive_restart(self):
+        tracks = [Item(f'/library/metadata/{index}', f'Song {index}')
+                  for index in range(12)]
+        data = {'version': 1, 'server': 'http://localhost:32400',
+                'history': [session.item_to_data(track) for track in tracks]}
+        with tempfile.TemporaryDirectory() as directory:
+            with patch.object(session, 'SESSION_PATH', Path(directory) / 'session.json'):
+                session.save_session(data)
+                restored = session.load_session()
+        self.assertEqual(restored['history'], tracks)
+
     def test_malformed_panel_and_sort_fall_back_safely(self):
         data = {'version': 1, 'panel': [], 'song_sort': []}
         with tempfile.TemporaryDirectory() as directory:
@@ -112,7 +123,6 @@ class SessionTests(unittest.TestCase):
             content_views=SimpleNamespace(get_visible_child_name=lambda: 'library'),
             settings_stack=SimpleNamespace(get_visible_child_name=lambda: 'main'),
             settings_tabs=SimpleNamespace(get_current_page=lambda: 0),
-            art_stack=SimpleNamespace(get_visible_child_name=lambda: 'waveform'),
             client=SimpleNamespace(address='http://localhost:32400'),
             library=SimpleNamespace(get_active_id=lambda: '2'),
             active_playlist=None, song_sort='addedAt:desc', selected_album=None,
@@ -125,7 +135,7 @@ class SessionTests(unittest.TestCase):
         self.assertEqual(snapshot['window'], {'width': 1260, 'height': 810,
                                                'maximized': True})
         self.assertEqual(snapshot['panel'], 'library')
-        self.assertEqual(snapshot['art_mode'], 'waveform')
+        self.assertNotIn('art_mode', snapshot)
         self.assertEqual(snapshot['playback']['queue'], [session.item_to_data(track)])
         self.assertEqual(snapshot['playback']['position_ms'], 42500)
 

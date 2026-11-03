@@ -1,13 +1,16 @@
 """Now Playing color extraction and its local appearance preference."""
 
 import colorsys
+import hashlib
 import json
 import os
 import random
 import re
 import tempfile
+import threading
 import time
 from array import array
+from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -23,8 +26,8 @@ from local_cache import read_gradient, save_gradient
 SETTINGS_PATH = Path(GLib.get_user_config_dir()) / 'plex-music-prototype' / 'settings.json'
 ALBUM_SIZE_RANGE = (100, 480)
 ALBUM_COLUMN_RANGE = (4, 16)
-ALBUM_WALL_MARGIN = 20
-ALBUM_SPACING = 12
+ALBUM_WALL_MARGIN = 40
+ALBUM_SPACING = 30
 ALBUM_MARGIN_RANGE = (0, 64)
 ALBUM_SPACING_RANGE = (0, 36)
 NOW_SIZE_RANGE = (220, 1000)
@@ -32,9 +35,20 @@ DEFAULT_ALBUM_SIZE = 160
 DEFAULT_NOW_SIZE = 360
 DEFAULT_ACCENT_COLOR = '#e7a641'
 THEMES = ('dark', 'black', 'light')
-DEFAULT_SIDEBAR_ORDER = ('now', 'albums', 'library', 'queue', 'settings')
+DEFAULT_SIDEBAR_ORDER = ('now', 'albums', 'library', 'styles', 'queue', 'lyrics', 'settings')
 COLOR_PATTERN = re.compile(r'^#[0-9a-fA-F]{6}$')
 _gradient_executor = ThreadPoolExecutor(max_workers=1)
+_gradient_memory = OrderedDict()
+_gradient_memory_lock = threading.Lock()
+
+
+def preloaded_gradient(width, height, colors):
+    key = width, height, colors
+    with _gradient_memory_lock:
+        result = _gradient_memory.get(key)
+        if result is not None:
+            _gradient_memory.move_to_end(key)
+        return result
 
 
 def render_dithered_gradient(width, height, colors):
@@ -67,19 +81,31 @@ def render_dithered_gradient(width, height, colors):
 
 
 def cached_gradient(width, height, colors):
+    ready = preloaded_gradient(width, height, colors)
+    if ready is not None:
+        return ready
     surface = read_gradient(colors, width, height)
-    if surface is not None:
-        return surface, None
-    surface, pixels = render_dithered_gradient(width, height, colors)
-    try:
-        save_gradient(colors, width, height, surface)
-    except (OSError, cairo.Error):
-        pass
-    return surface, pixels
+    if surface is None:
+        surface, pixels = render_dithered_gradient(width, height, colors)
+        try:
+            save_gradient(colors, width, height, surface)
+        except (OSError, cairo.Error):
+            pass
+    else:
+        pixels = None
+    result = surface, pixels
+    with _gradient_memory_lock:
+        _gradient_memory[width, height, colors] = result
+        _gradient_memory.move_to_end((width, height, colors))
+        while len(_gradient_memory) > 4:
+            _gradient_memory.popitem(last=False)
+    return result
 
 
 class DitheredGradient(Gtk.DrawingArea):
     """A smoothly dithered artwork gradient cached until colors or size change."""
+
+    FADE_SECONDS = 0.8
 
     def __init__(self):
         super().__init__()
@@ -88,14 +114,87 @@ class DitheredGradient(Gtk.DrawingArea):
         self._cache = None
         self._rendering = False
         self._failed_key = None
+        self._previous = None
+        self._previous_pixels = None
+        self._fade_started = None
+        self._fade_source = 0
+        self._render_delay_source = 0
+        self._scheduled_key = None
+        self._disposed = False
         self.connect('draw', self.draw_gradient)
+        self.connect('destroy', self._destroy_gradient)
+
+    def _destroy_gradient(self, *_args):
+        self._disposed = True
+        self._stop_fade()
+        if self._render_delay_source:
+            GLib.source_remove(self._render_delay_source)
+            self._render_delay_source = 0
+
+    def _stop_fade(self, *_args):
+        if self._fade_source:
+            self.remove_tick_callback(self._fade_source)
+            self._fade_source = 0
+
+    @classmethod
+    def fade_alpha(cls, elapsed):
+        progress = max(0.0, min(1.0, elapsed / cls.FADE_SECONDS))
+        return progress * progress * (3 - 2 * progress)
+
+    def _fade_tick(self, _widget, _frame_clock):
+        if self._fade_started is None:
+            self._fade_source = 0
+            return False
+        self.queue_draw()
+        if time.monotonic() - self._fade_started >= self.FADE_SECONDS:
+            self._previous = None
+            self._previous_pixels = None
+            self._fade_started = None
+            self._fade_source = 0
+            return False
+        return True
+
+    def _begin_fade(self):
+        self._fade_started = time.monotonic()
+        if not self._fade_source:
+            self._fade_source = self.add_tick_callback(self._fade_tick)
+        self.queue_draw()
 
     def set_colors(self, colors):
         if self.colors == colors:
             return
+        width, height = self.get_allocated_width(), self.get_allocated_height()
+        old_surface = (self._cache[1] if self._cache is not None and
+                       self._cache[0] == (width, height, self.colors) else None)
+        if self._previous is not None and self._fade_started is None:
+            previous = self._previous
+            previous_pixels = self._previous_pixels
+        elif self._previous is not None and width > 0 and height > 0:
+            snapshot = cairo.ImageSurface(cairo.FORMAT_ARGB32, width, height)
+            snapshot_context = cairo.Context(snapshot)
+            old_colors, previous_surface, old_fallback = self._previous
+            self._paint_source(snapshot_context, width, height, old_colors,
+                               previous_surface, old_fallback)
+            self._paint_source(snapshot_context, width, height, self.colors,
+                               old_surface, self.fallback_color,
+                               self.fade_alpha(time.monotonic() - self._fade_started))
+            previous = (None, snapshot, self.fallback_color)
+            previous_pixels = None
+        else:
+            previous = (self.colors, old_surface, self.fallback_color)
+            previous_pixels = self._cache[2] if old_surface is not None else None
+        self._previous = previous
+        self._previous_pixels = previous_pixels
+        self._fade_started = None
         self.colors = colors
         self._cache = None
         self._failed_key = None
+        ready = (preloaded_gradient(width, height, colors)
+                 if colors and width > 0 and height > 0 else None)
+        if ready is not None:
+            self._cache = (width, height, colors), ready[0], ready[1]
+        if colors is None or ready is not None:
+            self._begin_fade()
         self.queue_draw()
 
     def set_fallback_color(self, color):
@@ -109,43 +208,82 @@ class DitheredGradient(Gtk.DrawingArea):
         future = _gradient_executor.submit(cached_gradient, width, height, colors)
         future.add_done_callback(lambda completed: GLib.idle_add(self._finish_render, key, completed))
 
+    def _schedule_render(self, key):
+        if self._scheduled_key == key and self._render_delay_source:
+            return
+        if self._render_delay_source:
+            GLib.source_remove(self._render_delay_source)
+        self._scheduled_key = key
+        self._render_delay_source = GLib.timeout_add(180, self._render_after_resize)
+
+    def _render_after_resize(self):
+        self._render_delay_source = 0
+        key = self._scheduled_key
+        current = self.get_allocated_width(), self.get_allocated_height(), self.colors
+        if not self._disposed and key == current and not self._rendering:
+            self._start_render(key)
+        return False
+
     def _finish_render(self, key, future):
         self._rendering = False
+        if self._disposed:
+            return False
         current = self.get_allocated_width(), self.get_allocated_height(), self.colors
         if key == current:
             try:
                 surface, pixels = future.result()
             except Exception:
                 self._failed_key = key
+                if self._previous is not None:
+                    self._begin_fade()
             else:
                 self._cache = key, surface, pixels
-                self.queue_draw()
+                if self._previous is not None:
+                    self._begin_fade()
+                else:
+                    self.queue_draw()
         elif self.colors and current[0] > 0 and current[1] > 0:
-            self._start_render(current)
+            self._schedule_render(current)
         return False
 
     def draw_gradient(self, _widget, context):
         width = self.get_allocated_width()
         height = self.get_allocated_height()
-        fallback = tuple(int(self.fallback_color[index:index + 2], 16) / 255
-                         for index in (1, 3, 5))
-        context.set_source_rgb(*fallback)
-        context.paint()
-        if not self.colors or width <= 0 or height <= 0:
+        if width <= 0 or height <= 0:
             return False
         key = width, height, self.colors
-        if self._cache is not None and self._cache[0] == key:
-            context.set_source_surface(self._cache[1], 0, 0)
+        surface = self._cache[1] if self._cache is not None and self._cache[0] == key else None
+        if self.colors and surface is None and not self._rendering and self._failed_key != key:
+            self._schedule_render(key)
+        if self._previous is not None:
+            old_colors, old_surface, old_fallback = self._previous
+            self._paint_source(context, width, height, old_colors, old_surface, old_fallback)
+            if self._fade_started is None:
+                return False
+            alpha = self.fade_alpha(time.monotonic() - self._fade_started)
+            self._paint_source(context, width, height, self.colors, surface,
+                               self.fallback_color, alpha)
         else:
+            self._paint_source(context, width, height, self.colors, surface,
+                               self.fallback_color)
+        return False
+
+    @staticmethod
+    def _paint_source(context, width, height, colors, surface, fallback, alpha=1.0):
+        if surface is not None and surface.get_width() == width and surface.get_height() == height:
+            context.set_source_surface(surface, 0, 0)
+        elif colors:
             gradient = cairo.LinearGradient(0, 0, width, height)
-            for offset, color in zip((0, 1), self.colors):
-                channels = tuple(int(color[index:index + 2], 16) / 255 for index in (1, 3, 5))
+            for offset, color in zip((0, 1), colors):
+                channels = tuple(int(color[index:index + 2], 16) / 255
+                                 for index in (1, 3, 5))
                 gradient.add_color_stop_rgb(offset, *channels)
             context.set_source(gradient)
-            if not self._rendering and self._failed_key != key:
-                self._start_render(key)
-        context.paint()
-        return False
+        else:
+            channels = tuple(int(fallback[index:index + 2], 16) / 255
+                             for index in (1, 3, 5))
+            context.set_source_rgb(*channels)
+        context.paint_with_alpha(alpha)
 
 
 def _read_settings():
@@ -158,6 +296,19 @@ def _read_settings():
 
 def load_gradient_enabled():
     return _read_settings().get('album_art_gradient') is True
+
+
+def load_info_panel_width():
+    width = _read_settings().get('info_panel_width', 360)
+    return width if type(width) is int and 240 <= width <= 1000 else 360
+
+
+def save_info_panel_width(width):
+    if type(width) is not int or not 240 <= width <= 1000:
+        raise ValueError('Invalid information panel width')
+    settings = _read_settings()
+    settings['info_panel_width'] = width
+    _write_settings(settings)
 
 
 def load_theme():
@@ -183,7 +334,7 @@ def theme_gradient_colors(colors, theme):
 
 
 def load_timeline_waveform_enabled():
-    return _read_settings().get('waveform_timeline') is True
+    return _read_settings().get('waveform_timeline', True) is True
 
 
 def save_timeline_waveform_enabled(enabled):
@@ -194,16 +345,79 @@ def save_timeline_waveform_enabled(enabled):
 
 def load_sidebar_order():
     order = _read_settings().get('sidebar_order')
-    return list(order) if (isinstance(order, list) and len(order) == 5 and
-                           all(isinstance(item, str) for item in order) and
-                           set(order) == set(DEFAULT_SIDEBAR_ORDER)) else list(DEFAULT_SIDEBAR_ORDER)
+    if isinstance(order, list) and all(isinstance(item, str) for item in order):
+        if len(order) == len(DEFAULT_SIDEBAR_ORDER) and set(order) == set(DEFAULT_SIDEBAR_ORDER):
+            return list(order)
+        old = set(DEFAULT_SIDEBAR_ORDER) - {'styles', 'lyrics'}
+        if len(order) == len(old) and set(order) == old:
+            result = list(order)
+            result.insert(result.index('settings'), 'styles')
+            result.insert(result.index('settings'), 'lyrics')
+            return result
+        old = set(DEFAULT_SIDEBAR_ORDER) - {'lyrics'}
+        if len(order) == len(old) and set(order) == old:
+            result = list(order)
+            result.insert(result.index('settings'), 'lyrics')
+            return result
+    return list(DEFAULT_SIDEBAR_ORDER)
 
 
 def save_sidebar_order(order):
-    if len(order) != 5 or set(order) != set(DEFAULT_SIDEBAR_ORDER):
+    if len(order) != len(DEFAULT_SIDEBAR_ORDER) or set(order) != set(DEFAULT_SIDEBAR_ORDER):
         raise ValueError('Invalid sidebar order')
     settings = _read_settings()
     settings['sidebar_order'] = list(order)
+    _write_settings(settings)
+
+
+def load_playlist_order(address, token):
+    scope = hashlib.sha256((address + '\0' + token).encode('utf-8')).hexdigest()
+    orders = _read_settings().get('playlist_orders', {})
+    order = orders.get(scope, []) if isinstance(orders, dict) else []
+    if not isinstance(order, list):
+        return []
+    return list(dict.fromkeys(key for key in order[:10000]
+                              if isinstance(key, str) and
+                              re.fullmatch(r'/playlists/\d+/items', key)))
+
+
+def save_playlist_order(address, token, order):
+    if (len(order) > 10000 or len(set(order)) != len(order) or
+            any(not isinstance(key, str) or not re.fullmatch(r'/playlists/\d+/items', key)
+                for key in order)):
+        raise ValueError('Invalid playlist order')
+    scope = hashlib.sha256((address + '\0' + token).encode('utf-8')).hexdigest()
+    settings = _read_settings()
+    orders = settings.get('playlist_orders')
+    if not isinstance(orders, dict):
+        orders = {}
+    orders[scope] = list(order)
+    settings['playlist_orders'] = orders
+    _write_settings(settings)
+
+
+def load_sidebar_visible():
+    settings = _read_settings()
+    names = settings.get('sidebar_visible')
+    optional = set(DEFAULT_SIDEBAR_ORDER) - {'settings'}
+    if (isinstance(names, list) and
+            all(isinstance(name, str) and name in optional for name in names) and
+            len(names) == len(set(names))):
+        result = set(names) | {'settings'}
+        if settings.get('sidebar_visibility_version') != 2:
+            result.add('lyrics')
+        return result
+    return set(DEFAULT_SIDEBAR_ORDER)
+
+
+def save_sidebar_visible(names):
+    names = set(names)
+    if not names <= set(DEFAULT_SIDEBAR_ORDER) or 'settings' not in names:
+        raise ValueError('Invalid visible sidebar buttons')
+    settings = _read_settings()
+    settings['sidebar_visible'] = [name for name in DEFAULT_SIDEBAR_ORDER
+                                   if name in names and name != 'settings']
+    settings['sidebar_visibility_version'] = 2
     _write_settings(settings)
 
 
@@ -220,6 +434,14 @@ def save_library_sort_buttons(names):
 
 def load_tooltips_hidden():
     return _read_settings().get('hide_tooltips') is True
+
+
+def load_star_ratings_hidden():
+    return _read_settings().get('hide_star_ratings') is True
+
+
+def load_smooth_scrolling_enabled():
+    return _read_settings().get('smooth_scrolling', True) is True
 
 
 def load_art_accent_enabled():
@@ -252,12 +474,16 @@ def load_window_buttons_enabled():
 
 
 def load_rounded_corners_enabled():
-    return _read_settings().get('rounded_window_corners') is True
+    return _read_settings().get('rounded_window_corners', True) is True
+
+
+def load_frosted_player_bar():
+    return _read_settings().get('frosted_player_bar') is True
 
 
 def load_text_size():
     size = _read_settings().get('text_size')
-    return size if type(size) is int and 10 <= size <= 24 else 14
+    return size if type(size) is int and 10 <= size <= 24 else 18
 
 
 def load_custom_font():
@@ -295,6 +521,18 @@ def save_album_margins(outer, gap):
     settings = _read_settings()
     settings['album_outer_margin'] = outer
     settings['album_cover_spacing'] = gap
+    _write_settings(settings)
+
+
+def load_keep_style_playing_enabled():
+    return _read_settings().get('keep_style_playing') is True
+
+
+def save_keep_style_playing_enabled(enabled):
+    if type(enabled) is not bool:
+        raise ValueError('Expected a checkbox value')
+    settings = _read_settings()
+    settings['keep_style_playing'] = enabled
     _write_settings(settings)
 
 
@@ -370,6 +608,18 @@ def save_tooltips_hidden(hidden):
     _write_settings(settings)
 
 
+def save_star_ratings_hidden(hidden):
+    settings = _read_settings()
+    settings['hide_star_ratings'] = bool(hidden)
+    _write_settings(settings)
+
+
+def save_smooth_scrolling_enabled(enabled):
+    settings = _read_settings()
+    settings['smooth_scrolling'] = bool(enabled)
+    _write_settings(settings)
+
+
 def save_art_accent_enabled(enabled):
     settings = _read_settings()
     settings['art_accent_color'] = bool(enabled)
@@ -417,6 +667,12 @@ def save_window_buttons_enabled(enabled):
 def save_rounded_corners_enabled(enabled):
     settings = _read_settings()
     settings['rounded_window_corners'] = bool(enabled)
+    _write_settings(settings)
+
+
+def save_frosted_player_bar(enabled):
+    settings = _read_settings()
+    settings['frosted_player_bar'] = bool(enabled)
     _write_settings(settings)
 
 

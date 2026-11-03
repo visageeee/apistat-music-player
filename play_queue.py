@@ -34,6 +34,25 @@ def move_items(queue, current_index, selected, destination):
     return reorder_items(queue, current_index, order)
 
 
+def move_queue_or_history(queue, current_index, history, selected, destination):
+    """Move queue entries and copy selected history entries into the queue."""
+    if not selected or len(set(selected)) != len(selected) or not 0 <= destination <= len(queue):
+        raise ValueError('Invalid queue drag')
+    history = list(history)
+    if any((index >= len(queue) if index >= 0 else -index - 1 >= len(history))
+           for index in selected):
+        raise ValueError('Invalid queue drag')
+    selected_queue = {index for index in selected if index >= 0}
+    entries = [(index, item) for index, item in enumerate(queue) if index not in selected_queue]
+    insertion = destination - sum(index < destination for index in selected_queue)
+    dragged = [(index if index >= 0 else None,
+                queue[index] if index >= 0 else history[-index - 1]) for index in selected]
+    entries[insertion:insertion] = dragged
+    new_index = next((position for position, (original, _item) in enumerate(entries)
+                      if original == current_index), -1) if current_index >= 0 else -1
+    return [item for _original, item in entries], new_index
+
+
 def playlist_move_plan(items, selected, destination):
     """Return the new order and Plex moves needed to keep selected entries together."""
     ids = [item.playlist_item_id for item in items]

@@ -2,3 +2,9 @@ __pycache__/
 *.py[cod]
 .venv/
 .pytest_cache/
+.flatpak-builder/
+flatpak_app/
+repo/
+dist/
+build/
+*.flatpak

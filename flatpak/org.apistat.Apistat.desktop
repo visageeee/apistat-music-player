@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Apistat
+Comment=Play music from a Plex server
+Exec=apistat
+Icon=org.apistat.Apistat
+Categories=AudioVideo;Audio;Music;Player;
+StartupNotify=true

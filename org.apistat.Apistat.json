@@ -1,0 +1,54 @@
+{
+  "id": "org.apistat.Apistat",
+  "runtime": "org.gnome.Platform",
+  "runtime-version": "50",
+  "sdk": "org.gnome.Sdk",
+  "command": "apistat",
+  "finish-args": [
+    "--share=ipc",
+    "--share=network",
+    "--socket=wayland",
+    "--socket=fallback-x11",
+    "--socket=pulseaudio",
+    "--device=dri",
+    "--talk-name=org.freedesktop.secrets",
+    "--own-name=org.mpris.MediaPlayer2.plexmusicprototype"
+  ],
+  "modules": [
+    {
+      "name": "python3-mutagen",
+      "buildsystem": "simple",
+      "build-commands": [
+        "python3 -m pip install --no-index --no-deps --prefix=/app mutagen-1.47.0-py3-none-any.whl"
+      ],
+      "sources": [
+        {
+          "type": "file",
+          "url": "https://files.pythonhosted.org/packages/b0/7a/620f945b96be1f6ee357d211d5bf74ab1b7fe72a9f1525aafbfe3aee6875/mutagen-1.47.0-py3-none-any.whl",
+          "sha256": "edd96f50c5907a9539d8e5bba7245f62c9f520aef333d13392a79a4f70aca719"
+        }
+      ]
+    },
+    {
+      "name": "apistat",
+      "buildsystem": "simple",
+      "build-commands": [
+        "for file in *.py; do case \"$file\" in test_*) continue ;; esac; install -Dm644 \"$file\" \"/app/share/apistat/$file\"; done",
+        "install -Dm755 flatpak/apistat /app/bin/apistat",
+        "install -Dm644 apistat.png /app/share/apistat/apistat.png",
+        "install -Dm644 fonts/Nunito-wght.ttf /app/share/apistat/fonts/Nunito-wght.ttf",
+        "install -Dm644 fonts/OFL.txt /app/share/apistat/fonts/OFL.txt",
+        "install -Dm644 flatpak/org.apistat.Apistat.desktop /app/share/applications/org.apistat.Apistat.desktop",
+        "install -Dm644 flatpak/org.apistat.Apistat.metainfo.xml /app/share/metainfo/org.apistat.Apistat.metainfo.xml",
+        "mkdir -p /app/share/icons/hicolor/512x512/apps && python3 -c 'import cairo; s=cairo.ImageSurface.create_from_png(\"apistat.png\"); d=cairo.ImageSurface(cairo.FORMAT_ARGB32,512,512); c=cairo.Context(d); k=min(512/s.get_width(),512/s.get_height()); c.translate((512-s.get_width()*k)/2,(512-s.get_height()*k)/2); c.scale(k,k); c.set_source_surface(s,0,0); c.paint(); d.write_to_png(\"/app/share/icons/hicolor/512x512/apps/org.apistat.Apistat.png\")'"
+      ],
+      "sources": [
+        {
+          "type": "dir",
+          "path": ".",
+          "skip": [".git", ".agents", ".codex", ".aws", ".flatpak-builder", "flatpak_app", "repo", "__pycache__", "*.flatpak"]
+        }
+      ]
+    }
+  ]
+}

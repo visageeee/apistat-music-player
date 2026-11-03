@@ -1,0 +1,34 @@
+name: Flatpak build
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    container:
+      image: ghcr.io/flathub-infra/flatpak-github-actions:gnome-50
+      options: --privileged
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build Flatpak bundle
+        uses: flatpak/flatpak-github-actions/flatpak-builder@v6
+        with:
+          manifest-path: org.apistat.Apistat.json
+          bundle: Apistat.flatpak
+          branch: stable
+          upload-artifact: false
+      - name: Check packaged runtime
+        run: |
+          dbus-run-session -- flatpak build --runtime flatpak_app /app/bin/apistat --self-test
+          dbus-run-session -- flatpak build --runtime flatpak_app python3 -c 'import mutagen, gi; gi.require_version("Secret", "1"); gi.require_version("Gst", "1.0"); from gi.repository import Secret, Gst; Gst.init(None); missing = [name for name in ("flacdec", "mpg123audiodec") if not Gst.ElementFactory.find(name)]; assert not missing, "Missing decoders: " + ", ".join(missing); print("Mutagen, Secret Service, FLAC and MP3 are available")'
+          flatpak build --runtime flatpak_app python3 -c 'from pathlib import Path; import cairo; assert Path("/app/share/apistat/fonts/Nunito-wght.ttf").is_file(); icon = cairo.ImageSurface.create_from_png("/app/share/apistat/apistat.png"); assert icon.get_width() > 0 and icon.get_height() > 0; print("Bundled font and artwork are available")'
+      - name: Upload Flatpak
+        uses: actions/upload-artifact@v4
+        with:
+          name: Apistat-Flatpak-x86_64
+          path: Apistat*.flatpak
+          if-no-files-found: error

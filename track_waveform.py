@@ -3,6 +3,7 @@
 from array import array
 import sys
 from urllib.parse import urlsplit
+import cairo
 
 import gi
 gi.require_version('Gst', '1.0')
@@ -95,6 +96,8 @@ class TrackWaveform(Gtk.DrawingArea):
     def __init__(self):
         super().__init__()
         self.peaks = None
+        self._mask = None
+        self._mask_pattern = None
         self.progress = 0.0
         self.color = Gdk.RGBA()
         self.color.parse('#e7a641')
@@ -104,6 +107,8 @@ class TrackWaveform(Gtk.DrawingArea):
 
     def set_peaks(self, peaks):
         self.peaks = peaks
+        self._mask = None
+        self._mask_pattern = None
         self.queue_draw()
 
     def set_progress(self, progress):
@@ -120,15 +125,33 @@ class TrackWaveform(Gtk.DrawingArea):
         width, height = self.get_allocated_width(), self.get_allocated_height()
         if width <= 0 or height <= 0:
             return False
-        middle = height / 2
-        peaks = self.peaks or [0.1] * PEAK_COUNT
-        bar_width = max(1.0, width / PEAK_COUNT * 0.72)
-        for index, peak in enumerate(peaks):
-            x = index * width / PEAK_COUNT
-            amplitude = 2 + peak * (height / 2 - 15)
-            active = x / width <= self.progress
-            context.set_source_rgba(self.color.red, self.color.green, self.color.blue,
-                                    0.95 if active else 0.42)
-            context.rectangle(x, middle - amplitude, bar_width, amplitude * 2)
-            context.fill()
+        if self._mask is None:
+            self._mask = self.build_mask(self.peaks)
+            self._mask_pattern = cairo.SurfacePattern(self._mask)
+            self._mask_pattern.set_filter(cairo.FILTER_BILINEAR)
+        context.save()
+        context.scale(width / self._mask.get_width(), height / self._mask.get_height())
+        mask_width, mask_height = self._mask.get_width(), self._mask.get_height()
+        for left, right, alpha in ((0, self.progress, 0.95), (self.progress, 1, 0.42)):
+            if right <= left:
+                continue
+            context.save()
+            context.rectangle(left * mask_width, 0, (right - left) * mask_width, mask_height)
+            context.clip()
+            context.set_source_rgba(self.color.red, self.color.green, self.color.blue, alpha)
+            context.mask(self._mask_pattern)
+            context.restore()
+        context.restore()
         return False
+
+    @staticmethod
+    def build_mask(peaks):
+        width, height = PEAK_COUNT * 2, 60
+        surface = cairo.ImageSurface(cairo.FORMAT_A8, width, height)
+        context = cairo.Context(surface)
+        context.set_source_rgba(1, 1, 1, 1)
+        for index, peak in enumerate(peaks or [0.1] * PEAK_COUNT):
+            amplitude = 2 + peak * (height / 2 - 15)
+            context.rectangle(index * 2, height / 2 - amplitude, 1.44, amplitude * 2)
+        context.fill()
+        return surface

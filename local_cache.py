@@ -14,6 +14,7 @@ import cairo
 from gi.repository import GLib
 
 from plex_client import Item, ALBUM_SORT_ARTIST
+from music_facets import MusicFacet
 
 
 CACHE_ROOT = Path(GLib.get_user_cache_dir()) / 'plex-music-prototype'
@@ -24,13 +25,21 @@ def _hash(*parts):
     return hashlib.sha256('\0'.join(map(str, parts)).encode('utf-8')).hexdigest()
 
 
-def _write_bytes(path, data):
+def _write_bytes(path, data, still_current=None, commit_lock=None):
     _private_dir(path.parent)
     fd, temporary = tempfile.mkstemp(prefix='.cache-', dir=path.parent)
     try:
         with os.fdopen(fd, 'wb') as output:
             output.write(data)
-        os.replace(temporary, path)
+        def commit():
+            if still_current is not None and not still_current():
+                return False
+            os.replace(temporary, path)
+            return True
+        if commit_lock is None:
+            return commit()
+        with commit_lock:
+            return commit()
     finally:
         if os.path.exists(temporary):
             os.unlink(temporary)
@@ -156,12 +165,60 @@ class LocalCache:
     def song_index_path(self, section, playlist_key=None):
         return self.root / 'songs' / (_hash(section, playlist_key or '') + '.json')
 
-    def read_song_index(self, section, playlist_key=None, max_age=3600):
+    def music_facets_path(self, section):
+        return self.root / 'facets' / (_hash(section) + '.json')
+
+    def music_facet_cover_path(self, section, facet_key):
+        return self.root / 'facet-covers' / (_hash(section, facet_key) + '.json')
+
+    def read_music_facet_cover(self, section, facet_key, max_age=604800):
+        try:
+            data = json.loads(self.music_facet_cover_path(
+                section, facet_key).read_text(encoding='utf-8'))
+            cover = data.get('cover')
+            if (data.get('version') == 1 and data.get('section') == section and
+                    data.get('facet') == facet_key and
+                    time.time() - data.get('built_at', 0) <= max_age and
+                    isinstance(cover, str) and
+                    (not cover or cover.startswith('/') and not cover.startswith('//'))):
+                return cover
+        except (OSError, ValueError, TypeError, AttributeError):
+            pass
+        return None
+
+    def save_music_facet_cover(self, section, facet_key, cover):
+        if not isinstance(cover, str) or (cover and
+                (not cover.startswith('/') or cover.startswith('//'))):
+            raise ValueError('Invalid Plex artwork path')
+        _write_bytes(self.music_facet_cover_path(section, facet_key),
+                     json.dumps({'version': 1, 'section': section, 'facet': facet_key,
+                                 'built_at': int(time.time()), 'cover': cover}).encode('utf-8'))
+
+    def read_music_facets(self, section, max_age=3600):
+        try:
+            data = json.loads(self.music_facets_path(section).read_text(encoding='utf-8'))
+            if (data.get('version') != 1 or data.get('section') != section or
+                    time.time() - data.get('built_at', 0) > max_age):
+                return None
+            return tuple(MusicFacet(value['field'], value['title'],
+                                    tuple(tuple(pair) for pair in value['filters']))
+                         for value in data['facets'])
+        except (OSError, ValueError, TypeError, KeyError, AttributeError):
+            return None
+
+    def save_music_facets(self, section, facets):
+        data = {'version': 1, 'section': section, 'built_at': int(time.time()),
+                'facets': [asdict(facet) for facet in facets]}
+        _write_bytes(self.music_facets_path(section),
+                     json.dumps(data, separators=(',', ':')).encode('utf-8'))
+
+    def read_song_index_entry(self, section, playlist_key=None):
         try:
             data = json.loads(self.song_index_path(section, playlist_key).read_text(encoding='utf-8'))
-            if (data.get('version') != 3 or data.get('section') != section or
+            version = 4 if isinstance(playlist_key, str) and playlist_key.startswith('facet:') else 3
+            if (data.get('version') != version or data.get('section') != section or
                     data.get('playlist') != playlist_key or
-                    time.time() - data.get('built_at', 0) > max_age):
+                    not isinstance(data.get('built_at'), (int, float))):
                 return None
             songs = []
             for value in data['songs']:
@@ -171,15 +228,28 @@ class LocalCache:
                         not isinstance(value.get('title'), str)):
                     return None
                 songs.append(Item(**value))
-            return songs
+            return songs, data['built_at']
         except (OSError, ValueError, TypeError, KeyError, AttributeError):
             return None
 
-    def save_song_index(self, section, songs, playlist_key=None):
-        data = {'version': 3, 'section': section, 'playlist': playlist_key,
-                'built_at': int(time.time()), 'songs': [asdict(song) for song in songs]}
-        _write_bytes(self.song_index_path(section, playlist_key),
-                     json.dumps(data, separators=(',', ':')).encode('utf-8'))
+    def read_song_index(self, section, playlist_key=None, max_age=3600):
+        entry = self.read_song_index_entry(section, playlist_key)
+        if entry is None:
+            return None
+        songs, built_at = entry
+        if max_age is not None and time.time() - built_at > max_age:
+            return None
+        return songs
+
+    def save_song_index(self, section, songs, playlist_key=None, built_at=None,
+                        still_current=None, commit_lock=None):
+        version = 4 if isinstance(playlist_key, str) and playlist_key.startswith('facet:') else 3
+        data = {'version': version, 'section': section, 'playlist': playlist_key,
+                'built_at': int(time.time()) if built_at is None else built_at,
+                'songs': [asdict(song) for song in songs]}
+        return _write_bytes(self.song_index_path(section, playlist_key),
+                            json.dumps(data, separators=(',', ':')).encode('utf-8'),
+                            still_current, commit_lock)
 
     def clear_indices(self):
         directory = self.root / 'index'

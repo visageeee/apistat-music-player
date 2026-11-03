@@ -11,13 +11,262 @@ gi.require_version('Gdk', '3.0')
 gi.require_version('Gtk', '3.0')
 from gi.repository import Gdk, Gst, Gtk
 
-from player import Player
+from player import PAUSE_MARKER, Player
+from album_card import FlipCard
 import appearance
 from plex_client import Item
+from music_facets import MusicFacet
 from test_smart_playlists import definition as smart_definition
 
 
 class PlayerControlTests(unittest.TestCase):
+    def test_queue_end_uses_same_style_only_when_enabled(self):
+        calls = []
+        player = SimpleNamespace(
+            queue=[Item('/library/metadata/1', 'Current')], index=0,
+            shuffle=SimpleNamespace(get_active=lambda: False),
+            repeat=SimpleNamespace(get_active=lambda: False),
+            keep_style_playing_enabled=True,
+            style_autoplay_exhausted=False, style_autoplay_pending=False,
+            style_autoplay_waiting=False,
+            extend_queue_same_style=lambda: calls.append('extend'),
+            start_track=lambda: calls.append('start'),
+            stop=lambda: calls.append('stop'),
+            status=SimpleNamespace(set_text=lambda _value: None))
+        Player.advance(player)
+        self.assertEqual(calls, ['extend'])
+        self.assertTrue(player.style_autoplay_waiting)
+        player.keep_style_playing_enabled = False
+        Player.advance(player)
+        self.assertEqual(calls[-1], 'stop')
+
+    def test_same_mood_continuation_prefetches_without_skipping_current_song(self):
+        current = Item('/library/metadata/1', 'Current')
+        next_song = Item('/library/metadata/2', 'Next')
+        facet = MusicFacet('mood', 'Calm', (('album.mood', 12),))
+        client = SimpleNamespace(
+            more_tracks_same_mood=lambda *_args, **_kwargs: (facet, [next_song]))
+        calls = []
+        player = SimpleNamespace(
+            client=client, queue_client=client,
+            library=SimpleNamespace(get_active_id=lambda: '2'),
+            queue=[current], index=0, play_history=[], play_generation=0,
+            style_autoplay_pending=False, style_autoplay_waiting=False,
+            style_autoplay_exhausted=False, style_autoplay_generation=0,
+            keep_style_playing_enabled=True,
+            auto_style_facet=None, auto_style_keys=set(), queue_album=object(),
+            remote_queue_id='old', remote_container='old', remote_queue_version='old',
+            remote_item_ids=('old',),
+            async_work=lambda work, done, valid, _failed: done(work()) if valid() else None,
+            pulse_queue_icon=lambda: calls.append('pulse'),
+            refresh_queue_view=lambda: calls.append('refresh'),
+            mpris=SimpleNamespace(changed=lambda: calls.append('mpris')),
+            persist_session=lambda **_kwargs: calls.append('save'),
+            start_track=lambda: calls.append('start'),
+            stop=lambda: calls.append('stop'),
+            status=SimpleNamespace(set_text=lambda _value: None))
+        cache = SimpleNamespace(read_music_facets=lambda _section: (facet,))
+        with patch('player.LocalCache', return_value=cache):
+            Player.extend_queue_same_style(player)
+        self.assertEqual(player.queue, [current, next_song])
+        self.assertEqual(player.index, 0)
+        self.assertIsNone(player.queue_album)
+        self.assertEqual(player.remote_queue_id, '')
+        self.assertEqual(player.auto_style_facet, facet)
+        self.assertEqual(calls, ['pulse', 'refresh', 'mpris', 'save'])
+        player.queue = [current]
+        player.style_autoplay_waiting = True
+        player.auto_style_facet = None
+        player.auto_style_keys.clear()
+        with patch('player.LocalCache', return_value=cache):
+            Player.extend_queue_same_style(player)
+        self.assertEqual(player.index, 1)
+        self.assertEqual(calls[-1], 'start')
+
+    def test_last_song_start_triggers_prefetch_before_track_end(self):
+        calls = []
+        player = SimpleNamespace(
+            queue=['first', 'last'], index=0, playing=True,
+            keep_style_playing_enabled=True,
+            repeat=SimpleNamespace(get_active=lambda: False),
+            shuffle=SimpleNamespace(get_active=lambda: False),
+            style_autoplay_pending=False, style_autoplay_exhausted=False,
+            extend_queue_same_style=lambda: calls.append('prefetch'))
+        Player.maybe_prefetch_same_style(player)
+        self.assertEqual(calls, [])
+        player.index = 1
+        Player.maybe_prefetch_same_style(player)
+        self.assertEqual(calls, ['prefetch'])
+
+    def test_disabling_pending_prefetch_does_not_stop_playing_song(self):
+        calls = []
+        player = SimpleNamespace(
+            keep_style_playing_enabled=True,
+            auto_style_facet=object(), auto_style_keys={'song'},
+            style_autoplay_generation=3, style_autoplay_pending=True,
+            style_autoplay_waiting=False, style_autoplay_exhausted=False,
+            stop=lambda: calls.append('stop'),
+            status=SimpleNamespace(set_text=lambda _message: None))
+        with patch('player.save_keep_style_playing_enabled'):
+            Player.keep_style_playing_changed(
+                player, SimpleNamespace(get_active=lambda: False))
+        self.assertFalse(player.style_autoplay_pending)
+        self.assertEqual(player.style_autoplay_generation, 4)
+        self.assertEqual(calls, [])
+
+    def test_filling_category_queue_preserves_current_and_history(self):
+        facet = MusicFacet('mood', 'Calm', (('track.mood', 30),))
+        history = Item('/library/metadata/1', 'Previous')
+        current = Item('/library/metadata/2', 'Playing')
+        old_next = Item('/library/metadata/3', 'Old next')
+        new_songs = [Item(f'/library/metadata/{index}', f'New {index}')
+                     for index in range(4, 29)]
+        requests = []
+        client = SimpleNamespace(music_facet_random_tracks=lambda section, selected,
+                                 limit, excluded: (requests.append(
+                                     (section, selected, limit, excluded)) or new_songs))
+        changed = []
+        player = SimpleNamespace(
+            library=SimpleNamespace(get_active_id=lambda: '2'), client=client,
+            style_queue_generation=0, play_generation=0, play_history=[history],
+            async_work=lambda work, done, *_args: done(work()),
+            queue=[history, current, old_next], index=1, stream_open=True,
+            remote_opening=False, remote_queue_id='old',
+            queue_client=client, queue_album=object(),
+            pulse_queue_icon=lambda: changed.append('pulse'),
+            refresh_queue_view=lambda: changed.append('refresh'),
+            mpris=SimpleNamespace(changed=lambda: changed.append('mpris')),
+            persist_session=lambda **_kwargs: changed.append('save'),
+            start_track=lambda: changed.append('start'),
+            status=SimpleNamespace(set_text=lambda value: changed.append(value)))
+        Player.fill_style_queue(player, facet)
+        self.assertEqual(player.queue, [history, current] + new_songs)
+        self.assertEqual(player.index, 1)
+        self.assertEqual(player.remote_queue_id, '')
+        self.assertEqual(requests[0][:3], ('2', facet, 25))
+        self.assertEqual(requests[0][3], {history.key, current.key})
+        self.assertNotIn('start', changed)
+        self.assertIn('refresh', changed)
+        player.stream_open = False
+        player.remote_opening = False
+        Player.fill_style_queue(player, facet)
+        self.assertEqual(player.queue, new_songs)
+        self.assertEqual(player.index, 0)
+        self.assertIn('start', changed)
+
+    def test_skip_buttons_follow_queue_bounds_and_repeat(self):
+        previous = Gtk.Button()
+        next_button = Gtk.Button()
+        player = SimpleNamespace(previous_button=previous, next_button=next_button,
+                                 queue=[object(), object()], index=0,
+                                 repeat=SimpleNamespace(get_active=lambda: False),
+                                 shuffle=SimpleNamespace(get_active=lambda: False))
+        Player.update_skip_buttons(player)
+        self.assertFalse(previous.get_sensitive())
+        self.assertTrue(next_button.get_sensitive())
+        player.index = 1
+        Player.update_skip_buttons(player)
+        self.assertTrue(previous.get_sensitive())
+        self.assertFalse(next_button.get_sensitive())
+        player.repeat.get_active = lambda: True
+        Player.update_skip_buttons(player)
+        self.assertTrue(next_button.get_sensitive())
+        player.queue = []
+        Player.update_skip_buttons(player)
+        self.assertFalse(previous.get_sensitive())
+        self.assertFalse(next_button.get_sensitive())
+
+    def test_sorted_library_header_has_highlight_and_direction_triangle(self):
+        columns = {}
+        for field in ('title', 'artist', 'added_at'):
+            column = Gtk.TreeViewColumn(field)
+            column.sort_arrow = Gtk.Label()
+            column.sort_header = Gtk.EventBox()
+            column.header_button = Gtk.Button()
+            columns[field] = column
+        player = SimpleNamespace(song_columns=columns, column_sort=('artist', False))
+        Player.update_song_sort_headers(player)
+        self.assertEqual(columns['artist'].sort_arrow.get_text(), '▲')
+        self.assertTrue(columns['artist'].sort_arrow.get_visible())
+        self.assertTrue(columns['artist'].header_button.get_style_context().has_class('sorted'))
+        self.assertFalse(columns['title'].sort_arrow.get_visible())
+        player.column_sort = 'artist', True
+        Player.update_song_sort_headers(player)
+        self.assertEqual(columns['artist'].sort_arrow.get_text(), '▼')
+        player.column_sort = None
+        Player.update_song_sort_headers(player)
+        self.assertFalse(columns['artist'].sort_arrow.get_visible())
+        self.assertFalse(columns['artist'].header_button.get_style_context().has_class('sorted'))
+        player.song_sort = 'addedAt:desc'
+        Player.update_song_sort_headers(player)
+        self.assertEqual(columns['added_at'].sort_arrow.get_text(), '▼')
+        self.assertTrue(columns['added_at'].header_button.get_style_context().has_class('sorted'))
+
+    def test_sort_highlight_tracks_accent_and_queue_history_button_stays_clear(self):
+        accent_provider = Gtk.CssProvider()
+        sort_provider = Gtk.CssProvider()
+        errors = []
+        sort_provider.connect('parsing-error', lambda _provider, _section, error:
+                              errors.append(error.message))
+        player = SimpleNamespace(accent_provider=accent_provider,
+                                 sort_provider=sort_provider,
+                                 art_accent_enabled=False,
+                                 current_art_bright=None,
+                                 accent_color='#e7a641')
+        Player.apply_accent(player)
+        css = sort_provider.to_string()
+        self.assertIn('rgba(231,166,65,0.22)', css)
+        self.assertIn('rgba(231,166,65,0.78)', css)
+        self.assertIn('#queue-history-more', css)
+        self.assertIn('background-color: rgba(0,0,0,0)', css)
+        player.art_accent_enabled = True
+        player.current_art_bright = '#abcdef'
+        Player.apply_accent(player)
+        self.assertIn('rgba(171,205,239,0.22)', sort_provider.to_string())
+        self.assertEqual(errors, [])
+
+    def test_album_back_is_rendered_before_first_flip_without_changing_side(self):
+        calls = []
+        stack = SimpleNamespace(
+            set_visible_child_name=lambda side: calls.append(('side', side)),
+            get_visible_child=lambda: 'back widget',
+            get_allocation=lambda: 'card allocation',
+            size_allocate=lambda allocation: calls.append(('allocate', allocation)))
+        card = SimpleNamespace(prepared=False, animating=False, side='front',
+                               get_mapped=lambda: True, stack=stack,
+                               snapshot=lambda widget: calls.append(('render', widget)))
+        FlipCard.prepare(card)
+        self.assertEqual(calls, [('side', 'back'), ('allocate', 'card allocation'),
+                                 ('render', 'back widget'),
+                                 ('side', 'front')])
+        self.assertTrue(card.prepared)
+        FlipCard.prepare(card)
+        self.assertEqual(len(calls), 4)
+
+    def test_track_widgets_wait_until_album_flip_finishes(self):
+        tracks = [Item('/library/metadata/1', 'Track')]
+        callbacks = []
+        rendered = []
+        client = object()
+        card = SimpleNamespace(tracks=None, tracks_loading=False,
+                               album=Item('/library/metadata/2', 'Album'),
+                               flip_card=SimpleNamespace(animating=True),
+                               pending_tracks=None, pending_tracks_error=False)
+        player = SimpleNamespace(client=client, art_epoch=0,
+                                 async_work=lambda _work, done, _valid, _error:
+                                 callbacks.append(done),
+                                 single_flip_enabled=False, last_flipped_tile=None,
+                                 pending_flipped_tile=card,
+                                 show_card_tracks=lambda _card, songs: rendered.append(songs))
+        Player.load_card_tracks(player, card)
+        callbacks[0](tracks)
+        self.assertEqual(rendered, [])
+        self.assertEqual(card.pending_tracks, tracks)
+        card.flip_card.animating = False
+        Player.album_side_shown(player, card, 'back')
+        self.assertEqual(rendered, [tracks])
+        self.assertIsNone(card.pending_tracks)
+
     def test_window_controls_follow_option_with_title_bar_visible(self):
         controls = Gtk.Box()
         buttons = [Gtk.Button(label=label) for label in ('−', '□', '×')]
@@ -47,7 +296,7 @@ class PlayerControlTests(unittest.TestCase):
         queue = [Item('/library/metadata/20', 'Older queue item'),
                  Item('/library/metadata/21', 'Current'),
                  Item('/library/metadata/22', 'Next')]
-        store = Gtk.ListStore(int, str, str, str, str, str, str, str, str, bool, str)
+        store = Gtk.ListStore(int, str, str, str, str, str, str, str, str, bool, str, str)
         labels = []
         player = SimpleNamespace(
             queue_store=store, play_history=history, queue=queue, index=1,
@@ -62,6 +311,71 @@ class PlayerControlTests(unittest.TestCase):
         self.assertTrue(all(row[9] and row[10] == '#7a7a7a' for row in rows[:5]))
         self.assertEqual([row[2] for row in rows[5:]], ['Current', 'Next'])
         self.assertIn('5 previously played', labels[-1])
+        player.playing = False
+        Player.refresh_queue_view(player)
+        self.assertEqual(store[5][1], PAUSE_MARKER)
+
+    def test_queue_history_expands_and_numbers_from_current_track(self):
+        history = deque((Item(f'/library/metadata/{index}', f'Played {index}')
+                         for index in range(30)), maxlen=200)
+        queue = [Item(f'/library/metadata/{index}', f'Queued {index}')
+                 for index in range(4)]
+        store = Gtk.ListStore(int, str, str, str, str, str, str, str, str, bool, str, str)
+        visibility = []
+        player = SimpleNamespace(
+            queue_store=store, play_history=history, queue=queue, index=1,
+            queue_history_visible=5, theme='dark', stream_open=True,
+            remote_opening=False, playing=True,
+            content_views=SimpleNamespace(get_visible_child_name=lambda: 'queue'),
+            queue_count=SimpleNamespace(set_text=lambda _text: None),
+            queue_history_button=SimpleNamespace(set_visible=visibility.append))
+        Player.refresh_queue_view(player)
+        rows = list(store)
+        self.assertEqual([row[2] for row in rows[:5]],
+                         [f'Played {index}' for index in range(25, 30)])
+        self.assertEqual([row[1] for row in rows[5:]], ['▶', '2', '3'])
+        self.assertEqual(visibility[-1], True)
+        Player.show_more_previous_tracks(player, None)
+        self.assertEqual([row[2] for row in list(store)[:25]],
+                         [f'Played {index}' for index in range(5, 30)])
+        self.assertEqual(store[0][0], -6)
+        self.assertEqual(visibility[-1], True)
+        Player.show_more_previous_tracks(player, None)
+        self.assertEqual(len(store), 33)
+        self.assertEqual(visibility[-1], False)
+
+    def test_background_click_does_not_move_window_until_drag_threshold(self):
+        moves = []
+        player = SimpleNamespace(
+            window_drag_start=None, can_drag_window_from=lambda _widget: True,
+            begin_move_drag=lambda *args: moves.append(args))
+        def event(x, y, state=Gdk.ModifierType.BUTTON1_MASK):
+            return SimpleNamespace(button=1, x_root=x, y_root=y, time=123, state=state)
+        with patch('player.Gtk.get_event_widget', return_value=object()):
+            Player.background_drag_pressed(player, None, event(100, 100))
+        self.assertEqual(moves, [])
+        Player.background_drag_motion(player, None, event(104, 104))
+        self.assertEqual(moves, [])
+        Player.background_drag_released(player, None, event(104, 104))
+        self.assertIsNone(player.window_drag_start)
+        with patch('player.Gtk.get_event_widget', return_value=object()):
+            Player.background_drag_pressed(player, None, event(100, 100))
+        Player.background_drag_motion(player, None, event(108, 108))
+        self.assertEqual(moves, [(1, 108, 108, 123)])
+
+    def test_bottom_right_grip_starts_native_resize_instead_of_window_move(self):
+        resize_calls = []
+        player = SimpleNamespace(
+            window_drag_start=(10, 10), is_maximized=lambda: False,
+            begin_resize_drag=lambda *args: resize_calls.append(args))
+        event = SimpleNamespace(button=1, x_root=400.8, y_root=300.2, time=123)
+        self.assertTrue(Player.resize_grip_pressed(player, None, event))
+        self.assertIsNone(player.window_drag_start)
+        self.assertEqual(resize_calls, [
+            (Gdk.WindowEdge.SOUTH_EAST, 1, 400, 300, 123)])
+        player.is_maximized = lambda: True
+        Player.resize_grip_pressed(player, None, event)
+        self.assertEqual(len(resize_calls), 1)
 
     def test_smart_playlist_filters_catalog_before_library_display(self):
         client = object()
@@ -131,9 +445,10 @@ class PlayerControlTests(unittest.TestCase):
             Player.display_song_page(player, songs, len(songs), None, None, '')
         self.assertEqual(len(rows), 0)
         self.assertTrue(scheduled[0]())
-        self.assertEqual(len(rows), 200)
-        self.assertTrue(scheduled[0]())
-        self.assertFalse(scheduled[0]())
+        self.assertGreater(len(rows), 0)
+        self.assertLessEqual(len(rows), 200)
+        while scheduled[0]():
+            pass
         self.assertEqual(len(rows), 450)
         self.assertEqual(messages[-1], '450 of 450 songs')
         self.assertEqual(changed, [True])
@@ -179,7 +494,7 @@ class PlayerControlTests(unittest.TestCase):
         client = object()
         song = Item('/library/metadata/1', 'Cached')
         model = object()
-        key = (client, 'music', None, None, '', None)
+        key = (client, 'music', None, None, None, '', None)
         displayed = []
         player = SimpleNamespace(
             client=client, library=SimpleNamespace(get_active_id=lambda: 'music'),
@@ -213,8 +528,8 @@ class PlayerControlTests(unittest.TestCase):
                                  effective_library_sort=lambda: None)
         with patch('player.GLib.idle_add', side_effect=lambda callback: scheduled.append(callback)):
             Player.display_song_page(player, songs, len(songs), None, None, '')
-        self.assertTrue(scheduled[0]())
-        self.assertFalse(scheduled[0]())
+        while scheduled[0]():
+            pass
         self.assertEqual(len(rows), 450)
 
     def test_number_keys_follow_sidebar_order(self):
@@ -232,11 +547,11 @@ class PlayerControlTests(unittest.TestCase):
         from pathlib import Path
         with tempfile.TemporaryDirectory() as directory, \
                 patch.object(appearance, 'SETTINGS_PATH', Path(directory) / 'settings.json'):
-            order = ['queue', 'now', 'albums', 'settings', 'library']
+            order = ['queue', 'now', 'albums', 'styles', 'lyrics', 'settings', 'library']
             appearance.save_sidebar_order(order)
             self.assertEqual(appearance.load_sidebar_order(), order)
             with self.assertRaises(ValueError):
-                appearance.save_sidebar_order(['now'] * 5)
+                appearance.save_sidebar_order(['now'] * 6)
             self.assertEqual(appearance.load_sidebar_order(), order)
 
     def test_sidebar_drop_reorders_even_on_empty_surface(self):
@@ -410,7 +725,7 @@ class PlayerControlTests(unittest.TestCase):
                                get_selection=lambda: SimpleNamespace(
                                    path_is_selected=lambda _path: False))
         event = SimpleNamespace(button=1, x=10, y=10)
-        player = SimpleNamespace(playlist_pointer_mode=lambda: False)
+        player = SimpleNamespace(playlist_pointer_mode=lambda: False, songs=[object()])
         self.assertFalse(Player.library_artist_pressed(player, view, event))
         self.assertEqual(player.song_drag_candidate_indices, [0])
 
@@ -468,6 +783,25 @@ class PlayerControlTests(unittest.TestCase):
         self.assertTrue(Player.global_key_pressed(player, None, event))
         self.assertEqual(toggles, [True, True])
 
+    def test_arrow_shortcuts_seek_with_bounds_and_skip_tracks(self):
+        actions = []
+        seek = SimpleNamespace(get_sensitive=lambda: True, get_value=lambda: 3,
+                               get_adjustment=lambda: SimpleNamespace(get_upper=lambda: 6))
+        player = SimpleNamespace(get_focus=lambda: None, seek=seek,
+                                 seek_to=lambda _scale, _scroll, value: actions.append(value),
+                                 previous=lambda: actions.append('previous'),
+                                 advance=lambda: actions.append('next'))
+        for key, state in ((Gdk.KEY_Left, 0), (Gdk.KEY_Right, 0),
+                           (Gdk.KEY_Left, Gdk.ModifierType.CONTROL_MASK),
+                           (Gdk.KEY_Right, Gdk.ModifierType.CONTROL_MASK)):
+            self.assertTrue(Player.global_key_pressed(player, None,
+                            SimpleNamespace(keyval=key, state=state)))
+        self.assertEqual(actions, [0, 6, 'previous', 'next'])
+        with patch('player.is_text_editing', return_value=True):
+            self.assertFalse(Player.global_key_pressed(player, None,
+                             SimpleNamespace(keyval=Gdk.KEY_Right, state=0)))
+        self.assertEqual(actions, [0, 6, 'previous', 'next'])
+
     def test_previous_card_waits_until_next_card_finishes_flipping(self):
         calls = []
         first_flip = SimpleNamespace(show_side=lambda side: calls.append(('first', side)))
@@ -509,7 +843,6 @@ class PlayerControlTests(unittest.TestCase):
     def test_pause_while_gstreamer_still_reports_null_does_not_restart(self):
         states = []
         restarts = []
-        paused_waves = []
         saved = []
         player = SimpleNamespace(
             stream_open=True, playing=True,
@@ -517,8 +850,11 @@ class PlayerControlTests(unittest.TestCase):
                                      get_state=lambda _timeout: (None, Gst.State.NULL, None),
                                      query_position=lambda _format: (True, 42500 * Gst.MSECOND)),
             set_play_button_state=lambda playing: None,
-            waveform=SimpleNamespace(pause=lambda: paused_waves.append(True)),
+            refresh_live_waveform=lambda: None,
             mpris=SimpleNamespace(changed=lambda: None),
+            refresh_playing_highlight=lambda: None,
+            refresh_queue_view=lambda: None,
+            song_view=SimpleNamespace(queue_draw=lambda: None),
             persist_session=lambda **kwargs: saved.append(kwargs),
             queue=['track'],
             start_track=lambda: restarts.append(True),
@@ -531,7 +867,6 @@ class PlayerControlTests(unittest.TestCase):
         self.assertFalse(player.playing)
         self.assertEqual(states, [Gst.State.PAUSED])
         self.assertEqual(restarts, [])
-        self.assertEqual(paused_waves, [True])
         self.assertEqual(player.playback_position_ms, 42500)
         self.assertEqual(saved, [{'force': True}])
 

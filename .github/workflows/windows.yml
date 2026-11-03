@@ -23,6 +23,7 @@ jobs:
             mingw-w64-ucrt-x86_64-python-gobject
             mingw-w64-ucrt-x86_64-python-cairo
             mingw-w64-ucrt-x86_64-python-psutil
+            mingw-w64-ucrt-x86_64-python-mutagen
             mingw-w64-ucrt-x86_64-pyinstaller
             mingw-w64-ucrt-x86_64-gtk3
             mingw-w64-ucrt-x86_64-gst-python

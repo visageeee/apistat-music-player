@@ -8,14 +8,16 @@ gst_plugins = [
     'app', 'audioconvert', 'audioresample', 'audioparsers', 'autodetect',
     'coreelements', 'directsound', 'faad', 'flac', 'id3demux', 'mpg123',
     'ogg', 'playback', 'soup', 'spectrum', 'typefindfunctions', 'volume',
-    'vorbis', 'wasapi', 'wavparse',
+    'vorbis', 'wasapi', 'wasapi2', 'wavparse',
 ]
 
 a = Analysis(
     [str(root / 'player.py')],
     pathex=[str(root)],
     binaries=[],
-    datas=[],
+    datas=[(str(root / 'apistat.png'), '.'),
+           (str(root / 'fonts' / 'Nunito-wght.ttf'), 'fonts'),
+           (str(root / 'fonts' / 'OFL.txt'), 'fonts')],
     hiddenimports=[],
     hookspath=[],
     hooksconfig={
@@ -36,6 +38,7 @@ exe = EXE(
     [],
     exclude_binaries=True,
     name='Apistat',
+    icon=str(root / 'windows' / 'Apistat.ico'),
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -48,6 +51,7 @@ debug_exe = EXE(
     [],
     exclude_binaries=True,
     name='Apistat-Debug',
+    icon=str(root / 'windows' / 'Apistat.ico'),
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,

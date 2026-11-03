@@ -1,13 +1,13 @@
 import unittest
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import gi
 gi.require_version('Gdk', '3.0')
 gi.require_version('Gtk', '3.0')
 from gi.repository import Gdk, Gtk
 
-from play_queue import (insert_items, move_items, playlist_move_plan,
+from play_queue import (insert_items, move_items, move_queue_or_history, playlist_move_plan,
                         remove_items, reorder_items,
                         select_similar_tracks)
 from player import Player
@@ -69,7 +69,143 @@ class PlayQueueTests(unittest.TestCase):
         Player.song_drag_data_get(player, None, None, selection, 0, 0)
         self.assertEqual(payloads, [b'/library/metadata/1\n/library/metadata/3'])
 
-    def test_playlist_view_switches_to_pointer_drag_and_back(self):
+    def test_dragging_a_selected_group_preserves_selection_and_payload(self):
+        songs = [Item(f'/library/metadata/{index}', f'Song {index}') for index in range(1, 5)]
+        store = Gtk.ListStore(str)
+        for song in songs:
+            store.append([song.title])
+        tree = Gtk.TreeView(model=store)
+        selected = tree.get_selection()
+        selected.set_mode(Gtk.SelectionMode.MULTIPLE)
+        paths = [Gtk.TreePath.new_from_indices([index]) for index in (0, 2, 3)]
+        for path in paths:
+            selected.select_path(path)
+        view = SimpleNamespace(get_selection=lambda: selected,
+                               get_path_at_pos=lambda *_: (paths[1], object(), 0, 0))
+        player = SimpleNamespace(songs=songs, client=object(), playlist_pointer_mode=lambda: False,
+                                 set_track_drag_icon=Mock(), song_columns={})
+        event = SimpleNamespace(button=1, x=10, y=10, state=0)
+        self.assertFalse(Player.library_artist_pressed(player, view, event))
+        selected.unselect_all()  # GTK can reduce selection after the button press.
+        selected.select_path(paths[1])
+        Player.song_drag_begin(player, view, object())
+        self.assertEqual([path.get_indices()[0] for path in selected.get_selected_rows()[1]],
+                         [0, 2, 3])
+        player.songs = []  # The drag payload remains stable if the view changes.
+        payloads = []
+        selection = SimpleNamespace(get_target=lambda: 'songs',
+                                    set=lambda _target, _format, data: payloads.append(data))
+        Player.song_drag_data_get(player, view, None, selection, 0, 0)
+        self.assertEqual(payloads, [b'/library/metadata/1\n/library/metadata/3\n/library/metadata/4'])
+
+    def test_album_and_style_drags_keep_all_selected_tracks(self):
+        songs = [Item(f'/library/metadata/{index}', f'Song {index}') for index in range(1, 4)]
+        store = Gtk.ListStore(str)
+        for song in songs:
+            store.append([song.title])
+        tree = Gtk.TreeView(model=store)
+        selected = tree.get_selection()
+        selected.set_mode(Gtk.SelectionMode.MULTIPLE)
+        paths = [Gtk.TreePath.new_from_indices([index]) for index in (0, 2)]
+        view = SimpleNamespace(get_selection=lambda: selected,
+                               get_path_at_pos=lambda *_: (paths[0], object(), 0, 0),
+                               get_columns=lambda: [object(), object(), object(), object()])
+        player = SimpleNamespace(tracks=songs, track_view=view, style_display_songs=songs,
+                                 client=object(), set_track_drag_icon=Mock())
+        event = SimpleNamespace(button=1, x=5, y=5, state=0)
+        for source, pressed, data_get in (
+                ('album', Player.album_track_pressed, Player.album_track_drag_data_get),
+                ('style', Player.style_song_pressed, Player.style_song_drag_data_get)):
+            selected.unselect_all()
+            for path in paths:
+                selected.select_path(path)
+            self.assertFalse(pressed(player, view, event))
+            selected.unselect_all()
+            selected.select_path(paths[0])
+            Player.collection_drag_begin(player, view, object(), source)
+            payloads = []
+            payload = SimpleNamespace(get_target=lambda: 'songs',
+                                      set=lambda _target, _format, data: payloads.append(data))
+            data_get(player, view, None, payload, 0, 0)
+            self.assertEqual(payloads, [b'/library/metadata/1\n/library/metadata/3'])
+            self.assertEqual([path.get_indices()[0] for path in selected.get_selected_rows()[1]], [0, 2])
+            Player.collection_drag_end(player, view, None, source)
+
+    def test_resolves_style_tracks_in_one_pass_and_preserves_duplicates(self):
+        tracks = [Item(f'/library/metadata/{index}', str(index)) for index in range(1, 101)]
+        class Counted:
+            passes = 0
+            def __iter__(self):
+                self.passes += 1
+                return iter(tracks)
+        collection = Counted()
+        client = object()
+        player = SimpleNamespace(client=client, style_result_source=(client, 'music', None),
+                                 style_display_songs=collection)
+        keys = [tracks[90].key, tracks[2].key, tracks[90].key]
+        self.assertEqual(Player.resolve_loaded_tracks(player, keys),
+                         [tracks[90], tracks[2], tracks[90]])
+        self.assertEqual(collection.passes, 1)
+        player.style_result_source = (object(), 'music', None)
+        self.assertEqual(Player.resolve_loaded_tracks(player, keys), [])
+
+    def test_drag_after_modifier_selection_uses_updated_selection(self):
+        songs = [Item(f'/library/metadata/{index}', str(index)) for index in range(1, 4)]
+        store = Gtk.ListStore(str)
+        for song in songs:
+            store.append([song.title])
+        tree = Gtk.TreeView(model=store)
+        selection = tree.get_selection()
+        selection.set_mode(Gtk.SelectionMode.MULTIPLE)
+        paths = [Gtk.TreePath.new_from_indices([index]) for index in (0, 2)]
+        selection.select_path(paths[0])
+        view = SimpleNamespace(get_selection=lambda: selection,
+                               get_path_at_pos=lambda *_: (paths[1], object(), 0, 0))
+        event = SimpleNamespace(button=1, x=5, y=5, state=Gdk.ModifierType.SHIFT_MASK)
+        player = SimpleNamespace(client=object(), style_display_songs=songs,
+                                 set_track_drag_icon=Mock())
+        self.assertFalse(Player.style_song_pressed(player, view, event))
+        self.assertIsNone(player.style_drag_candidates)
+        selection.select_path(paths[1])  # GTK applies the modifier after the press callback.
+        Player.collection_drag_begin(player, view, object(), 'style')
+        self.assertEqual(player.style_drag_tracks, (songs[0], songs[2]))
+
+    def test_style_selection_can_drop_without_library_list_loaded(self):
+        songs = [Item('/library/metadata/1', 'One'), Item('/library/metadata/2', 'Two')]
+        client = object()
+        player = SimpleNamespace(client=client, style_result_source=(client, 'music', None),
+                                 style_display_songs=songs, enqueue_tracks=Mock())
+        player.resolve_loaded_tracks = lambda keys: Player.resolve_loaded_tracks(player, keys)
+        selection = SimpleNamespace(get_data=lambda: b'/library/metadata/2\n/library/metadata/1')
+        playlist = SimpleNamespace(title='Mix')
+        with patch('player.Gtk.drag_finish') as finish, \
+                patch.object(Player, 'add_tracks_to_playlist') as add_playlist:
+            Player.queue_drop_received(player, None, None, 0, 0, selection, 0, 1)
+            Player.playlist_drop_received(player, SimpleNamespace(playlist=playlist),
+                                          None, 0, 0, selection, 0, 2)
+        player.enqueue_tracks.assert_called_once_with([songs[1], songs[0]])
+        add_playlist.assert_called_once_with(player, playlist, [songs[1], songs[0]])
+        self.assertTrue(all(call.args[1] for call in finish.call_args_list))
+
+    def test_queue_drag_restores_all_selected_row_highlights(self):
+        songs = [Item(f'/library/metadata/{index}', str(index)) for index in range(1, 4)]
+        store = Gtk.ListStore(int)
+        for index in range(3):
+            store.append([index])
+        tree = Gtk.TreeView(model=store)
+        selection = tree.get_selection()
+        selection.set_mode(Gtk.SelectionMode.MULTIPLE)
+        selection.select_path(Gtk.TreePath.new_from_indices([0]))
+        view = SimpleNamespace(get_selection=lambda: selection)
+        player = SimpleNamespace(queue=songs, queue_store=store, play_history=[],
+                                 queue_pointer_drag={'indices': [0, 2], 'x': 0, 'y': 0,
+                                                     'active': False},
+                                 show_song_drag_ghost=Mock(), queue_pointer_destination=Mock())
+        self.assertTrue(Player.queue_pointer_motion(
+            player, view, SimpleNamespace(x=20, y=20, state=Gdk.ModifierType.BUTTON1_MASK)))
+        self.assertEqual([path.get_indices()[0] for path in selection.get_selected_rows()[1]], [0, 2])
+
+    def test_all_library_views_use_pointer_drag(self):
         calls = []
         view = SimpleNamespace(
             unset_rows_drag_source=lambda: calls.append('pointer'),
@@ -81,7 +217,65 @@ class PlayQueueTests(unittest.TestCase):
         self.assertEqual(calls, ['pointer'])
         player.playlist_pointer_mode = lambda: False
         Player.update_song_drag_mode(player)
-        self.assertEqual(calls, ['pointer', 'native'])
+        self.assertEqual(calls, ['pointer'])
+
+    def test_smart_playlist_tracks_drag_to_regular_playlist(self):
+        tracks = [Item('/library/metadata/1', 'One'), Item('/library/metadata/2', 'Two')]
+        store = Gtk.ListStore(str)
+        for track in tracks:
+            store.append([track.title])
+        tree = Gtk.TreeView(model=store)
+        selected = tree.get_selection()
+        selected.set_mode(Gtk.SelectionMode.MULTIPLE)
+        paths = [Gtk.TreePath.new_from_indices([index]) for index in range(2)]
+        for path in paths:
+            selected.select_path(path)
+        view = SimpleNamespace(get_selection=lambda: selected,
+                               get_path_at_pos=lambda *_: (paths[0], object(), 0, 0),
+                               set_drag_dest_row=Mock())
+        destination = Item('/playlists/8/items', 'Destination')
+        row = Gtk.ListBoxRow()
+        row.playlist = destination
+        listing = SimpleNamespace(get_row_at_y=lambda _y: row)
+        queue_button = object()
+        player = SimpleNamespace(
+            songs=tracks, active_smart_playlist={'id': 'smart'}, song_columns={},
+            playlist_pointer_mode=lambda: False, playlist_reorder_allowed=lambda: False,
+            playlist_list=listing, queue_nav=queue_button,
+            show_song_drag_ghost=Mock(), hide_song_drag_ghost=Mock(),
+            hide_song_drop_line=Mock(), add_tracks_to_playlist=Mock(),
+            pointer_position_in=lambda widget, _event: (5, 10) if widget is listing else None)
+        self.assertFalse(Player.library_artist_pressed(
+            player, view, SimpleNamespace(button=1, x=5, y=5, state=0)))
+        self.assertEqual(player.song_pointer_drag['indices'], [0, 1])
+        Player.song_pointer_motion(player, view, SimpleNamespace(
+            x=20, y=20, state=Gdk.ModifierType.BUTTON1_MASK))
+        self.assertTrue(row.get_style_context().has_class('playlist-drag-target'))
+        self.assertTrue(Player.song_pointer_release(player, view, SimpleNamespace(button=1)))
+        self.assertFalse(row.get_style_context().has_class('playlist-drag-target'))
+        player.add_tracks_to_playlist.assert_called_once_with(destination, tracks)
+
+    def test_pointer_drag_preview_uses_the_rendered_track_row(self):
+        window = Gtk.OffscreenWindow()
+        store = Gtk.ListStore(str, str)
+        store.append(['Song', 'Artist'])
+        view = Gtk.TreeView(model=store)
+        for index in range(2):
+            view.append_column(Gtk.TreeViewColumn(str(index), Gtk.CellRendererText(), text=index))
+        window.add(view)
+        window.show_all()
+        while Gtk.events_pending():
+            Gtk.main_iteration()
+        path = Gtk.TreePath.new_from_indices([0])
+        area = view.get_background_area(path, None)
+        player = SimpleNamespace(song_drag_row_ghost=Gtk.Image(), song_drag_ghost=Gtk.Label())
+        try:
+            Player.prepare_song_drag_ghost(player, view, {'x': 5, 'y': area.y + area.height // 2})
+            self.assertTrue(player.song_drag_row_ghost.get_visible())
+            self.assertEqual(player.song_drag_row_ghost.get_storage_type(), Gtk.ImageType.SURFACE)
+            self.assertFalse(player.song_drag_ghost.get_visible())
+        finally:
+            window.destroy()
 
     def test_playlist_pointer_release_uses_insertion_position(self):
         movements = []
@@ -115,7 +309,7 @@ class PlayQueueTests(unittest.TestCase):
         selection.select_path(Gtk.TreePath.new_from_indices([1]))
         selection.select_path(Gtk.TreePath.new_from_indices([2]))
         _, paths = selection.get_selected_rows()
-        self.assertEqual([path.get_indices()[0] for path in paths], [1, 2])
+        self.assertEqual([path.get_indices()[0] for path in paths], [0, 1, 2])
 
     def test_similar_songs_adds_ten_unique_tracks_after_seed(self):
         seed = Item('/library/metadata/1', 'Seed')
@@ -188,6 +382,30 @@ class PlayQueueTests(unittest.TestCase):
         self.assertEqual(index, 1)
         with self.assertRaises(ValueError):
             move_items(['a', 'b'], 0, [9], 1)
+
+    def test_dragging_history_copies_it_into_queue_and_keeps_current_track(self):
+        queue = ['current', 'next', 'last']
+        history = ['older', 'recent']
+        moved, index = move_queue_or_history(queue, 0, history, [-2, 2], 1)
+        self.assertEqual(moved, ['current', 'recent', 'last', 'next'])
+        self.assertEqual(index, 0)
+        self.assertEqual(history, ['older', 'recent'])
+        with self.assertRaises(ValueError):
+            move_queue_or_history(queue, 0, history, [-9], 1)
+
+    def test_dragging_history_into_empty_queue_starts_the_track(self):
+        started = []
+        client = object()
+        player = SimpleNamespace(
+            queue=[], index=-1, play_history=['played'], client=client,
+            queue_album=None, stream_open=False, remote_opening=False,
+            clear_remote_queue=Mock(), pulse_queue_icon=Mock(),
+            shuffle=SimpleNamespace(get_active=lambda: False),
+            start_track=lambda: started.append(True))
+        self.assertTrue(Player.move_queue_indices(player, [-1], 0))
+        self.assertEqual((player.queue, player.index, player.queue_client),
+                         (['played'], 0, client))
+        self.assertEqual(started, [True])
 
     def test_remove_selected_rows_tracks_current_or_next_index(self):
         remaining, index, removed_current = remove_items(
@@ -289,7 +507,10 @@ class PlayQueueTests(unittest.TestCase):
         added = []
         player = SimpleNamespace(
             client=object(), albums=[album],
-            find_loaded_track=lambda key: {track.key: track, other.key: other}.get(key),
+            resolve_loaded_tracks=lambda keys: ([{track.key: track, other.key: other}[key]
+                                                  for key in keys]
+                                                 if all(key in (track.key, other.key) for key in keys)
+                                                 else []),
             enqueue_tracks=lambda tracks: added.append(('tracks', tracks)),
             enqueue_album=lambda item: added.append(('album', item)),
         )
@@ -310,10 +531,38 @@ class PlayQueueTests(unittest.TestCase):
         view = SimpleNamespace(get_path_at_pos=lambda _x, _y: ('row', None, None, None),
                                get_selection=lambda: selection)
         player = SimpleNamespace(queue_store={'row': [1]},
-                                 selected_queue_indices=lambda: [1, 3])
+                                 selected_queue_drag_indices=lambda: [1, 3])
         event = SimpleNamespace(button=1, x=8, y=12, state=0)
         self.assertFalse(Player.queue_song_pressed(player, view, event))
         self.assertEqual(player.queue_pointer_drag['indices'], [1, 3])
+
+    def test_queue_pointer_can_start_dragging_a_history_row(self):
+        selection = SimpleNamespace(path_is_selected=lambda _path: True)
+        view = SimpleNamespace(get_path_at_pos=lambda _x, _y: ('row', None, None, None),
+                               get_selection=lambda: selection)
+        player = SimpleNamespace(queue_store={'row': [-1]},
+                                 selected_queue_drag_indices=lambda: [-1])
+        event = SimpleNamespace(button=1, x=8, y=12, state=0)
+        self.assertFalse(Player.queue_song_pressed(player, view, event))
+        self.assertEqual(player.queue_pointer_drag['indices'], [-1])
+
+    def test_queue_checkbox_is_above_floating_player_bar(self):
+        margins = []
+        bar = SimpleNamespace(get_allocated_height=lambda: 140, get_visible=lambda: True)
+        player = SimpleNamespace(keep_style_playing=SimpleNamespace(set_margin_bottom=margins.append),
+                                 player_bar=bar, frosted_player_bar=True)
+        Player.update_queue_bottom_inset(player)
+        player.frosted_player_bar = False
+        Player.update_queue_bottom_inset(player)
+        self.assertEqual(margins, [156, 16])
+
+    def test_settings_slider_scroll_is_forwarded_to_its_scroller(self):
+        scroller = object()
+        scale = SimpleNamespace(get_ancestor=lambda _kind: scroller)
+        event = object()
+        with patch('player.Gtk.propagate_event') as propagate:
+            self.assertTrue(Player.ignore_settings_scale_scroll(scale, event))
+        propagate.assert_called_once_with(scroller, event)
 
     def test_queue_pointer_reorders_selected_rows_together(self):
         tracks = [Item(f'/library/metadata/{index}', str(index)) for index in range(5)]
@@ -379,7 +628,10 @@ class PlayQueueTests(unittest.TestCase):
         client = SimpleNamespace(add_playlist_item=lambda playlist, track: added.append(track.key))
         player = SimpleNamespace(
             client=client, active_playlist=None, song_view_cache={},
-            find_loaded_track=lambda key: next((track for track in tracks if track.key == key), None),
+            resolve_loaded_tracks=lambda keys: ([next(track for track in tracks if track.key == key)
+                                                  for key in keys]
+                                                 if all(any(track.key == key for track in tracks)
+                                                        for key in keys) else []),
             song_count=SimpleNamespace(set_text=lambda _message: None),
             async_work=lambda work, done, valid, failed: done(work()) if valid() else None,
         )
@@ -389,3 +641,32 @@ class PlayQueueTests(unittest.TestCase):
             Player.playlist_drop_received(player, row, None, 0, 0, selection, 0, 1)
         self.assertEqual(added, [track.key for track in tracks])
         self.assertTrue(finish.call_args.args[1])
+
+    def test_playlist_tracks_can_be_copied_to_another_playlist(self):
+        tracks = [Item('/library/metadata/1', 'One'),
+                  Item('/library/metadata/2', 'Two')]
+        destination = Item('/playlists/8/items', 'Destination')
+        listing = SimpleNamespace(get_row_at_y=lambda _y: SimpleNamespace(playlist=destination))
+        queue_button = object()
+        player = SimpleNamespace(song_pointer_drag={'active': True, 'indices': [0, 1]},
+                                 songs=tracks, playlist_list=listing, queue_nav=queue_button,
+                                 hide_song_drag_ghost=Mock(), hide_song_drop_line=Mock(),
+                                 add_tracks_to_playlist=Mock(),
+                                 pointer_position_in=lambda widget, _event:
+                                     (5, 10) if widget is listing else None)
+        view = Mock()
+        self.assertTrue(Player.song_pointer_release(player, view,
+                                                     SimpleNamespace(button=1)))
+        player.add_tracks_to_playlist.assert_called_once_with(destination, tracks)
+
+    def test_queue_tracks_can_be_copied_to_a_playlist(self):
+        song = Item('/library/metadata/1', 'One')
+        destination = Item('/playlists/8/items', 'Destination')
+        listing = SimpleNamespace(get_row_at_y=lambda _y: SimpleNamespace(playlist=destination))
+        player = SimpleNamespace(queue_pointer_drag={'active': True, 'indices': [0]},
+                                 queue=[song], play_history=[], playlist_list=listing,
+                                 hide_song_drag_ghost=Mock(), hide_song_drop_line=Mock(),
+                                 add_tracks_to_playlist=Mock(),
+                                 pointer_position_in=lambda _widget, _event: (5, 10))
+        self.assertTrue(Player.queue_pointer_release(player, Mock(), SimpleNamespace(button=1)))
+        player.add_tracks_to_playlist.assert_called_once_with(destination, [song])

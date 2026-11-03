@@ -6,6 +6,7 @@ import cairo
 import gi
 gi.require_version('Gtk', '3.0')
 from gi.repository import Gtk
+from gtk_snapshot import draw_allocated
 
 
 class FlipCard(Gtk.Overlay):
@@ -33,6 +34,7 @@ class FlipCard(Gtk.Overlay):
         self.queued_side = None
         self.on_side_shown = None
         self.started_at = None
+        self.prepared = False
         self.resize_card(size)
 
     def resize_card(self, size):
@@ -42,8 +44,21 @@ class FlipCard(Gtk.Overlay):
         width = max(1, self.get_allocated_width())
         height = max(1, self.get_allocated_height())
         surface = cairo.ImageSurface(cairo.FORMAT_ARGB32, width, height)
-        widget.draw(cairo.Context(surface))
+        draw_allocated(widget, cairo.Context(surface))
         return surface
+
+    def prepare(self):
+        """Map and render the back once while idle, before the first flip."""
+        if self.prepared or self.animating or not self.get_mapped() or self.side != 'front':
+            return False
+        self.stack.set_visible_child_name('back')
+        try:
+            self.stack.size_allocate(self.stack.get_allocation())
+            self.snapshot(self.stack.get_visible_child())
+            self.prepared = True
+        finally:
+            self.stack.set_visible_child_name('front')
+        return False
 
     def flip(self):
         target = 'front' if (self.target if self.animating else self.side) == 'back' else 'back'

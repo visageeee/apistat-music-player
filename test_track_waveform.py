@@ -7,6 +7,7 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
 import wave
+import cairo
 
 import gi
 gi.require_version('Gst', '1.0')
@@ -14,10 +15,37 @@ from gi.repository import Gst
 
 import local_cache
 from track_waveform import (PEAK_COUNT, allowed_track_uri, analyze_audio_uri,
-                            analyze_track_waveform)
+                            analyze_track_waveform, TrackWaveform)
 
 
 class TrackWaveformTests(unittest.TestCase):
+    def test_drawing_reuses_mask_across_progress_and_resizes(self):
+        calls = []
+        def make_mask(peaks):
+            calls.append(peaks)
+            return TrackWaveform.build_mask(peaks)
+        view = SimpleNamespace(peaks=[0.8] * PEAK_COUNT, _mask=None,
+                               color=SimpleNamespace(red=1.0, green=0.5, blue=0),
+                               progress=0.5, build_mask=make_mask,
+                               get_allocated_width=lambda: 800,
+                               get_allocated_height=lambda: 60)
+        canvas = cairo.ImageSurface(cairo.FORMAT_ARGB32, 800, 60)
+        TrackWaveform.draw_waveform(view, None, cairo.Context(canvas))
+        self.assertEqual(view._mask_pattern.get_filter(), cairo.FILTER_BILINEAR)
+        data = canvas.get_data()
+        row = 30 * canvas.get_stride()
+        played = struct.unpack_from('=I', data, row + 100 * 4)[0]
+        upcoming = struct.unpack_from('=I', data, row + 700 * 4)[0]
+        self.assertGreater(played >> 24, upcoming >> 24)
+        view.get_allocated_width = lambda: 600
+        view.progress = 0.75
+        TrackWaveform.draw_waveform(view, None, cairo.Context(canvas))
+        self.assertEqual(len(calls), 1)
+        view.queue_draw = lambda: None
+        TrackWaveform.set_peaks(view, [0.2] * PEAK_COUNT)
+        TrackWaveform.draw_waveform(view, None, cairo.Context(canvas))
+        self.assertEqual(len(calls), 2)
+
     def test_only_configured_server_can_supply_waveform(self):
         server = 'https://plex.example:32400'
         self.assertTrue(allowed_track_uri(server + '/library/parts/7/file.mp3', server))
@@ -43,9 +71,9 @@ class TrackWaveformTests(unittest.TestCase):
         import appearance
         with tempfile.TemporaryDirectory() as directory, \
                 patch.object(appearance, 'SETTINGS_PATH', Path(directory) / 'settings.json'):
-            self.assertFalse(appearance.load_timeline_waveform_enabled())
-            appearance.save_timeline_waveform_enabled(True)
             self.assertTrue(appearance.load_timeline_waveform_enabled())
+            appearance.save_timeline_waveform_enabled(False)
+            self.assertFalse(appearance.load_timeline_waveform_enabled())
 
     def test_gstreamer_decodes_actual_song_peaks(self):
         if not Gst.ElementFactory.find('appsink'):
