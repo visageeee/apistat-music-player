@@ -1,3 +1,4 @@
+import os
 import random
 import tempfile
 import unittest
@@ -75,7 +76,8 @@ class SmartPlaylistTests(unittest.TestCase):
             self.assertEqual(load_for_scope('server-a', 'https://a', '1', path)[0]['name'],
                              'Favorites')
             self.assertEqual(load_for_scope('server-b', 'https://b', '1', path), [])
-            self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+            if os.name != 'nt':
+                self.assertEqual(path.stat().st_mode & 0o777, 0o600)
             with self.assertRaises(ValueError):
                 save_for_scope('server-a', 'https://a', '1',
                                [definition(), definition()], path)
