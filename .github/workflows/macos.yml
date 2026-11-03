@@ -41,8 +41,13 @@ jobs:
           test -f dist/Apistat.app/Contents/MacOS/Apistat
           find dist/Apistat.app -iname '*soup*' -print
           codesign --verify --deep --strict --verbose=4 dist/Apistat.app
+          find dist/Apistat.app -type f -exec shasum -a 256 {} + | sort > "$RUNNER_TEMP/apistat-before.txt"
           GST_DEBUG=2 dist/Apistat.app/Contents/MacOS/Apistat --self-test
-          codesign --verify --deep --strict --verbose=4 dist/Apistat.app
+          find dist/Apistat.app -type f -exec shasum -a 256 {} + | sort > "$RUNNER_TEMP/apistat-after.txt"
+          if ! codesign --verify --deep --strict --verbose=4 dist/Apistat.app; then
+            diff -u "$RUNNER_TEMP/apistat-before.txt" "$RUNNER_TEMP/apistat-after.txt" || true
+            exit 1
+          fi
       - name: Archive app bundle
         run: ditto -c -k --sequesterRsrc --keepParent dist/Apistat.app Apistat-macOS-arm64.zip
       - uses: actions/upload-artifact@v4
