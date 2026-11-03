@@ -114,6 +114,8 @@ if sys.platform == 'darwin' and getattr(sys, 'frozen', False):
     # GStreamer's HTTP plugin loads libsoup dynamically; preload the bundled
     # library and scan plugins in-process so its symbols are available there.
     os.environ['GST_REGISTRY_FORK'] = 'no'
+    from macos_runtime import configure_gstreamer_registry
+    _macos_registry_temp = configure_gstreamer_registry(GLib.get_user_cache_dir())
     gi.require_version('Soup', '3.0')
     from gi.repository import Soup
     _macos_soup_session = Soup.Session.new()
