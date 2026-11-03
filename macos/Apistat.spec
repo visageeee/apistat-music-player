@@ -1,4 +1,4 @@
-"""Experimental Apple Silicon app bundle, built on macOS."""
+"""Experimental native macOS app bundle, built on the target architecture."""
 from pathlib import Path
 
 root = Path.cwd()

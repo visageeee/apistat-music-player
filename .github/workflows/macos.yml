@@ -8,16 +8,37 @@ permissions:
 
 jobs:
   build:
-    runs-on: macos-15
-    timeout-minutes: 45
+    name: macOS ${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: arm64
+            runner: macos-15
+          - arch: x86_64
+            runner: macos-15-intel
     steps:
       - uses: actions/checkout@v4
-      - name: Install GTK and GStreamer
+      - name: Install GTK and GStreamer with Homebrew
+        if: matrix.arch == 'arm64'
         run: |
           brew install pygobject3 gtk+3 gstreamer
           echo "$(brew --prefix python@3.14)/bin" >> "$GITHUB_PATH"
+      - name: Set up MacPorts
+        if: matrix.arch == 'x86_64'
+        uses: melusina-org/setup-macports@v1
+        with:
+          parameters: .github/macos-intel-ports.yml
+      - name: Install GTK and GStreamer with MacPorts
+        if: matrix.arch == 'x86_64'
+        run: |
+          sudo port -N install python314 py314-gobject3 gtk3 gstreamer1-gst-plugins-base gstreamer1-gst-plugins-good gstreamer1-gst-plugins-bad gstreamer1-gst-plugins-ugly
+          echo /opt/local/bin >> "$GITHUB_PATH"
       - name: Install Python build dependencies
         run: |
+          test "$(uname -m)" = '${{ matrix.arch }}'
           python3.14 -m venv --system-site-packages .venv
           .venv/bin/python -m pip install --upgrade pip
           .venv/bin/python -m pip install pyinstaller keyring psutil mutagen
@@ -39,6 +60,7 @@ jobs:
         run: |
           .venv/bin/pyinstaller --noconfirm --clean macos/Apistat.spec
           test -f dist/Apistat.app/Contents/MacOS/Apistat
+          lipo -verify_arch '${{ matrix.arch }}' dist/Apistat.app/Contents/MacOS/Apistat
           find dist/Apistat.app -iname '*soup*' -print
           codesign --verify --deep --strict --verbose=4 dist/Apistat.app
           find dist/Apistat.app -type f -exec shasum -a 256 {} + | sort > "$RUNNER_TEMP/apistat-before.txt"
@@ -49,9 +71,9 @@ jobs:
             exit 1
           fi
       - name: Archive app bundle
-        run: ditto -c -k --sequesterRsrc --keepParent dist/Apistat.app Apistat-macOS-arm64.zip
+        run: ditto -c -k --sequesterRsrc --keepParent dist/Apistat.app Apistat-macOS-${{ matrix.arch }}.zip
       - uses: actions/upload-artifact@v4
         with:
-          name: Apistat-macOS-arm64-experimental
-          path: Apistat-macOS-arm64.zip
+          name: Apistat-macOS-${{ matrix.arch }}-experimental
+          path: Apistat-macOS-${{ matrix.arch }}.zip
           if-no-files-found: error

@@ -59,7 +59,7 @@ The package includes Mutagen for embedded ID3 tags. Its sandbox permits networki
 
 ## Experimental macOS build
 
-The **Experimental macOS build** GitHub Actions workflow produces an unsigned Apple Silicon `.app` in a ZIP. This is an early test build: it requires hands-on verification of playback, Keychain, networking and Plexamp discovery on a Mac. macOS may block the unsigned, non-notarized app. The app uses macOS Keychain for server and Plex account tokens; global shortcuts and native media-key integration are not yet supported. The workflow is independent of the Windows and Flatpak draft release.
+The **Experimental macOS build** GitHub Actions workflow builds separate unsigned Apple Silicon and Intel `.app` ZIPs on their respective macOS runners. The Intel build uses MacPorts because current Homebrew packages may need to be built from source on Intel Macs. This is an early test build: it requires hands-on verification of playback, Keychain, networking and Plexamp discovery on a Mac. macOS may block the unsigned, non-notarized app. The app uses macOS Keychain for server and Plex account tokens; global shortcuts and native media-key integration are not yet supported. The workflow is independent of the Windows and Flatpak draft release.
 
 ## Windows build
 

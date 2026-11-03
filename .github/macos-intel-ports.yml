@@ -1,0 +1,6 @@
+version: '2.11.5'
+variants:
+  select:
+    - quartz
+  deselect:
+    - x11
