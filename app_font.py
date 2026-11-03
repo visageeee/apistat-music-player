@@ -8,22 +8,19 @@ from pathlib import Path
 
 
 DEFAULT_FONT_FAMILY = 'Nunito'
-FR_PRIVATE = 0x10
-
-
-def _register_windows_font(path):
-    """Make the bundled font available to this process through the Windows font API."""
+def _register_pango_font(path):
+    """Register the font directly with Pango's active platform backend."""
     try:
-        gdi = ctypes.WinDLL('gdi32', use_last_error=True)
-        add = gdi.AddFontResourceExW
-        add.argtypes = (ctypes.c_wchar_p, ctypes.c_uint, ctypes.c_void_p)
-        add.restype = ctypes.c_int
-        if not add(str(path), FR_PRIVATE, None):
-            return False
-        from gi.repository import PangoCairo
-        PangoCairo.FontMap.get_default().changed()
-        return True
-    except (OSError, AttributeError, ImportError):
+        import gi
+        gi.require_version('PangoCairo', '1.0')
+        from gi.repository import GLib, PangoCairo
+    except (ImportError, ValueError):
+        return False
+    try:
+        fontmap = PangoCairo.FontMap.get_default()
+        add = getattr(fontmap, 'add_font_file', None)
+        return bool(add and add(str(path)))
+    except (ImportError, AttributeError, RuntimeError, TypeError, GLib.Error):
         return False
 
 
@@ -37,7 +34,7 @@ def register_bundled_font():
     path = font_path()
     if not path.is_file():
         return False
-    if sys.platform == 'win32' and _register_windows_font(path):
+    if _register_pango_font(path):
         return True
     names = [ctypes.util.find_library('fontconfig'), 'libfontconfig.so.1',
              'libfontconfig-1.dll']
