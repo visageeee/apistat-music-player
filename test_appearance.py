@@ -177,7 +177,9 @@ class AppearanceTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / 'settings.json'
             with patch.object(appearance, 'SETTINGS_PATH', path):
-                self.assertFalse(appearance.load_gradient_enabled())
+                self.assertTrue(appearance.load_gradient_enabled())
+                self.assertTrue(appearance.load_album_details_enabled())
+                self.assertEqual(appearance.load_album_columns(), 5)
                 self.assertEqual(appearance.load_theme(), 'dark')
                 appearance.save_theme('black')
                 self.assertEqual(appearance.load_theme(), 'black')
@@ -194,6 +196,7 @@ class AppearanceTests(unittest.TestCase):
                 appearance.save_smooth_scrolling_enabled(False)
                 self.assertFalse(appearance.load_smooth_scrolling_enabled())
                 appearance.save_smooth_scrolling_enabled(True)
+                appearance.save_album_details_enabled(False)
                 self.assertFalse(appearance.load_album_details_enabled())
                 appearance.save_album_details_enabled(True)
                 self.assertTrue(appearance.load_album_details_enabled())

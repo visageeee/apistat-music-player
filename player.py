@@ -19,9 +19,19 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit, urlencode
 import gi
 
+from gi.repository import GLib
+from portal_shortcuts import APP_ID, PortalShortcuts
+
+# GTK derives the Wayland app ID and X11 window class during initialization.
+if __name__ == '__main__' and os.name != 'nt':
+    GLib.set_prgname(APP_ID)
+    GLib.set_application_name('Apistat')
+
 gi.require_version('Gtk', '3.0')
 gi.require_version('Gst', '1.0')
 from gi.repository import Gtk, Gst, GLib, GdkPixbuf, Gdk, Pango
+if __name__ == '__main__' and os.name != 'nt':
+    Gdk.set_program_class(APP_ID)
 from app_font import DEFAULT_FONT_FAMILY, register_bundled_font
 from plex_client import PlexClient, ALBUM_SORT_ARTIST
 from plex_resources import reachable_music_server
@@ -87,7 +97,6 @@ from smooth_scroll import SmoothScroller
 from busy_indicator import BusyIndicator
 from session import load_session, save_session, item_to_data
 import shortcuts
-from portal_shortcuts import APP_ID, PortalShortcuts
 from companion import CompanionReceiver, local_ip
 from companion_account import (PlexAccount, load_device_token, save_device_token,
                                clear_device_token)
@@ -8999,8 +9008,6 @@ if __name__ == '__main__':
     parser.add_argument('--resize-log', metavar='FILE',
                         help='append opt-in window resize diagnostics as JSON lines')
     args = parser.parse_args()
-    if os.name != 'nt':
-        GLib.set_prgname(APP_ID)
     if args.self_test:
         runtime_self_test()
     else:

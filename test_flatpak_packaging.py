@@ -35,6 +35,7 @@ class FlatpakPackagingTests(unittest.TestCase):
         desktop.read(ROOT / 'flatpak/org.apistat.Apistat.desktop', encoding='utf-8')
         self.assertEqual(desktop['Desktop Entry']['Exec'], 'apistat')
         self.assertEqual(desktop['Desktop Entry']['Icon'], 'org.apistat.Apistat')
+        self.assertEqual(desktop['Desktop Entry']['StartupWMClass'], 'org.apistat.Apistat')
         metadata = ElementTree.parse(ROOT / 'flatpak/org.apistat.Apistat.metainfo.xml').getroot()
         self.assertEqual(metadata.findtext('id'), 'org.apistat.Apistat')
         self.assertEqual(metadata.findtext('launchable'), 'org.apistat.Apistat.desktop')

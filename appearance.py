@@ -295,7 +295,7 @@ def _read_settings():
 
 
 def load_gradient_enabled():
-    return _read_settings().get('album_art_gradient') is True
+    return _read_settings().get('album_art_gradient', True) is True
 
 
 def load_info_panel_width():
@@ -454,7 +454,7 @@ def load_accent_color():
 
 
 def load_album_details_enabled():
-    return _read_settings().get('album_grid_details') is True
+    return _read_settings().get('album_grid_details', True) is True
 
 
 def load_single_flip_enabled():
@@ -500,7 +500,7 @@ def load_album_columns():
     old_size = settings.get('album_grid_size')
     if type(old_size) is int and ALBUM_SIZE_RANGE[0] <= old_size <= ALBUM_SIZE_RANGE[1]:
         return max(4, min(16, round(1000 / old_size)))
-    return 8
+    return 5
 
 
 def load_album_margins():

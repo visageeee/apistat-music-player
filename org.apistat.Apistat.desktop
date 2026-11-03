@@ -6,3 +6,4 @@ Exec=apistat
 Icon=apistat
 Categories=Audio;Music;Player;
 StartupNotify=true
+StartupWMClass=org.apistat.Apistat
