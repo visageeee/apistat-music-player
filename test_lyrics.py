@@ -289,14 +289,13 @@ class LyricsTests(unittest.TestCase):
 
     def test_long_lines_and_zoom_increase_requested_lyrics_width(self):
         current = ['']
-        layout = SimpleNamespace(set_font_description=Mock(),
+        font = SimpleNamespace(set_absolute_size=Mock())
+        context = SimpleNamespace(get_font_description=lambda: SimpleNamespace(copy=lambda: font))
+        layout = SimpleNamespace(set_font_description=Mock(), get_context=lambda: context,
                                  set_text=lambda text, _length: current.__setitem__(0, text),
                                  get_pixel_size=lambda: (len(current[0]) * 20, 20))
-        font = SimpleNamespace(set_absolute_size=Mock())
-        context = SimpleNamespace(get_font=lambda _state: SimpleNamespace(copy=lambda: font))
         player = SimpleNamespace(
-            lyrics_text=SimpleNamespace(create_pango_layout=lambda _text: layout,
-                                        get_style_context=lambda: context),
+            lyrics_text=SimpleNamespace(create_pango_layout=lambda _text: layout),
             text_size=18, lyrics_zoom=2.0, lyrics_measure_lines=('short', 'x' * 40),
             lyrics_group=SimpleNamespace(set_target_width=Mock()))
         Player.update_lyrics_width(player)

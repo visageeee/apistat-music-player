@@ -4151,7 +4151,7 @@ class Player(Gtk.Window):
 
     def update_lyrics_width(self):
         layout = self.lyrics_text.create_pango_layout('')
-        font = self.lyrics_text.get_style_context().get_font(Gtk.StateFlags.NORMAL).copy()
+        font = layout.get_context().get_font_description().copy()
         font.set_absolute_size(round(self.text_size * self.lyrics_zoom) * Pango.SCALE)
         layout.set_font_description(font)
         longest = 0
@@ -9052,6 +9052,20 @@ def runtime_self_test():
         if not font_path().is_file():
             raise RuntimeError('Bundled font is missing')
         app_icon()  # Also checks that the bundled icon can be decoded.
+    if os.name == 'nt' and getattr(sys, 'frozen', False):
+        import gi
+        gi.require_version('PangoCairo', '1.0')
+        from gi.repository import PangoCairo
+        if not register_bundled_font():
+            raise RuntimeError('Bundled font could not be registered with Pango')
+        surface = cairo.ImageSurface(cairo.FORMAT_ARGB32, 400, 80)
+        cr = cairo.Context(surface)
+        layout = PangoCairo.create_layout(cr)
+        layout.set_font_description(Pango.FontDescription.from_string('Nunito 12'))
+        layout.set_text('Apistat ★ ♥ 🎵', -1)
+        if layout.get_unknown_glyphs_count():
+            raise RuntimeError('Pango could not find fonts for the text and symbols test')
+        PangoCairo.show_layout(cr, layout)
 
 
 if __name__ == '__main__':
