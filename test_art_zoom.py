@@ -199,7 +199,8 @@ class ArtZoomTests(unittest.TestCase):
         events = []
         player = SimpleNamespace(
             _album_layout_pending=True,
-            wall_scroll=SimpleNamespace(get_allocated_width=lambda: widths[0]),
+            wall_scroll=SimpleNamespace(get_allocated_width=lambda: widths[0],
+                                        get_mapped=lambda: True),
             apply_album_grid_layout=lambda: events.append('fit to saved zoom'),
             apply_album_grid_columns=lambda: events.append('reflow'))
         Player.update_album_wall_layout(player)
@@ -208,6 +209,19 @@ class ArtZoomTests(unittest.TestCase):
         Player.update_album_wall_layout(player)
         Player.update_album_wall_layout(player)
         self.assertEqual(events, ['fit to saved zoom', 'reflow'])
+
+    def test_initial_wall_fit_waits_until_allocations_settle(self):
+        timers = []
+        player = SimpleNamespace(_album_initial_layout_source=0,
+                                 update_album_wall_layout=lambda: False)
+        with patch('player.GLib.timeout_add', side_effect=lambda delay, callback:
+                   timers.append((delay, callback)) or len(timers)), \
+                patch('player.GLib.source_remove') as remove:
+            Player.schedule_initial_album_layout(player)
+            Player.schedule_initial_album_layout(player)
+        remove.assert_called_once_with(1)
+        self.assertEqual([delay for delay, _callback in timers], [350, 350])
+        self.assertEqual(player._album_initial_layout_source, 2)
 
     def test_ctrl_wheel_changes_each_view_independently(self):
         layouts = []

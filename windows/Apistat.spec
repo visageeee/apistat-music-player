@@ -17,8 +17,9 @@ a = Analysis(
     binaries=[],
     datas=[(str(root / 'apistat.png'), '.'),
            (str(root / 'fonts' / 'Nunito-wght.ttf'), 'fonts'),
-           (str(root / 'fonts' / 'OFL.txt'), 'fonts')],
-    hiddenimports=[],
+           (str(root / 'fonts' / 'OFL.txt'), 'fonts'),
+           (str(root / 'windows' / 'fonts.conf'), 'windows')],
+    hiddenimports=['gi.repository.PangoFc'],
     hookspath=[],
     hooksconfig={
         'gi': {

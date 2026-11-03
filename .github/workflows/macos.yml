@@ -40,8 +40,9 @@ jobs:
           .venv/bin/pyinstaller --noconfirm --clean macos/Apistat.spec
           test -f dist/Apistat.app/Contents/MacOS/Apistat
           find dist/Apistat.app -iname '*soup*' -print
+          codesign --verify --deep --strict --verbose=4 dist/Apistat.app
           GST_DEBUG=2 dist/Apistat.app/Contents/MacOS/Apistat --self-test
-          codesign --verify --deep --strict dist/Apistat.app
+          codesign --verify --deep --strict --verbose=4 dist/Apistat.app
       - name: Archive app bundle
         run: ditto -c -k --sequesterRsrc --keepParent dist/Apistat.app Apistat-macOS-arm64.zip
       - uses: actions/upload-artifact@v4

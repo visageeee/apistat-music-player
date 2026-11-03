@@ -1,6 +1,13 @@
 #!/usr/bin/env python3
 import os
 import sys
+from pathlib import Path
+
+if os.name == 'nt' and getattr(sys, 'frozen', False):
+    # The Windows Pango/DirectWrite backend can fail to resolve fallback fonts.
+    # Use the bundled Fontconfig configuration and the installed Windows fonts.
+    os.environ.setdefault('PANGOCAIRO_BACKEND', 'fc')
+    os.environ.setdefault('FONTCONFIG_FILE', str(Path(sys._MEIPASS) / 'windows' / 'fonts.conf'))
 import random
 import math
 import hmac
@@ -518,6 +525,11 @@ class Player(Gtk.Window):
                 margin: 0 8px; }
             #full-library-button { margin: 8px 8px 0 8px; }
             #playlist-panel, #smart-playlist-panel { background: #181818; border: 0; }
+            #smart-playlist-header button, #smart-playlist-header button:hover,
+            #smart-playlist-header button:active, #smart-playlist-header button:focus,
+            #playlist-header button, #playlist-header button:hover,
+            #playlist-header button:active, #playlist-header button:focus {
+                background: transparent; background-image: none; border: 0; box-shadow: none; }
             #playlist-scroll, #playlist-scroll viewport, #playlist-list,
             #smart-playlist-scroll, #smart-playlist-scroll viewport, #smart-playlist-list,
             #style-scroll, #style-scroll viewport, #style-list,
@@ -885,6 +897,7 @@ class Player(Gtk.Window):
         self.set_tooltip(wall_scroll, 'Hold Ctrl and scroll to resize album covers')
         wall_scroll.connect('scroll-event', self.zoom_art, 'albums')
         wall_scroll.connect('size-allocate', self.album_wall_allocated)
+        wall_scroll.connect('map', self.album_wall_mapped)
         self.wall_scroll = wall_scroll
         wall_adjustment = wall_scroll.get_vadjustment()
         wall_adjustment.connect('value-changed', self.album_scroll_changed)
@@ -1353,12 +1366,10 @@ class Player(Gtk.Window):
                 #settings-tab-button { color: #202326; }
                 #settings-tab-button:hover { background: rgba(0, 0, 0, 0.08); }
                 #plex-player button { color: #202326; }
-                #smart-playlist-header button, #playlist-header button,
                 #style-tag-button,
                 #settings-panel button:not(#settings-tab-button) {
                     background: #e2e2de; color: #202326;
                     border: 1px solid #c6c6c1; box-shadow: none; }
-                #smart-playlist-header button:hover, #playlist-header button:hover,
                 #style-tag-button:hover,
                 #settings-panel button:not(#settings-tab-button):hover {
                     background: #cecec9; color: #202326; }
@@ -1564,15 +1575,32 @@ class Player(Gtk.Window):
         if getattr(self, '_album_wall_width', None) == allocation.width:
             return
         self._album_wall_width = allocation.width
+        if not getattr(self, '_album_initial_layout_done', False):
+            self.schedule_initial_album_layout()
+            return
         if not getattr(self, '_album_layout_pending', False):
             self._album_layout_pending = True
             GLib.idle_add(self.update_album_wall_layout)
 
+    def album_wall_mapped(self, _widget):
+        if not getattr(self, '_album_initial_layout_done', False):
+            self.schedule_initial_album_layout()
+
+    def schedule_initial_album_layout(self):
+        source = getattr(self, '_album_initial_layout_source', 0)
+        if source:
+            GLib.source_remove(source)
+        self._album_initial_layout_source = GLib.timeout_add(350, self.update_album_wall_layout)
+
     def update_album_wall_layout(self):
         self._album_layout_pending = False
         if not getattr(self, '_album_initial_layout_done', False):
-            if self.wall_scroll.get_allocated_width() <= 100:
+            if not self.wall_scroll.get_mapped() or self.wall_scroll.get_allocated_width() <= 100:
+                self._album_initial_layout_source = 0
                 return False
+            if Player.window_resize_recent(self):
+                return True
+            self._album_initial_layout_source = 0
             self._album_initial_layout_done = True
             self.apply_album_grid_layout()
         else:
