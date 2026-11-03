@@ -1,3 +1,4 @@
+import os
 import unittest
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
@@ -48,6 +49,7 @@ class WindowShapeTests(unittest.TestCase):
         self.assertEqual(player._window_shape_resume_source, 0)
         player.refresh_window_shape.assert_called_once_with()
 
+    @unittest.skipIf(os.name == 'nt', 'Windows uses the native frame')
     def test_square_window_does_not_reapply_shape_for_each_size(self):
         allocation = SimpleNamespace(width=800, height=600)
         window = SimpleNamespace(get_state=lambda: 0, shape_combine_region=Mock(),
@@ -62,6 +64,7 @@ class WindowShapeTests(unittest.TestCase):
         window.input_shape_combine_region.assert_called_once()
         self.assertTrue(window.input_shape_combine_region.call_args.args[0].contains_point(2000, 1000))
 
+    @unittest.skipIf(os.name == 'nt', 'Windows uses the native frame')
     def test_square_input_shape_works_with_real_gtk_binding(self):
         if not Gtk.init_check()[0]:
             self.skipTest('GTK display unavailable')

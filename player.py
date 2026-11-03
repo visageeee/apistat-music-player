@@ -90,6 +90,7 @@ from play_queue import (insert_items, move_items, move_queue_or_history, remove_
 from drag_payload import encode_track_keys, decode_track_keys
 from ratings import filled_stars, star_text, stars_from_click
 from window_shape import rounded_region
+import windows_window
 from track_waveform import TrackWaveform, analyze_track_waveform
 from ribbon_audio import RibbonAudioTap
 from ribbon_visualizer import RibbonVisualizer
@@ -1668,7 +1669,7 @@ class Player(Gtk.Window):
         size = event.width, event.height
         if self._last_configure_size is not None and size != self._last_configure_size:
             self._last_window_resize_at = time.monotonic()
-            if getattr(self, 'rounded_corners_enabled', False):
+            if os.name != 'nt' and getattr(self, 'rounded_corners_enabled', False):
                 self.defer_window_shape()
         self._last_configure_size = size
         return False
@@ -1721,6 +1722,12 @@ class Player(Gtk.Window):
         state = window.get_state()
         rounded = self.rounded_corners_enabled and not bool(
             state & (Gdk.WindowState.MAXIMIZED | Gdk.WindowState.FULLSCREEN))
+        if os.name == 'nt':
+            shape = ('windows', rounded, self.hide_title_bar)
+            if shape != self._window_shape_state:
+                windows_window.configure_window(window, rounded)
+                self._window_shape_state = shape
+            return False
         shape = (allocation.width, allocation.height, True) if rounded else (None, None, False)
         if shape != self._window_shape_state:
             region = (rounded_region(allocation.width, allocation.height)
