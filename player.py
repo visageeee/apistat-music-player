@@ -8998,6 +8998,7 @@ def runtime_self_test():
         if Gst.ElementFactory.find('osxaudiosink') is None:
             raise RuntimeError('Missing GStreamer macOS audio sink')
         from keyring.backends.macOS import Keyring
+        Keyring.priority  # Check the underlying Security API, not just the module.
     if (os.name == 'nt' or sys.platform == 'darwin') and getattr(sys, 'frozen', False):
         from app_font import font_path
         from mutagen.id3 import ID3

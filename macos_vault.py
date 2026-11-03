@@ -16,6 +16,7 @@ def _backend():
         raise OSError('macOS Keychain is unavailable on this system.')
     # Select Keychain explicitly instead of accepting a configured fallback backend.
     from keyring.backends.macOS import Keyring
+    Keyring.priority  # Raises if the macOS Security API could not be loaded.
     return Keyring()
 
 
