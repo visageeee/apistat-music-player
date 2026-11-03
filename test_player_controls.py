@@ -622,7 +622,7 @@ class PlayerControlTests(unittest.TestCase):
             revealed[0] = visible
             changes.append(('gap', visible))
         gap = SimpleNamespace(get_reveal_child=lambda: revealed[0],
-                              set_reveal_child=reveal)
+                              set_reveal_child=reveal, show=lambda: None)
         children = list(buttons.values()) + [gap]
         def reorder(child, index):
             children.remove(child)

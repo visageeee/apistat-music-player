@@ -396,7 +396,16 @@ class Player(Gtk.Window):
             #plex-player { background: #000; color: #eee; }
             #library-wall, #library-wall viewport, #album-grid,
             #album-grid flowboxchild { background: transparent; }
-            #plex-player label { color: #eee; }
+            #plex-player label, #plex-player button, #plex-player entry,
+            #song-view, #style-song-view, #queue-view, #album-track-view { color: #eee; }
+            #plex-player entry { background: #252525; }
+            #settings-panel button:not(#settings-tab-button) {
+                background: #303030; color: #eee; border-color: #555; }
+            #settings-panel button:not(#settings-tab-button):hover { background: #404040; }
+            #apistat-context-menu { background: #252525; color: #eee; }
+            #apistat-context-menu menuitem, #apistat-context-menu menuitem label {
+                color: #eee; }
+            #apistat-context-menu menuitem:hover { background: #484848; }
             #album-grid flowboxchild { padding: 0; margin: 0; border: 0; }
             #album-grid button { background: transparent; border: 0; padding: 0;
                 border-radius: 0; box-shadow: none; }
@@ -694,11 +703,14 @@ class Player(Gtk.Window):
         self.sidebar.pack_start(self.sidebar_spacer, True, True, 0)
         self.sidebar.reorder_child(self.sidebar_spacer, len(self.sidebar_order) - 1)
         self.nav_drop_gap = Gtk.Revealer()
+        self.nav_drop_gap.set_no_show_all(True)
         self.nav_drop_gap.set_transition_type(Gtk.RevealerTransitionType.SLIDE_DOWN)
         self.nav_drop_gap.set_transition_duration(180)
+        self.nav_drop_gap.connect('notify::child-revealed', self.nav_gap_reveal_changed)
         gap_space = Gtk.Box()
         gap_space.set_size_request(-1, 48)
         self.nav_drop_gap.add(gap_space)
+        gap_space.show()
         self.sidebar.pack_start(self.nav_drop_gap, False, False, 0)
         self.nav_drag_source = None
         self.nav_drag_insert = None
@@ -1279,6 +1291,10 @@ class Player(Gtk.Window):
                 #library-side-split separator { background: #c9c9c5; }
                 #plex-player label, #album-grid #album-title, #album-grid #album-meta,
                 #now-album, #bar-track-artist { color: #202326; }
+                #apistat-context-menu { background: #f5f5f3; color: #202326; }
+                #apistat-context-menu menuitem, #apistat-context-menu menuitem label {
+                    color: #202326; }
+                #apistat-context-menu menuitem:hover { background: #d8d8d3; }
                 #side-nav, #side-nav-surface, #player-bar {
                     background: #e9e9e6; color: #202326; }
                 #song-drag-ghost { background: #fff; color: #202326;
@@ -1543,7 +1559,18 @@ class Player(Gtk.Window):
         self._album_wall_width = allocation.width
         if not getattr(self, '_album_layout_pending', False):
             self._album_layout_pending = True
-            GLib.idle_add(self.apply_album_grid_columns)
+            GLib.idle_add(self.update_album_wall_layout)
+
+    def update_album_wall_layout(self):
+        self._album_layout_pending = False
+        if not getattr(self, '_album_initial_layout_done', False):
+            if self.wall_scroll.get_allocated_width() <= 100:
+                return False
+            self._album_initial_layout_done = True
+            self.apply_album_grid_layout()
+        else:
+            self.apply_album_grid_columns()
+        return False
 
     def album_scroll_changed(self, *_):
         self.maybe_load_more_albums()
@@ -2278,6 +2305,11 @@ class Player(Gtk.Window):
         self.nav_drag_source = None
         self.nav_drag_insert = None
 
+    @staticmethod
+    def nav_gap_reveal_changed(gap, _property):
+        if not gap.get_child_revealed() and not gap.get_reveal_child():
+            gap.hide()
+
     def nav_drag_data_get(self, _button, _context, selection, _info, _time, view):
         selection.set(selection.get_target(), 8, view.encode('ascii'))
 
@@ -2313,6 +2345,7 @@ class Player(Gtk.Window):
         if children.index(self.nav_drop_gap) != gap_position:
             self.sidebar.reorder_child(self.nav_drop_gap, gap_position)
         if not self.nav_drop_gap.get_reveal_child():
+            self.nav_drop_gap.show()
             self.nav_drop_gap.set_reveal_child(True)
 
     def nav_drag_data_received(self, widget, context, x, y, selection, info, event_time):
@@ -2413,6 +2446,7 @@ class Player(Gtk.Window):
 
     def show_context_menu(self, event, tile=None):
         menu = Gtk.Menu()
+        menu.set_name('apistat-context-menu')
         menu.attach_to_widget(self, None)
         def item(label, callback):
             entry = Gtk.MenuItem.new_with_label(label)
@@ -2533,6 +2567,7 @@ class Player(Gtk.Window):
 
     def show_song_context_menu(self, event, song, index, play_action=None):
         menu = Gtk.Menu()
+        menu.set_name('apistat-context-menu')
         menu.attach_to_widget(self, None)
         def item(label, action):
             entry = Gtk.MenuItem.new_with_label(label)
@@ -3656,6 +3691,7 @@ class Player(Gtk.Window):
         if event.button != 3:
             return False
         menu = Gtk.Menu()
+        menu.set_name('apistat-context-menu')
         menu.attach_to_widget(widget, None)
         entry = Gtk.MenuItem.new_with_label('Fill play queue')
         entry.connect('activate', lambda *_: self.fill_style_queue(facet))
@@ -6152,6 +6188,7 @@ class Player(Gtk.Window):
         if event.button != 3:
             return False
         menu = Gtk.Menu()
+        menu.set_name('apistat-context-menu')
         menu.attach_to_widget(self, None)
         for label, callback in (
                 ('Rename playlist…', self.rename_playlist_dialog),
@@ -6348,6 +6385,7 @@ class Player(Gtk.Window):
             return False
         self.smart_playlist_list.select_row(row)
         menu = Gtk.Menu()
+        menu.set_name('apistat-context-menu')
         menu.attach_to_widget(self, None)
         for label, action in (
                 ('Edit smart playlist…', lambda: self.edit_smart_playlist_dialog(row.definition)),
@@ -7125,6 +7163,7 @@ class Player(Gtk.Window):
         if event.button != 3:
             return False
         menu = Gtk.Menu()
+        menu.set_name('apistat-context-menu')
         menu.attach_to_widget(self, None)
         recent = Gtk.MenuItem.new_with_label('Recently added (original order)')
         recent.connect('activate', lambda *_: self.reset_library_sort())
@@ -7132,6 +7171,7 @@ class Player(Gtk.Window):
         menu.append(Gtk.SeparatorMenuItem())
         columns_item = Gtk.MenuItem.new_with_label('Show columns')
         columns_menu = Gtk.Menu()
+        columns_menu.set_name('apistat-context-menu')
         for name, optional_field in LIBRARY_COLUMNS[4:]:
             if optional_field == 'user_rating' and self.star_ratings_hidden:
                 continue

@@ -194,6 +194,21 @@ class ArtZoomTests(unittest.TestCase):
         self.assertEqual(player.album_art_size, 120)
         self.assertEqual(columns, [8, 5])
 
+    def test_initial_wall_layout_uses_actual_width_only_once(self):
+        widths = [1]
+        events = []
+        player = SimpleNamespace(
+            _album_layout_pending=True,
+            wall_scroll=SimpleNamespace(get_allocated_width=lambda: widths[0]),
+            apply_album_grid_layout=lambda: events.append('fit to saved zoom'),
+            apply_album_grid_columns=lambda: events.append('reflow'))
+        Player.update_album_wall_layout(player)
+        self.assertEqual(events, [])
+        widths[0] = 1800
+        Player.update_album_wall_layout(player)
+        Player.update_album_wall_layout(player)
+        self.assertEqual(events, ['fit to saved zoom', 'reflow'])
+
     def test_ctrl_wheel_changes_each_view_independently(self):
         layouts = []
         slots = []
