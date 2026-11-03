@@ -67,7 +67,17 @@ jobs:
         run: |
           pyinstaller --noconfirm --clean windows/Apistat.spec
           test -f dist/Apistat/Apistat.exe
-          ./dist/Apistat/Apistat-Debug.exe --self-test
+          test ! -e dist/Apistat/Apistat-Debug.exe
+      - name: Check frozen runtime
+        shell: pwsh
+        run: |
+          $env:APISTAT_SELF_TEST_REPORT = Join-Path $env:RUNNER_TEMP 'apistat-self-test.txt'
+          $process = Start-Process -FilePath (Resolve-Path dist/Apistat/Apistat.exe) -ArgumentList '--self-test' -PassThru
+          if (-not $process.WaitForExit(120000)) { Stop-Process -Id $process.Id -Force; throw 'Apistat self-test timed out' }
+          if ($process.ExitCode -ne 0) {
+            if (Test-Path $env:APISTAT_SELF_TEST_REPORT) { Get-Content $env:APISTAT_SELF_TEST_REPORT }
+            throw "Apistat self-test failed with exit code $($process.ExitCode)"
+          }
       - name: Package Windows build
         shell: pwsh
         run: Compress-Archive -Path dist/Apistat -DestinationPath Apistat-Windows-x64.zip

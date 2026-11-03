@@ -9111,7 +9111,22 @@ if __name__ == '__main__':
                         help='append opt-in window resize diagnostics as JSON lines')
     args = parser.parse_args()
     if args.self_test:
-        runtime_self_test()
+        try:
+            runtime_self_test()
+        except Exception:
+            if os.name == 'nt' and getattr(sys, 'frozen', False):
+                # A windowed executable has no console. Avoid a modal error
+                # dialog during CI and write diagnostics only when requested.
+                report = os.environ.get('APISTAT_SELF_TEST_REPORT')
+                if report:
+                    import traceback
+                    try:
+                        with open(report, 'w', encoding='utf-8') as stream:
+                            traceback.print_exc(file=stream)
+                    except OSError:
+                        pass
+                raise SystemExit(1)
+            raise
     else:
         stream = None
         if args.resize_log:

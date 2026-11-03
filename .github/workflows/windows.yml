@@ -41,11 +41,19 @@ jobs:
         run: |
           pyinstaller --noconfirm --clean windows/Apistat.spec
           test -f dist/Apistat/Apistat.exe
+          test ! -e dist/Apistat/Apistat-Debug.exe
           find dist/Apistat -iname '*ggml*' -o -iname '*whisper*'
       - name: Check frozen runtime
-        run: ./dist/Apistat/Apistat-Debug.exe --self-test
+        shell: pwsh
+        run: |
+          $env:APISTAT_SELF_TEST_REPORT = Join-Path $env:RUNNER_TEMP 'apistat-self-test.txt'
+          $process = Start-Process -FilePath (Resolve-Path dist/Apistat/Apistat.exe) -ArgumentList '--self-test' -PassThru
+          if (-not $process.WaitForExit(120000)) { Stop-Process -Id $process.Id -Force; throw 'Apistat self-test timed out' }
+          if ($process.ExitCode -ne 0) {
+            if (Test-Path $env:APISTAT_SELF_TEST_REPORT) { Get-Content $env:APISTAT_SELF_TEST_REPORT }
+            throw "Apistat self-test failed with exit code $($process.ExitCode)"
+          }
       - uses: actions/upload-artifact@v4
-        if: always()
         with:
           name: Apistat-Windows-x64
           path: dist/Apistat/
