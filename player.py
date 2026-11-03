@@ -36,7 +36,7 @@ from app_font import DEFAULT_FONT_FAMILY, register_bundled_font
 from plex_client import PlexClient, ALBUM_SORT_ARTIST
 from plex_resources import reachable_music_server
 from credentials import load_credentials, save_credentials
-if os.name != 'nt':
+if sys.platform.startswith('linux'):
     from mpris import Mpris
 else:
     Mpris = None
@@ -1100,7 +1100,7 @@ class Player(Gtk.Window):
         if window.get('maximized'):
             self.maximize()
         self.mpris = Mpris(self) if mpris_enabled and Mpris else InactiveMpris()
-        self.portal_shortcuts = PortalShortcuts(self, self.refresh_shortcuts) if os.name != 'nt' else None
+        self.portal_shortcuts = PortalShortcuts(self, self.refresh_shortcuts) if sys.platform.startswith('linux') else None
         if self.portal_shortcuts:
             self.portal_shortcuts.start()
         GLib.timeout_add(500, self.tick)
@@ -2011,7 +2011,7 @@ class Player(Gtk.Window):
                 self.choose_server_from_account()
         def failed(_error):
             self.remote_link_select_server = False
-            store = ('Windows Credential Manager' if os.name == 'nt' else 'desktop keyring')
+            store = ('Windows Credential Manager' if os.name == 'nt' else ('macOS Keychain' if sys.platform == 'darwin' else 'desktop keyring'))
             self.account_status.set_text(f'Could not save Plex link in {store}.')
             self.update_remote_status('Could not save Plex link; no plaintext fallback is used.')
         self.remote_work(work, ready, failed)
@@ -4736,7 +4736,7 @@ class Player(Gtk.Window):
         self.account_status.set_line_wrap(True)
         panel.pack_start(self.account_status, False, False, 0)
         credential_store = ('Windows Credential Manager' if os.name == 'nt'
-                            else 'your desktop keyring')
+                            else ('macOS Keychain' if sys.platform == 'darwin' else 'your desktop keyring'))
         info = Gtk.Label(label=f'Server login is stored in {credential_store} after a successful connection.', xalign=0)
         info.set_line_wrap(True)
         panel.pack_start(info, False, False, 0)
@@ -4934,6 +4934,7 @@ class Player(Gtk.Window):
         description = Gtk.Label(label=(
             'Global shortcut editing is currently available on Xfce/Linux. '
             'The window shortcuts still work on Windows.' if os.name == 'nt' else
+            'Global shortcut editing is not available on macOS.' if sys.platform == 'darwin' else
             'This editor manages Xfce keyboard shortcuts. Other desktops can bind '
             'keys to Apistat through MPRIS in their own keyboard settings.'), xalign=0)
         description.set_line_wrap(True)
@@ -5079,7 +5080,7 @@ class Player(Gtk.Window):
         self.portal_shortcut_button.hide()
         if not shortcuts.available():
             self.shortcut_status.set_text(
-                'Global shortcut editing is unavailable on Windows.' if os.name == 'nt' else
+                'Global shortcut editing is unavailable on this platform.' if os.name == 'nt' or sys.platform == 'darwin' else
                 'This desktop has no Global Shortcuts portal. Use its keyboard settings '
                 'to bind MPRIS controls, or use Xfce with xfconf-query and gdbus.')
             for current, set_button, clear_button in self.shortcut_rows.values():
@@ -7861,7 +7862,7 @@ class Player(Gtk.Window):
         if current:
             address.set_text(current[0])
         box.pack_start(address, False, False, 0)
-        token_store = 'Windows Credential Manager' if os.name == 'nt' else 'desktop keyring'
+        token_store = 'Windows Credential Manager' if os.name == 'nt' else ('macOS Keychain' if sys.platform == 'darwin' else 'desktop keyring')
         box.pack_start(Gtk.Label(label=f'X-Plex-Token (saved in {token_store})', xalign=0), False, False, 0)
         token = Gtk.Entry(visibility=False, input_purpose=Gtk.InputPurpose.PASSWORD)
         if current:
@@ -7930,7 +7931,7 @@ class Player(Gtk.Window):
             self.restored_credentials = None
             self.play_history.clear()
             self.current_played_track = None
-            store = 'Windows Credential Manager' if os.name == 'nt' else 'desktop keyring'
+            store = 'Windows Credential Manager' if os.name == 'nt' else ('macOS Keychain' if sys.platform == 'darwin' else 'desktop keyring')
             self.credential_warning = '' if saved else f'{store} could not save this login.'
             self.sections = sections
             self.library.remove_all()
@@ -8993,7 +8994,11 @@ def runtime_self_test():
             missing.append('Windows audio sink')
     if missing:
         raise RuntimeError('Missing GStreamer elements: ' + ', '.join(missing))
-    if os.name == 'nt' and getattr(sys, 'frozen', False):
+    if sys.platform == 'darwin':
+        if Gst.ElementFactory.find('osxaudiosink') is None:
+            raise RuntimeError('Missing GStreamer macOS audio sink')
+        from keyring.backends.macOS import Keyring
+    if (os.name == 'nt' or sys.platform == 'darwin') and getattr(sys, 'frozen', False):
         from app_font import font_path
         from mutagen.id3 import ID3
         if not font_path().is_file():
@@ -9018,7 +9023,7 @@ if __name__ == '__main__':
             except OSError as error:
                 parser.error(f'Cannot open resize log: {error}')
         try:
-            player = Player(mpris_enabled=os.name != 'nt')
+            player = Player(mpris_enabled=sys.platform.startswith('linux'))
             diagnostics = None
             if stream is not None:
                 from resize_diagnostics import ResizeDiagnostics

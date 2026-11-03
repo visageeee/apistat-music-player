@@ -1,11 +1,12 @@
 """Opt-in plex.tv PIN linking and device connection publication.
 
-The device token lives in Secret Service on Linux and Credential Manager on
-Windows. There is no plaintext token fallback.
+The device token lives in the platform credential store (Secret Service,
+Windows Credential Manager, or macOS Keychain). There is no plaintext token fallback.
 """
 
 import json
 import os
+import sys
 import platform
 import re
 import xml.etree.ElementTree as ET
@@ -15,6 +16,9 @@ from urllib.request import Request, build_opener
 
 if os.name == 'nt':
     from windows_vault import read_secret, write_secret, delete_secret
+    Secret = None
+elif sys.platform == 'darwin':
+    from macos_vault import read_secret, write_secret, delete_secret
     Secret = None
 else:
     import gi
@@ -52,7 +56,7 @@ class PlexAccount:
         return {'Accept': 'application/json', 'X-Plex-Client-Identifier': self.identifier,
                 'X-Plex-Product': 'Apistat', 'X-Plex-Version': '1.0.0',
                 'X-Plex-Platform': platform.system(),
-                'X-Plex-Device': 'Windows PC' if os.name == 'nt' else 'Linux PC',
+                'X-Plex-Device': 'Windows PC' if os.name == 'nt' else ('Mac' if sys.platform == 'darwin' else 'Linux PC'),
                 'X-Plex-Device-Name': self.name,
                 'X-Plex-Model': 'standalone',
                 'X-Plex-Provides': 'client,player,pubsub-player'}
@@ -122,13 +126,13 @@ class PlexAccount:
 
 
 def load_device_token(identifier):
-    if os.name == 'nt':
+    if os.name == 'nt' or sys.platform == 'darwin':
         return read_secret(_windows_target(identifier))
     return Secret.password_lookup_sync(SCHEMA, {'identifier': identifier}, None)
 
 
 def save_device_token(identifier, token):
-    if os.name == 'nt':
+    if os.name == 'nt' or sys.platform == 'darwin':
         write_secret(_windows_target(identifier), token)
         return
     if not Secret.password_store_sync(SCHEMA, {'identifier': identifier},
@@ -138,7 +142,7 @@ def save_device_token(identifier, token):
 
 
 def clear_device_token(identifier):
-    if os.name == 'nt':
+    if os.name == 'nt' or sys.platform == 'darwin':
         delete_secret(_windows_target(identifier))
         return
     Secret.password_clear_sync(SCHEMA, {'identifier': identifier}, None)

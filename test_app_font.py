@@ -1,11 +1,12 @@
 import os
+import sys
 import unittest
 
 from app_font import DEFAULT_FONT_FAMILY, font_path, register_bundled_font
 
 
 class BundledFontTests(unittest.TestCase):
-    @unittest.skipIf(os.name == 'nt', 'Pango font registration varies with Windows GTK builds')
+    @unittest.skipUnless(sys.platform.startswith('linux'), 'Pango font registration varies by platform')
     def test_rounded_font_is_available_to_pango(self):
         import gi
         gi.require_version('PangoCairo', '1.0')

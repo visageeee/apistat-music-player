@@ -1,0 +1,50 @@
+name: Experimental macOS build
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: macos-15
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install GTK and GStreamer
+        run: |
+          brew install pygobject3 gtk+3 gstreamer
+          echo "$(brew --prefix python@3.14)/bin" >> "$GITHUB_PATH"
+      - name: Install Python build dependencies
+        run: |
+          python3.14 -m venv --system-site-packages .venv
+          .venv/bin/python -m pip install --upgrade pip
+          .venv/bin/python -m pip install pyinstaller keyring psutil mutagen
+          .venv/bin/python -c 'import gi, cairo, keyring.backends.macOS, psutil, mutagen; gi.require_version("Gtk", "3.0"); gi.require_version("Gst", "1.0"); from gi.repository import Gtk, Gst'
+      - name: Test application code
+        run: |
+          .venv/bin/python player.py --self-test
+          .venv/bin/python -m unittest discover -q
+      - name: Prepare macOS icon
+        run: |
+          mkdir -p macos/Apistat.iconset
+          for size in 16 32 128 256 512; do
+            sips -z "$size" "$size" apistat.png --out "macos/Apistat.iconset/icon_${size}x${size}.png" >/dev/null
+            double=$((size * 2))
+            sips -z "$double" "$double" apistat.png --out "macos/Apistat.iconset/icon_${size}x${size}@2x.png" >/dev/null
+          done
+          iconutil -c icns macos/Apistat.iconset -o macos/Apistat.icns
+      - name: Build and check app bundle
+        run: |
+          .venv/bin/pyinstaller --noconfirm --clean macos/Apistat.spec
+          test -f dist/Apistat.app/Contents/MacOS/Apistat
+          dist/Apistat.app/Contents/MacOS/Apistat --self-test
+          codesign --verify --deep --strict dist/Apistat.app
+      - name: Archive app bundle
+        run: ditto -c -k --sequesterRsrc --keepParent dist/Apistat.app Apistat-macOS-arm64.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Apistat-macOS-arm64-experimental
+          path: Apistat-macOS-arm64.zip
+          if-no-files-found: error

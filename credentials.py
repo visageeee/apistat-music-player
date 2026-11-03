@@ -2,9 +2,13 @@
 
 import json
 import os
+import sys
 
 if os.name == 'nt':
     from windows_vault import read_secret, write_secret
+    Secret = None
+elif sys.platform == 'darwin':
+    from macos_vault import read_secret, write_secret
     Secret = None
 else:
     import gi
@@ -22,13 +26,13 @@ WINDOWS_TARGET = 'Apistat/PlexServer'
 
 
 def _load_value():
-    if os.name == 'nt':
+    if os.name == 'nt' or sys.platform == 'darwin':
         return read_secret(WINDOWS_TARGET)
     return Secret.password_lookup_sync(SCHEMA, ATTRIBUTES, None)
 
 
 def _save_value(value):
-    if os.name == 'nt':
+    if os.name == 'nt' or sys.platform == 'darwin':
         write_secret(WINDOWS_TARGET, value)
     elif not Secret.password_store_sync(SCHEMA, ATTRIBUTES, Secret.COLLECTION_DEFAULT,
                                         'Apistat server', value, None):

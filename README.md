@@ -57,6 +57,10 @@ flatpak build-bundle repo Apistat.flatpak org.apistat.Apistat master --runtime-r
 
 The package includes Mutagen for embedded ID3 tags. Its sandbox permits networking for Plex and optional Plexamp discovery, audio output, graphics, the desktop keyring, and Apistat's MPRIS name. Settings and caches are isolated under `~/.var/app/org.apistat.Apistat`; the Flatpak does not automatically import the source installation's settings or cache. The Global Shortcuts portal depends on desktop support; the Xfce command-line fallback is not bundled. Audio playback, account linking, desktop integrations, and Plexamp discovery still need testing on the target desktop.
 
+## Experimental macOS build
+
+The **Experimental macOS build** GitHub Actions workflow produces an unsigned Apple Silicon `.app` in a ZIP. This is an early test build: it requires hands-on verification of playback, Keychain, networking and Plexamp discovery on a Mac. macOS may block the unsigned, non-notarized app. The app uses macOS Keychain for server and Plex account tokens; global shortcuts and native media-key integration are not yet supported. The workflow is independent of the Windows and Flatpak draft release.
+
 ## Windows build
 
 GitHub Actions can build a portable 64-bit Windows folder using the manually started Windows build workflow or the combined draft release workflow. Open the **Windows build** workflow run, download the `Apistat-Windows-x64` artifact, extract it, and run `Apistat.exe`. Keep the whole extracted folder together. Both executables use the Apistat icon, and the bundled PNG supplies placeholder artwork. `Apistat-Debug.exe` runs the same app with a console for troubleshooting. This is an unsigned development build; Windows may show a SmartScreen prompt. The app stores Plex server and linked-device tokens in Windows Credential Manager, with no plaintext fallback. Settings and caches are kept under the Windows user profile. In-window shortcuts work; the global shortcut editor and MPRIS integration remain Linux-only features.

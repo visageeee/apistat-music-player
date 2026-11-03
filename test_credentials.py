@@ -1,12 +1,13 @@
 import unittest
 import os
+import sys
 from unittest.mock import patch
 
 import credentials
 
 
 class CredentialTests(unittest.TestCase):
-    @unittest.skipIf(os.name == 'nt', 'Secret Service is Linux only')
+    @unittest.skipUnless(sys.platform.startswith('linux'), 'Secret Service is Linux only')
     def test_linux_secret_service_backend(self):
         with patch.object(credentials, 'Secret') as secret:
             secret.COLLECTION_DEFAULT = 'default'
