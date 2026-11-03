@@ -60,7 +60,7 @@ jobs:
         run: |
           .venv/bin/pyinstaller --noconfirm --clean macos/Apistat.spec
           test -f dist/Apistat.app/Contents/MacOS/Apistat
-          lipo -verify_arch '${{ matrix.arch }}' dist/Apistat.app/Contents/MacOS/Apistat
+          lipo dist/Apistat.app/Contents/MacOS/Apistat -verify_arch '${{ matrix.arch }}'
           find dist/Apistat.app -iname '*soup*' -print
           codesign --verify --deep --strict --verbose=4 dist/Apistat.app
           find dist/Apistat.app -type f -exec shasum -a 256 {} + | sort > "$RUNNER_TEMP/apistat-before.txt"
