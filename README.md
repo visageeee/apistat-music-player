@@ -34,7 +34,7 @@ Remove the file to start a fresh log, and omit `--resize-log` to disable the ins
 
 ## Draft release builds
 
-Run **Actions → Build packages and draft release → Run workflow** on the desired branch. The workflow builds a Flatpak for x86-64 Linux and a portable x64 Windows ZIP in parallel, checks their runtimes, and creates a draft GitHub release only after both builds succeed. Both packages are also available as workflow artifacts. The draft uses a unique run-based tag and targets the tested commit; edit its title, notes, and tag before publishing. Neither package is signed. A draft is not a published release.
+Run **Actions → Build all platforms and draft release → Run workflow** on the desired branch. The workflow builds a Linux x86-64 Flatpak, a Windows x64 ZIP, and separate Apple Silicon and Intel macOS ZIPs in parallel. All four packages and the draft release share the UTC build date and time in their names. The draft is created only after all builds and runtime checks succeed, and targets the tested commit; the packages are also available as workflow artifacts. The packages are not signed for public distribution, and the macOS packages are not notarized. Edit the draft before publishing it.
 
 ## Flatpak build
 
@@ -59,7 +59,7 @@ The package includes Mutagen for embedded ID3 tags. Its sandbox permits networki
 
 ## Experimental macOS build
 
-The **Experimental macOS build** GitHub Actions workflow builds separate unsigned Apple Silicon and Intel `.app` ZIPs on their respective macOS runners. The Intel build uses MacPorts because current Homebrew packages may need to be built from source on Intel Macs. This is an early test build: it requires hands-on verification of playback, Keychain, networking and Plexamp discovery on a Mac. macOS may block the unsigned, non-notarized app. The app uses macOS Keychain for server and Plex account tokens; global shortcuts and native media-key integration are not yet supported. The workflow is independent of the Windows and Flatpak draft release.
+The **Experimental macOS build** GitHub Actions workflow builds separate unsigned Apple Silicon and Intel `.app` ZIPs on their respective macOS runners. The Intel build uses MacPorts because current Homebrew packages may need to be built from source on Intel Macs. This is an early test build: it requires hands-on verification of playback, Keychain, networking and Plexamp discovery on a Mac. macOS may block the unsigned, non-notarized app. The app uses macOS Keychain for server and Plex account tokens; global shortcuts and native media-key integration are not yet supported. The four-platform draft release also runs this workflow for both Mac architectures.
 
 ## Windows build
 
