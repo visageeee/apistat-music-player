@@ -99,7 +99,7 @@ This path requires desktop OpenGL 3.2, with EGL on Linux or a compatible Windows
 
 ## Last.fm scrobbling
 
-In **Settings → Connection**, enter the API key and shared secret from your [Last.fm API account](https://www.last.fm/api/account/create), select **Authorize Last.fm…**, approve access in your browser, and select **Finish linking**. Apistat stores these credentials and the authorized session in your system credential store; there is no plaintext fallback. **Unlink Last.fm** stops scrobbling and removes the stored credentials. Linking enables scrobbling immediately and shares track metadata and listening times with Last.fm.
+In **Settings → Connection**, select **Authorize Last.fm…**, approve access in your browser, and select **Finish linking**. Apistat uses its own Last.fm application credentials when they are included in the build. If they are unavailable, an Advanced section offers manual setup using a [Last.fm API account](https://www.last.fm/api/account/create). Developers can also provide credentials at runtime using `APISTAT_LASTFM_API_KEY` and `APISTAT_LASTFM_API_SECRET`. Apistat stores these credentials and the authorized session in your system credential store; there is no plaintext fallback. **Unlink Last.fm** stops scrobbling and removes the stored credentials. Linking enables scrobbling immediately and shares track metadata and listening times with Last.fm.
 
 Apistat sends a now-playing update when playback begins. Tracks longer than 30 seconds are scrobbled after you listen to half their duration or four minutes, whichever is shorter. Paused and buffered time and seeks do not count as listening. A failed submission is reported in Settings; offline scrobbles are not currently queued or retried.
 
@@ -190,3 +190,9 @@ Suggested first live check: connect, select a music library, play an album, paus
 - [iOS Plexamp device registration findings](https://github.com/music-assistant/support/issues/5782)
 
 The client uses Python's standard HTTP/XML libraries directly; PlexAPI is not a dependency.
+
+### Building with Last.fm account linking
+
+Register an Apistat application at [Last.fm](https://www.last.fm/api/account/create). For GitHub builds, set the repository Actions secrets `LASTFM_API_KEY` and `LAST_FM_API_SECRET`; the build workflows require both secrets and use them to include the application credentials. Local packagers can set those variables and run `python3 scripts/embed_lastfm_credentials.py` before packaging. The generated `lastfm_build_credentials.py` is ignored by Git. When both variables are absent the script removes any previously generated file.
+
+The application secret is included in distributed packages and can be extracted by their recipients. It is an application credential, not a listener's Last.fm password or session key. Builds without application credentials retain manual setup in the Advanced section.

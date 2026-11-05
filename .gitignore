@@ -8,3 +8,6 @@ repo/
 dist/
 build/
 *.flatpak
+
+# Generated application credentials for distribution builds
+lastfm_build_credentials.py

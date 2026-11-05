@@ -29,6 +29,22 @@ TARGET = 'Apistat/LastFM'
 API_URL = 'https://ws.audioscrobbler.com/2.0/'
 
 
+try:
+    from lastfm_build_credentials import API_KEY as BUILD_API_KEY, API_SECRET as BUILD_API_SECRET
+except ImportError:
+    BUILD_API_KEY = BUILD_API_SECRET = ''
+
+
+def application_credentials():
+    """Use Apistat's build credentials, with an optional developer override."""
+    if 'APISTAT_LASTFM_API_KEY' in os.environ or 'APISTAT_LASTFM_API_SECRET' in os.environ:
+        key = os.environ.get('APISTAT_LASTFM_API_KEY', '').strip()
+        secret = os.environ.get('APISTAT_LASTFM_API_SECRET', '').strip()
+    else:
+        key, secret = BUILD_API_KEY.strip(), BUILD_API_SECRET.strip()
+    return (key, secret) if key and secret else None
+
+
 class LastFMError(Exception):
     pass
 

@@ -3,6 +3,11 @@ name: Experimental macOS build
 on:
   workflow_dispatch:
   workflow_call:
+    secrets:
+      LASTFM_API_KEY:
+        required: false
+      LAST_FM_API_SECRET:
+        required: false
     inputs:
       build_timestamp:
         description: UTC timestamp shared by all release packages
@@ -70,6 +75,11 @@ jobs:
             sips -z "$double" "$double" apistat.png --out "macos/Apistat.iconset/icon_${size}x${size}@2x.png" >/dev/null
           done
           iconutil -c icns macos/Apistat.iconset -o macos/Apistat.icns
+      - name: Configure Last.fm application credentials
+        env:
+          LASTFM_API_KEY: ${{ secrets.LASTFM_API_KEY }}
+          LASTFM_API_SECRET: ${{ secrets.LAST_FM_API_SECRET }}
+        run: .venv/bin/python scripts/embed_lastfm_credentials.py --require
       - name: Build and check app bundle
         run: |
           .venv/bin/pyinstaller --noconfirm --clean macos/Apistat.spec
@@ -78,7 +88,7 @@ jobs:
           find dist/Apistat.app -iname '*soup*' -print
           codesign --verify --deep --strict --verbose=4 dist/Apistat.app
           find dist/Apistat.app -type f -exec shasum -a 256 {} + | sort > "$RUNNER_TEMP/apistat-before.txt"
-          GST_DEBUG=2 dist/Apistat.app/Contents/MacOS/Apistat --self-test
+          APISTAT_REQUIRE_LASTFM_BUILD=1 GST_DEBUG=2 dist/Apistat.app/Contents/MacOS/Apistat --self-test
           find dist/Apistat.app -type f -exec shasum -a 256 {} + | sort > "$RUNNER_TEMP/apistat-after.txt"
           if ! codesign --verify --deep --strict --verbose=4 dist/Apistat.app; then
             diff -u "$RUNNER_TEMP/apistat-before.txt" "$RUNNER_TEMP/apistat-after.txt" || true

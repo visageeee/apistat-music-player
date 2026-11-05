@@ -5160,10 +5160,14 @@ class Player(Gtk.Window):
         return False
 
     def start_lastfm_link(self, *_):
-        key, secret = self.lastfm_key.get_text().strip(), self.lastfm_secret.get_text().strip()
-        if not key or not secret:
-            self.lastfm_status.set_text('Enter your Last.fm API key and shared secret first.')
-            return
+        credentials = lastfm.application_credentials()
+        if credentials:
+            key, secret = credentials
+        else:
+            key, secret = self.lastfm_key.get_text().strip(), self.lastfm_secret.get_text().strip()
+            if not key or not secret:
+                self.lastfm_status.set_text('Application credentials are needed before linking Last.fm.')
+                return
         self.lastfm_generation += 1
         generation = self.lastfm_generation
         self.lastfm_auth = None
@@ -5298,18 +5302,25 @@ class Player(Gtk.Window):
         panel.pack_start(self.remote_request_status, False, False, 0)
         panel.pack_start(Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL), False, False, 0)
         panel.pack_start(Gtk.Label(label='Last.fm scrobbling', xalign=0), False, False, 0)
-        explanation = Gtk.Label(label='Use a Last.fm API account to connect and share your listening history.', xalign=0)
+        explanation = Gtk.Label(label='Link your Last.fm account to share your listening history.', xalign=0)
         explanation.set_line_wrap(True)
         panel.pack_start(explanation, False, False, 0)
+        self.lastfm_advanced = Gtk.Expander(label='Advanced: application credentials')
+        advanced = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        advanced.pack_start(Gtk.Label(
+            label='This build has no application credentials configured.', xalign=0), False, False, 0)
         api_link = Gtk.LinkButton.new_with_label('https://www.last.fm/api/account/create',
                                                  'Get a Last.fm API account')
         api_link.set_halign(Gtk.Align.START)
-        panel.pack_start(api_link, False, False, 0)
+        advanced.pack_start(api_link, False, False, 0)
         self.lastfm_key = Gtk.Entry(placeholder_text='Last.fm API key')
         self.lastfm_secret = Gtk.Entry(placeholder_text='Last.fm shared secret')
         self.lastfm_secret.set_visibility(False)
-        panel.pack_start(self.lastfm_key, False, False, 0)
-        panel.pack_start(self.lastfm_secret, False, False, 0)
+        advanced.pack_start(self.lastfm_key, False, False, 0)
+        advanced.pack_start(self.lastfm_secret, False, False, 0)
+        self.lastfm_advanced.add(advanced)
+        self.lastfm_advanced.set_no_show_all(bool(lastfm.application_credentials()))
+        panel.pack_start(self.lastfm_advanced, False, False, 0)
         lastfm_actions = Gtk.Box(spacing=12)
         self.lastfm_link_button = self.button('Authorize Last.fm…', self.start_lastfm_link)
         self.lastfm_finish_button = self.button('Finish linking', self.finish_lastfm_link)
@@ -9739,6 +9750,8 @@ class Player(Gtk.Window):
 
 def runtime_self_test():
     """Check bundled GTK/GStreamer imports and the media elements used by playback."""
+    if os.environ.get('APISTAT_REQUIRE_LASTFM_BUILD') == '1' and not lastfm.application_credentials():
+        raise RuntimeError('Last.fm application credentials are missing from the build')
     required = ('playbin', 'appsink', 'audioconvert', 'audioresample',
                 'souphttpsrc', 'autoaudiosink')
     missing = [name for name in required if Gst.ElementFactory.find(name) is None]

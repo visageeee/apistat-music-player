@@ -1,13 +1,19 @@
 import hashlib
 import io
 import json
+import os
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
 import unittest
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 from urllib.parse import parse_qs
 from urllib.error import HTTPError
 
 import lastfm
+from player import Player
 from plex_client import Item
 
 
@@ -23,6 +29,61 @@ class Response:
 
 
 class LastFMTests(unittest.TestCase):
+    def test_runtime_application_credentials_require_both_values(self):
+        with patch.dict('os.environ', {}, clear=True):
+            self.assertIsNone(lastfm.application_credentials())
+        with patch.dict('os.environ', {'APISTAT_LASTFM_API_KEY': ' app-key ',
+                                       'APISTAT_LASTFM_API_SECRET': ' app-secret '}, clear=True):
+            self.assertEqual(lastfm.application_credentials(), ('app-key', 'app-secret'))
+        with patch.dict('os.environ', {'APISTAT_LASTFM_API_KEY': 'app-key'}, clear=True):
+            self.assertIsNone(lastfm.application_credentials())
+
+    def test_build_credentials_are_used_without_runtime_override(self):
+        with patch.dict('os.environ', {}, clear=True), \
+                patch.object(lastfm, 'BUILD_API_KEY', 'build-key'), \
+                patch.object(lastfm, 'BUILD_API_SECRET', 'build-secret'):
+            self.assertEqual(lastfm.application_credentials(), ('build-key', 'build-secret'))
+
+    def test_build_script_writes_no_secrets_to_output_and_removes_stale_file(self):
+        script = Path(__file__).parent / 'scripts' / 'embed_lastfm_credentials.py'
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / 'scripts').mkdir()
+            copy = root / 'scripts' / 'embed_lastfm_credentials.py'
+            copy.write_text(script.read_text(encoding='utf-8'), encoding='utf-8')
+            env = dict(os.environ, LASTFM_API_KEY='test-app-key', LASTFM_API_SECRET='test-app-secret')
+            result = subprocess.run([sys.executable, str(copy)], env=env, capture_output=True,
+                                    text=True, check=True)
+            target = root / 'lastfm_build_credentials.py'
+            self.assertIn('test-app-key', target.read_text(encoding='utf-8'))
+            self.assertNotIn('test-app-key', result.stdout + result.stderr)
+            self.assertNotIn('test-app-secret', result.stdout + result.stderr)
+            env.pop('LASTFM_API_KEY'); env.pop('LASTFM_API_SECRET')
+            subprocess.run([sys.executable, str(copy)], env=env, capture_output=True,
+                           text=True, check=True)
+            self.assertFalse(target.exists())
+
+    def test_partial_runtime_override_does_not_mix_application_keys(self):
+        with patch.dict('os.environ', {'APISTAT_LASTFM_API_KEY': 'override'}, clear=True), \
+                patch.object(lastfm, 'BUILD_API_KEY', 'build-key'), \
+                patch.object(lastfm, 'BUILD_API_SECRET', 'build-secret'):
+            self.assertIsNone(lastfm.application_credentials())
+
+    def test_linking_uses_application_credentials_without_manual_entry(self):
+        api = SimpleNamespace(get_token=Mock())
+        player = SimpleNamespace(lastfm_key=Mock(), lastfm_secret=Mock(),
+                                 lastfm_generation=0, lastfm_auth=None,
+                                 lastfm_finish_button=SimpleNamespace(set_sensitive=Mock()),
+                                 lastfm_status=SimpleNamespace(set_text=Mock()),
+                                 lastfm_work=Mock())
+        with patch.object(lastfm, 'application_credentials', return_value=('app-key', 'app-secret')), \
+                patch.object(lastfm, 'LastFM', return_value=api) as create:
+            Player.start_lastfm_link(player)
+        create.assert_called_once_with('app-key', 'app-secret')
+        player.lastfm_key.get_text.assert_not_called()
+        player.lastfm_secret.get_text.assert_not_called()
+        player.lastfm_work.assert_called_once()
+
     def test_signed_scrobble_post_contains_metadata_and_start_time(self):
         class Opener:
             def open(self, request, timeout):

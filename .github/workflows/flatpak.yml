@@ -14,6 +14,11 @@ jobs:
       options: --privileged
     steps:
       - uses: actions/checkout@v4
+      - name: Configure Last.fm application credentials
+        env:
+          LASTFM_API_KEY: ${{ secrets.LASTFM_API_KEY }}
+          LASTFM_API_SECRET: ${{ secrets.LAST_FM_API_SECRET }}
+        run: python3 scripts/embed_lastfm_credentials.py --require
       - name: Build Flatpak bundle
         uses: flatpak/flatpak-github-actions/flatpak-builder@v6
         with:
@@ -23,7 +28,7 @@ jobs:
           upload-artifact: false
       - name: Check packaged runtime
         run: |
-          dbus-run-session -- flatpak build --runtime flatpak_app /app/bin/apistat --self-test
+          dbus-run-session -- flatpak build --runtime --env=APISTAT_REQUIRE_LASTFM_BUILD=1 flatpak_app /app/bin/apistat --self-test
           dbus-run-session -- flatpak build --runtime flatpak_app python3 -c 'import mutagen, gi; gi.require_version("Secret", "1"); gi.require_version("Gst", "1.0"); from gi.repository import Secret, Gst; Gst.init(None); missing = [name for name in ("flacdec", "mpg123audiodec") if not Gst.ElementFactory.find(name)]; assert not missing, "Missing decoders: " + ", ".join(missing); print("Mutagen, Secret Service, FLAC and MP3 are available")'
           flatpak build --runtime flatpak_app python3 -c 'from pathlib import Path; import cairo; assert Path("/app/share/apistat/fonts/Nunito-wght.ttf").is_file(); icon = cairo.ImageSurface.create_from_png("/app/share/apistat/apistat.png"); assert icon.get_width() > 0 and icon.get_height() > 0; print("Bundled font and artwork are available")'
       - name: Upload Flatpak
