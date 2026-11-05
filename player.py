@@ -36,7 +36,7 @@ if __name__ == '__main__' and os.name != 'nt':
 
 gi.require_version('Gtk', '3.0')
 gi.require_version('Gst', '1.0')
-from gi.repository import Gtk, Gst, GLib, GdkPixbuf, Gdk, Pango
+from gi.repository import Gtk, Gst, GLib, GObject, GdkPixbuf, Gdk, Pango
 if __name__ == '__main__' and os.name != 'nt':
     Gdk.set_program_class(APP_ID)
 from app_font import DEFAULT_FONT_FAMILY, register_bundled_font
@@ -52,10 +52,11 @@ from appearance import (ALBUM_SIZE_RANGE, ALBUM_COLUMN_RANGE, NOW_SIZE_RANGE,
                         load_accent_color, load_album_columns, load_album_details_enabled,
                         load_art_accent_enabled, load_art_sizes, load_tooltips_hidden,
                         load_star_ratings_hidden,
-                        load_smooth_scrolling_enabled,
+                        load_smooth_scrolling_enabled, load_search_shortcut, save_search_shortcut,
                         load_custom_font, load_gradient_enabled, load_search_index_enabled,
                         load_album_margins, save_album_margins,
                         load_keep_style_playing_enabled, save_keep_style_playing_enabled,
+                        load_gpu_album_wall_enabled, save_gpu_album_wall_enabled,
                         load_library_layout, save_library_layout,
                         load_library_sort_buttons,
                         load_info_panel_width, save_info_panel_width,
@@ -102,6 +103,7 @@ from album_card import FlipCard
 from gtk_snapshot import draw_allocated
 from app_assets import app_icon, placeholder_art, SMALL_PLACEHOLDER_LOGO_RATIO
 from smooth_scroll import SmoothScroller
+from background_drag_scroll import attach_background_drag
 from busy_indicator import BusyIndicator
 from session import load_session, save_session, item_to_data
 import shortcuts
@@ -109,6 +111,7 @@ from companion import CompanionReceiver, local_ip
 from companion_account import (PlexAccount, load_device_token, save_device_token,
                                clear_device_token)
 from companion_config import load_config, save_config
+import lastfm
 
 if sys.platform == 'darwin' and getattr(sys, 'frozen', False):
     # GStreamer's HTTP plugin loads libsoup dynamically; preload the bundled
@@ -279,6 +282,11 @@ class Player(Gtk.Window):
         self.connect('configure-event', self.window_configured)
         self.connect('realize', self.window_realized)
         self.client = None
+        self.lastfm_session = None
+        self.lastfm_auth = None
+        self.lastfm_generation = 0
+        self.lastfm_tracker = None
+        self.lastfm_vault_lock = threading.Lock()
         self.remote_config = load_config()
         self.remote_account = PlexAccount(self.remote_config['identifier'],
                                           self.remote_config['name'])
@@ -428,7 +436,7 @@ class Player(Gtk.Window):
                 border-radius: 0; box-shadow: none; }
             #album-grid button:hover { background: rgba(255, 255, 255, 0.12); }
             #album-results-back, #album-results-back:hover { background: transparent;
-                border: 0; box-shadow: none; }
+                border: 0; box-shadow: none; min-width: 0; min-height: 0; padding: 3px 4px; }
             #album-sort-bar { background: transparent; min-height: 28px; }
             #album-sort-bar button { background: rgba(0, 0, 0, 0.68); border: 0;
                 border-radius: 0; box-shadow: none; color: #c8c8c8; padding: 3px 10px; }
@@ -436,6 +444,7 @@ class Player(Gtk.Window):
             #album-sort-bar button.sort-divider { border-right: 1px solid rgba(255, 255, 255, 0.18); }
             #album-sort-bar button:hover { background: rgba(255, 255, 255, 0.12); }
             #album-sort-bar button.active { color: #fff; font-weight: bold; }
+            #album-sort-bar button label { font-size: 0.85em; }
             #album-grid #album-title { font-weight: bold; color: #fff; }
             #album-grid #album-meta { color: #ccc; font-size: 11px; }
             #album-card-back { background: transparent; border: 0; }
@@ -459,7 +468,9 @@ class Player(Gtk.Window):
                 border: 0; box-shadow: none; }
             #info-section-title { font-size: 16px; font-weight: bold; }
             #info-field-name { font-weight: bold; }
-            #info-button { font-size: 20px; font-weight: bold; min-width: 30px; }
+            #info-icon { font-size: 14px; font-weight: bold; min-width: 20px;
+                min-height: 20px; border: 1px solid; border-radius: 50%; }
+            #player-bar #info-button { padding: 0 5px; }
             #info-resize-handle { background: transparent; }
             #info-resize-handle:hover { background: rgba(128, 128, 128, 0.22); }
             #info-secondary { opacity: 0.7; font-size: 0.85em; }
@@ -514,8 +525,8 @@ class Player(Gtk.Window):
                 box-shadow: none; min-width: 0; min-height: 0; opacity: 0; }
             #wave-timeline { background: transparent; margin: 8px 0; }
             #plex-player *:focus { outline: none; box-shadow: none; }
-            #side-nav, #side-nav-surface { background: #101010; border: 0;
-                box-shadow: none; }
+            #side-nav-surface { background: #101010; border: 0; box-shadow: none; }
+            #side-nav { background: transparent; border: 0; box-shadow: none; }
             #side-nav button { background: transparent; border: 0; box-shadow: none;
                 padding: 12px; border-radius: 8px; }
             #side-nav button.active { background: #35302a; }
@@ -631,6 +642,7 @@ class Player(Gtk.Window):
         self.current_wave_colors = None
         self.tooltips_hidden = load_tooltips_hidden()
         self.star_ratings_hidden = load_star_ratings_hidden()
+        self.search_shortcut = load_search_shortcut()
         self.smooth_scrolling_enabled = load_smooth_scrolling_enabled()
         self.smooth_scrollers = weakref.WeakSet()
         self.tooltip_texts = weakref.WeakKeyDictionary()
@@ -638,6 +650,9 @@ class Player(Gtk.Window):
         self.apply_tooltip_setting()
         self.apply_accent()
         self.show_album_details = load_album_details_enabled()
+        self.gpu_wall_enabled = load_gpu_album_wall_enabled() and (sys.platform.startswith('linux') or sys.platform == 'win32')
+        self.gpu_wall = None
+        self.gpu_rebuild_generation = 0
         self.single_flip_enabled = load_single_flip_enabled()
         self.search_index_enabled = load_search_index_enabled()
         self.last_flipped_tile = None
@@ -691,10 +706,27 @@ class Player(Gtk.Window):
         self.sidebar.set_size_request(70, -1)
         self.sidebar.set_halign(Gtk.Align.CENTER)
         self.sidebar_overlay = Gtk.Overlay()
-        self.sidebar_overlay.add(self.sidebar)
+        self.sidebar_overlay.set_hexpand(False)
+        self.sidebar_volume_indicator = Gtk.DrawingArea()
+        self.sidebar_volume_indicator.set_has_window(False)
+        self.sidebar_volume_indicator.set_size_request(86, -1)
+        self.sidebar_volume_indicator.set_hexpand(False)
+        self.sidebar_volume_indicator.set_vexpand(True)
+        self.sidebar_volume_indicator.connect('draw', self.draw_sidebar_volume)
+        self.sidebar_overlay.add(self.sidebar_volume_indicator)
+        self.sidebar_overlay.add_overlay(self.sidebar)
+        self.sidebar_volume_visible = False
+        self.sidebar_volume_opacity = 0.0
+        self.sidebar_volume_timeout = 0
+        self.sidebar_volume_tick = 0
+        self.sidebar_volume_fade_start = None
+        self.sidebar_volume_restore = 0.8
         self.sidebar_drop_surface = Gtk.EventBox()
+        self.sidebar_drop_surface.set_hexpand(False)
         self.sidebar_drop_surface.set_visible_window(True)
         self.sidebar_drop_surface.set_name('side-nav-surface')
+        self.sidebar_drop_surface.add_events(Gdk.EventMask.SCROLL_MASK | Gdk.EventMask.SMOOTH_SCROLL_MASK)
+        self.sidebar_drop_surface.connect('scroll-event', self.sidebar_volume_scroll)
         self.sidebar_drop_surface.add(self.sidebar_overlay)
         layout.pack_start(self.sidebar_drop_surface, False, False, 0)
         self.nav_drop_target = Gtk.TargetEntry.new('application/x-plex-sidebar-view',
@@ -734,6 +766,16 @@ class Player(Gtk.Window):
         self.nav_drop_gap.add(gap_space)
         gap_space.show()
         self.sidebar.pack_start(self.nav_drop_gap, False, False, 0)
+        self.sidebar_volume_button = Gtk.Button()
+        self.sidebar_volume_button.set_image(Gtk.Image.new_from_icon_name(
+            'audio-volume-high-symbolic', Gtk.IconSize.LARGE_TOOLBAR))
+        self.sidebar_volume_button.get_accessible().set_name('Volume')
+        self.set_tooltip(self.sidebar_volume_button, 'Scroll to change volume; click to mute')
+        self.sidebar_volume_button.add_events(Gdk.EventMask.SCROLL_MASK | Gdk.EventMask.SMOOTH_SCROLL_MASK)
+        self.sidebar_volume_button.connect('scroll-event', self.sidebar_volume_scroll)
+        self.sidebar_volume_button.connect('clicked', self.sidebar_volume_clicked)
+        self.sidebar.pack_start(self.sidebar_volume_button, False, False, 0)
+        self.position_sidebar_volume()
         self.nav_drag_source = None
         self.nav_drag_insert = None
         self.nav_drag_centers = []
@@ -828,20 +870,24 @@ class Player(Gtk.Window):
         self.content_views.add_named(self.album_panel, 'albums')
         toolbar = Gtk.Box()
         toolbar.set_name('library-toolbar')
-        toolbar.set_no_show_all(True)
         self.album_toolbar = toolbar
-        toolbar.connect('notify::visible', lambda *_: self.invalidate_frosted_backdrops())
-        toolbar_controls = Gtk.Box(spacing=12, margin=12)
-        toolbar_controls.set_margin_bottom(20)
+        toolbar_controls = Gtk.Box(spacing=0, margin_top=6, margin_bottom=8,
+                                   margin_start=12, margin_end=12)
+        toolbar_controls.set_halign(Gtk.Align.CENTER)
         toolbar.pack_start(toolbar_controls, True, True, 0)
         self.library = Gtk.ComboBoxText()
         self.library.connect('changed', self.library_changed)
-        toolbar_controls.pack_start(self.library, False, False, 0)
-        self.search = Gtk.SearchEntry(placeholder_text='Search albums; press Enter')
+        self.search = Gtk.SearchEntry(placeholder_text='Search albums and artists; press Enter')
         self.search.connect('key-press-event', self.search_escape_pressed)
         self.search.connect('activate', self.search_album_titles)
+        self.search.set_width_chars(36)
         toolbar_controls.pack_start(self.search, True, True, 0)
-        self.album_panel.pack_start(toolbar, False, False, 0)
+        self.album_search_revealer = Gtk.Revealer()
+        self.album_search_revealer.set_transition_type(Gtk.RevealerTransitionType.SLIDE_DOWN)
+        self.album_search_revealer.set_transition_duration(180)
+        self.album_search_revealer.add(toolbar)
+        self.album_search_revealer.connect('notify::reveal-child',
+                                           lambda *_: self.invalidate_frosted_backdrops())
         self.views = Gtk.Stack()
         self.album_panel.pack_start(self.views, True, True, 0)
         wall = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=self.album_spacing,
@@ -868,6 +914,19 @@ class Player(Gtk.Window):
         self.search_button.set_name('album-search-button')
         sort_buttons.pack_start(self.search_button, False, False, 0)
         sort_bar.set_center_widget(sort_buttons)
+        album_actions = Gtk.Box(spacing=0)
+        album_actions.set_name('album-actions')
+        album_actions.set_valign(Gtk.Align.CENTER)
+        self.album_reload_button = self.icon_button('view-refresh-symbolic', 'Reload albums',
+                                                    self.reload_albums)
+        self.album_zoom_in_button = self.icon_button('zoom-in-symbolic', 'Zoom in',
+                                                     lambda *_: self.change_album_zoom(1))
+        self.album_zoom_out_button = self.icon_button('zoom-out-symbolic', 'Zoom out',
+                                                      lambda *_: self.change_album_zoom(-1))
+        for button in (self.album_zoom_out_button, self.album_zoom_in_button,
+                       self.album_reload_button):
+            album_actions.pack_start(button, False, False, 0)
+        sort_bar.pack_end(album_actions, False, False, 0)
         self.album_sort_bar = sort_bar
         self.update_album_sort_buttons()
         self.artist_filter_bar = Gtk.Box(spacing=10)
@@ -879,6 +938,8 @@ class Player(Gtk.Window):
         self.album_results_back.connect('clicked', self.show_all_albums)
         self.artist_filter_bar.pack_start(self.album_results_back, False, False, 0)
         self.artist_filter_label = Gtk.Label(xalign=0)
+        self.artist_filter_label.set_valign(Gtk.Align.CENTER)
+        self.album_results_back.set_valign(Gtk.Align.CENTER)
         self.artist_filter_bar.pack_start(self.artist_filter_label, True, True, 0)
         wall.pack_start(self.artist_filter_bar, False, False, 0)
         self.grid = Gtk.FlowBox()
@@ -906,8 +967,17 @@ class Player(Gtk.Window):
         wall_adjustment.connect('value-changed', self.album_scroll_changed)
         wall_adjustment.connect('changed', self.album_scroll_changed)
         wall_overlay = Gtk.Overlay()
-        wall_overlay.add(wall_scroll)
-        wall_overlay.add_overlay(sort_bar)
+        self.album_wall_stack = Gtk.Stack()
+        self.album_wall_stack.add_named(wall_scroll, 'gtk')
+        wall_overlay.add(self.album_wall_stack)
+        album_top = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        album_top.set_valign(Gtk.Align.START)
+        album_top.set_hexpand(True)
+        album_top.pack_start(sort_bar, False, False, 0)
+        album_top.pack_start(self.album_search_revealer, False, False, 0)
+        self.album_top = album_top
+        wall_overlay.add_overlay(album_top)
+        album_top.connect('size-allocate', self.album_top_allocated)
         self.views.add_named(wall_overlay, 'wall')
         detail = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12, margin=16)
         detail.pack_start(self.button('‹ All albums', lambda *_: self.views.set_visible_child_name('wall')), False, False, 0)
@@ -981,7 +1051,9 @@ class Player(Gtk.Window):
         self.frosted_bar = FrostedBar(bar, self.content_views, self.shared_background,
                                       lambda: self.theme,
                                       lambda: getattr(self, 'timeline_stack', None),
-                                      capture_allowed=lambda: Player.library_frosted_capture_allowed(self))
+                                      capture_allowed=lambda: Player.library_frosted_capture_allowed(self),
+                                      capture_content=lambda: not Player.gpu_wall_is_mapped(self),
+                                      gpu_surface=lambda: Player.gpu_glass_surface(self, self.player_bar))
         self.setup_frosted_top_bars()
         self.seek = Gtk.Scale.new_with_range(Gtk.Orientation.HORIZONTAL, 0, 1, 0.01)
         self.seek.set_name('border-timeline')
@@ -1078,7 +1150,6 @@ class Player(Gtk.Window):
         next_button.get_image().set_pixel_size(28)
         playback_buttons.pack_start(next_button, False, False, 0)
         utilities = Gtk.Box(spacing=6)
-        utilities.set_size_request(205, -1)
         utilities.set_hexpand(True)
         utilities.set_halign(Gtk.Align.END)
         sides.pack_end(utilities, True, True, 0)
@@ -1091,18 +1162,24 @@ class Player(Gtk.Window):
         self.update_skip_buttons()
         utilities.pack_start(self.shuffle, False, False, 0)
         utilities.pack_start(self.repeat, False, False, 0)
-        self.info_button = Gtk.ToggleButton(label='i')
+        self.info_button = Gtk.ToggleButton()
+        info_icon = Gtk.Label(label='i')
+        info_icon.set_name('info-icon')
+        info_icon.set_halign(Gtk.Align.CENTER)
+        info_icon.set_valign(Gtk.Align.CENTER)
+        self.info_button.add(info_icon)
         self.info_button.set_name('info-button')
         self.set_tooltip(self.info_button, 'Track information')
         self.info_button.get_accessible().set_name('Track information')
         self.info_button.connect('toggled', self.info_toggled)
         utilities.pack_start(self.info_button, False, False, 0)
-        volume = Gtk.VolumeButton()
-        self.volume = volume
-        volume.set_value(0.8)
+        self.volume = Gtk.Adjustment(value=0.8, lower=0, upper=1,
+                                     step_increment=0.05, page_increment=0.1)
         self.pipeline.set_property('volume', 0.8)
-        volume.connect('value-changed', self.volume_changed)
-        utilities.pack_start(volume, False, False, 0)
+        self.hero_waveform.set_volume(0.8)
+        self.volume.connect('value-changed',
+                            lambda adjustment: self.volume_changed(adjustment, adjustment.get_value()))
+        self.update_sidebar_volume()
         self.status = Gtk.Label(label='Connect to your Plex server')
         self.status.connect('notify::label', self.status_changed)
         self.status_changed()
@@ -1119,7 +1196,7 @@ class Player(Gtk.Window):
         self.player_bar.set_sensitive(False)
         self.loading_spinner.start()
         self.apply_tooltip_setting()
-        self.album_toolbar.hide()
+        self.album_search_revealer.set_reveal_child(False)
         self.artist_filter_bar.hide()
         self.library_back_button.hide()
         self.apply_text_size()
@@ -1144,6 +1221,9 @@ class Player(Gtk.Window):
         GLib.timeout_add_seconds(30, self.refresh_remote_connection)
         GLib.idle_add(self.restore_connection)
         GLib.idle_add(self.initialize_remote)
+        GLib.idle_add(self.initialize_lastfm)
+        if self.gpu_wall_enabled:
+            GLib.idle_add(self.enable_gpu_wall)
 
     def playback_options_changed(self, *_):
         self.update_skip_buttons()
@@ -1165,11 +1245,103 @@ class Player(Gtk.Window):
 
     def volume_changed(self, _button, value):
         self.pipeline.set_property('volume', value)
+        if hasattr(self, 'hero_waveform'):
+            self.hero_waveform.set_volume(value)
         if hasattr(self, 'mpris'):
             self.mpris.changed()
+        if hasattr(self, 'sidebar_volume_button'):
+            self.update_sidebar_volume()
 
     def set_volume(self, value):
         self.volume.set_value(value)
+
+    def position_sidebar_volume(self):
+        children = [child for child in self.sidebar.get_children()
+                    if child is not self.sidebar_volume_button]
+        self.sidebar.reorder_child(self.sidebar_volume_button,
+                                   children.index(self.nav_buttons['settings']) + 1)
+
+    def update_sidebar_volume(self):
+        value = self.volume.get_value()
+        icon = ('audio-volume-muted-symbolic' if value <= 0 else
+                'audio-volume-low-symbolic' if value < .34 else
+                'audio-volume-medium-symbolic' if value < .67 else
+                'audio-volume-high-symbolic')
+        self.sidebar_volume_button.set_image(Gtk.Image.new_from_icon_name(
+            icon, Gtk.IconSize.LARGE_TOOLBAR))
+        self.sidebar_volume_button.get_accessible().set_description(f'{round(value * 100)} percent')
+        if self.sidebar_volume_visible:
+            self.sidebar_volume_indicator.queue_draw()
+
+    def show_sidebar_volume(self):
+        self.sidebar_volume_visible = True
+        self.sidebar_volume_opacity = 1.0
+        if self.sidebar_volume_tick:
+            self.sidebar_volume_indicator.remove_tick_callback(self.sidebar_volume_tick)
+            self.sidebar_volume_tick = 0
+        self.sidebar_volume_indicator.queue_draw()
+        if self.sidebar_volume_timeout:
+            GLib.source_remove(self.sidebar_volume_timeout)
+        self.sidebar_volume_timeout = GLib.timeout_add(1200, self.hide_sidebar_volume)
+
+    def hide_sidebar_volume(self):
+        self.sidebar_volume_timeout = 0
+        self.sidebar_volume_fade_start = None
+        if not self.sidebar_volume_tick:
+            self.sidebar_volume_tick = self.sidebar_volume_indicator.add_tick_callback(
+                self.fade_sidebar_volume)
+        return False
+
+    def fade_sidebar_volume(self, _widget, clock):
+        now = clock.get_frame_time()
+        if self.sidebar_volume_fade_start is None:
+            self.sidebar_volume_fade_start = now
+        elapsed = max(0, (now - self.sidebar_volume_fade_start) / 1_000_000)
+        self.sidebar_volume_opacity = max(0.0, 1.0 - elapsed / .5)
+        self.sidebar_volume_indicator.queue_draw()
+        if self.sidebar_volume_opacity <= 0:
+            self.sidebar_volume_visible = False
+            self.sidebar_volume_tick = 0
+            return False
+        return True
+
+    def draw_sidebar_volume(self, widget, context):
+        if not self.sidebar_volume_visible or not hasattr(self, 'volume'):
+            return False
+        color = ((self.current_art_bright if self.art_accent_enabled else None) or
+                 self.accent_color)
+        rgb = [int(color[index:index + 2], 16) / 255 for index in (1, 3, 5)]
+        height = widget.get_allocated_height()
+        level = max(0, min(1, self.volume.get_value()))
+        context.set_source_rgba(*rgb, .16 * self.sidebar_volume_opacity)
+        context.rectangle(0, height * (1 - level), widget.get_allocated_width(), height * level)
+        context.fill()
+        return False
+
+    def sidebar_volume_scroll(self, _button, event):
+        if event.direction == Gdk.ScrollDirection.UP:
+            delta = 1
+        elif event.direction == Gdk.ScrollDirection.DOWN:
+            delta = -1
+        elif event.direction == Gdk.ScrollDirection.SMOOTH:
+            valid, _x, y = event.get_scroll_deltas()
+            if not valid or not y:
+                return False
+            delta = -y
+        else:
+            return False
+        self.set_volume(max(0, min(1, self.volume.get_value() + delta * .05)))
+        self.show_sidebar_volume()
+        return True
+
+    def sidebar_volume_clicked(self, *_):
+        value = self.volume.get_value()
+        if value > 0:
+            self.sidebar_volume_restore = value
+            self.set_volume(0)
+        else:
+            self.set_volume(self.sidebar_volume_restore or .8)
+        self.show_sidebar_volume()
 
     def apply_text_size(self):
         size = self.text_size
@@ -1260,6 +1432,8 @@ class Player(Gtk.Window):
             self.lyrics_highlight.set_property('foreground', color)
         if hasattr(self, 'top_frosted_style'):
             self.update_frosted_top_style()
+        if hasattr(self, 'sidebar_volume_indicator') and self.sidebar_volume_visible:
+            self.sidebar_volume_indicator.queue_draw()
         if hasattr(self, 'nav_buttons') and 'styles' in self.nav_buttons:
             self.nav_buttons['styles'].get_image().queue_draw()
         for name in ('song_view', 'queue_view', 'track_view'):
@@ -1270,7 +1444,7 @@ class Player(Gtk.Window):
     def apply_theme(self):
         if self.theme == 'black':
             css = '''
-                #plex-player, #side-nav, #side-nav-surface, #player-bar, #library-split,
+                #plex-player, #side-nav-surface, #player-bar, #library-split,
                 #library-split separator, #playlist-panel, #smart-playlist-panel, #song-panel,
                 #playlist-scroll, #playlist-scroll viewport, #playlist-list,
                 #smart-playlist-scroll, #smart-playlist-scroll viewport, #smart-playlist-list,
@@ -1318,7 +1492,7 @@ class Player(Gtk.Window):
                 #apistat-context-menu menuitem, #apistat-context-menu menuitem label {
                     color: #202326; }
                 #apistat-context-menu menuitem:hover { background: #d8d8d3; }
-                #side-nav, #side-nav-surface, #player-bar {
+                #side-nav-surface, #player-bar {
                     background: #e9e9e6; color: #202326; }
                 #song-drag-ghost { background: #fff; color: #202326;
                     border-color: #999; }
@@ -1388,6 +1562,14 @@ class Player(Gtk.Window):
             '''
         else:
             css = ''
+        css += '''
+            #album-sort-bar #album-actions button,
+            #album-sort-bar #album-actions button:hover,
+            #album-sort-bar #album-actions button:active,
+            #album-sort-bar #album-actions button:focus {
+                background: transparent; background-image: none; border: 0; box-shadow: none;
+            }
+        '''
         self.theme_provider.load_from_data(css.encode())
         if hasattr(self, 'resize_grip'):
             self.resize_grip.queue_draw()
@@ -1491,6 +1673,17 @@ class Player(Gtk.Window):
                                   Gdk.ModifierType.MOD1_MASK | Gdk.ModifierType.SUPER_MASK)
         focus = self.get_focus()
         editing = is_text_editing(focus)
+        shortcut = getattr(self, 'search_shortcut', 'Tab')
+        shortcut_key, shortcut_modifiers = Gtk.accelerator_parse(shortcut)
+        modifiers = event.state & Gtk.accelerator_get_default_mod_mask()
+        if (not editing and Gdk.keyval_to_lower(event.keyval) == Gdk.keyval_to_lower(shortcut_key)
+                and modifiers == shortcut_modifiers):
+            if (self.content_views.get_visible_child_name() != 'albums' or
+                    not self.album_search_revealer.get_reveal_child()):
+                self.toggle_album_search()
+            else:
+                self.search.grab_focus()
+            return True
         if event.keyval == Gdk.KEY_space and not modified:
             if editing:
                 return False
@@ -1534,8 +1727,8 @@ class Player(Gtk.Window):
             if self.artist_filter or self.search.get_text().strip():
                 self.show_all_albums()
                 return True
-            if self.album_toolbar.get_visible():
-                self.album_toolbar.hide()
+            if self.album_search_revealer.get_reveal_child():
+                self.album_search_revealer.set_reveal_child(False)
                 return True
         elif panel == 'library':
             if self.library_album_filter or getattr(self, 'library_tag_filter', None):
@@ -1613,6 +1806,118 @@ class Player(Gtk.Window):
     def album_scroll_changed(self, *_):
         self.maybe_load_more_albums()
 
+    def gpu_load_more_albums(self):
+        wall = getattr(self, 'gpu_wall', None)
+        adjustment = wall.adjustment if wall is not None else None
+        near_end = (adjustment is not None and adjustment.get_value() +
+                    adjustment.get_page_size() >= adjustment.get_upper() - 160)
+        if (getattr(self, 'gpu_wall_enabled', False) and near_end and not self.loading_albums and
+                self.albums and len(self.albums) < self.total and
+                self.content_views.get_visible_child_name() == 'albums' and
+                self.views.get_visible_child_name() == 'wall'):
+            self.load_albums(True)
+        return False
+
+    def gpu_wall_toggled(self, button):
+        self.gpu_wall_enabled = button.get_active()
+        try:
+            save_gpu_album_wall_enabled(self.gpu_wall_enabled)
+        except OSError:
+            self.status.set_text('Could not save album wall setting.')
+        if self.gpu_wall_enabled:
+            self.enable_gpu_wall()
+        else:
+            self.disable_gpu_wall()
+
+    def enable_gpu_wall(self):
+        if not self.gpu_wall_enabled or self.closed:
+            return False
+        try:
+            if self.gpu_wall is None:
+                from gpu_album_wall import GPUAlbumWall
+                container = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+                header = Gtk.Box(spacing=10, margin_start=self.album_margin, margin_top=40)
+                self.gpu_filter_header = header
+                back = Gtk.Button(label='◀')
+                back.set_name('album-results-back')
+                back.set_valign(Gtk.Align.CENTER)
+                self.set_tooltip(back, 'Back to all albums')
+                back.get_accessible().set_name('Back to all albums')
+                back.connect('clicked', self.show_all_albums)
+                header.pack_start(back, False, False, 0)
+                label = Gtk.Label(xalign=0)
+                label.set_valign(Gtk.Align.CENTER)
+                self.artist_filter_label.bind_property('label', label, 'label',
+                                                       GObject.BindingFlags.SYNC_CREATE)
+                header.pack_start(label, True, True, 0)
+                # Show the children before excluding the header from the
+                # container's show_all; its own visibility follows the filter.
+                header.show_all()
+                header.set_no_show_all(True)
+                self.artist_filter_bar.bind_property('visible', header, 'visible',
+                                                     GObject.BindingFlags.SYNC_CREATE)
+                header.connect('notify::visible', self.album_top_allocated)
+                container.pack_start(header, False, False, 0)
+                self.gpu_wall = GPUAlbumWall(self, self.gpu_wall_failed)
+                container.pack_start(self.gpu_wall, True, True, 0)
+                self.album_wall_stack.add_named(container, 'gpu')
+                container.show_all()
+                self.album_top_allocated()
+                self.update_queue_bottom_inset()
+            self.gpu_rebuild_generation += 1
+            self.gpu_rebuild_pending = False
+            self.gpu_wall.set_albums(self.client, list(self.albums), reset=True)
+            self.album_wall_stack.set_visible_child_name('gpu')
+            self.set_album_frosted_source(self.gpu_wall)
+            for child in self.grid.get_children():
+                child.destroy()
+            self.last_flipped_tile = self.pending_flipped_tile = None
+        except (OSError, ImportError, RuntimeError, AttributeError):
+            self.gpu_wall_failed()
+        return False
+
+    def gpu_wall_failed(self):
+        if self.closed or not self.gpu_wall_enabled:
+            return False
+        self.gpu_wall_enabled = False
+        if self.gpu_wall_toggle.get_active():
+            self.gpu_wall_toggle.set_active(False)
+        else:
+            self.disable_gpu_wall()
+        self.status.set_text('GPU album wall unavailable; using the regular album wall.')
+        return False
+
+    def disable_gpu_wall(self):
+        self.album_wall_stack.set_visible_child_name('gtk')
+        self.set_album_frosted_source(self.wall_scroll)
+        if self.gpu_wall is not None:
+            self.gpu_wall.set_albums(None, [], reset=True)
+        self.gpu_rebuild_generation += 1
+        generation = self.gpu_rebuild_generation
+        self.gpu_rebuild_pending = True
+        for child in self.grid.get_children():
+            child.destroy()
+        index = 0
+        def rebuild():
+            nonlocal index
+            if self.closed or generation != self.gpu_rebuild_generation or self.gpu_wall_enabled:
+                return False
+            deadline = time.monotonic() + .006
+            while index < len(self.albums):
+                self.add_album_tile(self.albums[index])
+                index += 1
+                if time.monotonic() >= deadline:
+                    return True
+            self.gpu_rebuild_pending = False
+            return False
+        GLib.idle_add(rebuild)
+
+    def gpu_album_pressed(self, album, event, x, y):
+        if event.button == 3:
+            self.show_context_menu(event, gpu_album=album)
+        else:
+            self.gpu_wall.toggle_album(album)
+
     def maybe_load_more_albums(self):
         if (self.loading_albums or not self.albums or len(self.albums) >= self.total or
                 self.content_views.get_visible_child_name() != 'albums' or
@@ -1638,7 +1943,10 @@ class Player(Gtk.Window):
         return False
 
     def apply_album_grid_layout(self):
-        size = album_cover_size(self.wall_scroll.get_allocated_width(), self.album_columns,
+        gpu = getattr(self, 'gpu_wall', None)
+        width = (gpu.area.get_allocated_width() if getattr(self, 'gpu_wall_enabled', False) and gpu
+                 else self.wall_scroll.get_allocated_width())
+        size = album_cover_size(width, self.album_columns,
                                 self.album_margin, self.album_spacing)
         if size == self.album_art_size:
             self.apply_album_grid_columns()
@@ -1646,6 +1954,8 @@ class Player(Gtk.Window):
                 self.apply_style_album_columns()
             return False
         self.album_art_size = size
+        if gpu and getattr(self, 'gpu_wall_enabled', False):
+            gpu.layout_changed()
         for grid in (self.grid, getattr(self, 'style_album_grid', None)):
             if grid is None:
                 continue
@@ -2417,6 +2727,7 @@ class Player(Gtk.Window):
         for index, name in enumerate(order):
             self.sidebar.reorder_child(self.nav_buttons[name], index)
         self.sidebar.reorder_child(self.sidebar_spacer, len(order) - 1)
+        self.position_sidebar_volume()
         self.nav_drop_gap.set_reveal_child(False)
         self.nav_drag_completed = True
         try:
@@ -2464,17 +2775,32 @@ class Player(Gtk.Window):
     def toggle_album_search(self, *_):
         if self.content_views.get_visible_child_name() != 'albums':
             self.show_view('albums')
-            self.album_toolbar.set_no_show_all(False)
-            self.album_toolbar.show_all()
-            self.search.grab_focus()
-        elif self.album_toolbar.get_visible():
-            self.album_toolbar.hide()
+        elif self.album_search_revealer.get_reveal_child():
+            self.album_search_revealer.set_reveal_child(False)
             self.search_button.grab_focus()
-        else:
-            self.views.set_visible_child_name('wall')
-            self.album_toolbar.set_no_show_all(False)
-            self.album_toolbar.show_all()
-            self.search.grab_focus()
+            return
+        self.views.set_visible_child_name('wall')
+        self.album_search_revealer.set_reveal_child(True)
+        self.search.grab_focus()
+
+    def album_top_allocated(self, *_):
+        """Keep the native GPU surface below the sliding GTK controls."""
+        top = getattr(self, 'album_top', None)
+        if top is None:
+            return
+        height = max(36, top.get_allocated_height())
+        wall = getattr(self, 'album_wall', None)
+        if wall is not None and wall.get_margin_top() != self.album_margin + height:
+            wall.set_margin_top(self.album_margin + height)
+        gpu = getattr(self, 'gpu_wall', None)
+        header = getattr(self, 'gpu_filter_header', None)
+        if gpu is not None and header is not None:
+            header.set_margin_start(self.album_margin)
+            header.set_margin_top(height + 4)
+            inset = 0 if header.get_visible() else height
+            if gpu.render_surface.get_margin_top() != inset:
+                gpu.render_surface.set_margin_top(inset)
+                gpu.scrollbar.set_margin_top(inset)
 
     def context_menu_pressed(self, _widget, event):
         if event.button != 3:
@@ -2488,7 +2814,7 @@ class Player(Gtk.Window):
         self.show_context_menu(event, tile)
         return True
 
-    def show_context_menu(self, event, tile=None):
+    def show_context_menu(self, event, tile=None, gpu_album=None):
         menu = Gtk.Menu()
         menu.set_name('apistat-context-menu')
         menu.attach_to_widget(self, None)
@@ -2498,7 +2824,18 @@ class Player(Gtk.Window):
             menu.append(entry)
         def separator():
             menu.append(Gtk.SeparatorMenuItem())
-        if tile is not None:
+        if gpu_album is not None:
+            flip = self.gpu_wall.flip
+            flipped = bool(flip and flip.album is gpu_album and flip.target)
+            item('Show cover' if flipped else 'Flip album',
+                 lambda: self.gpu_wall.toggle_album(gpu_album))
+            item('Open album', lambda: self.select_album(gpu_album))
+            item('Show Artist Albums', lambda: self.show_artist_albums(gpu_album.artist))
+            item('Show in library', lambda: self.show_in_library(gpu_album))
+            item('Add to queue', lambda: self.enqueue_album(gpu_album))
+            item('Play next', lambda: self.enqueue_album(gpu_album, play_next=True))
+            separator()
+        elif tile is not None:
             item('Show cover' if tile.flip_card.side == 'back' else 'Flip album',
                  lambda: self.flip_album_card(tile))
             item('Open album', lambda: tile.open_album(tile.album))
@@ -2518,7 +2855,7 @@ class Player(Gtk.Window):
                  lambda: self.show_artist_albums(self.queue_album.artist))
             item('Show in library', lambda: self.show_in_library(self.queue_album))
             separator()
-        if tile is None and 0 <= self.index < len(self.queue):
+        if tile is None and gpu_album is None and 0 <= self.index < len(self.queue):
             item('Show info', self.show_playing_info)
         item('Pause' if self.playing else 'Play', self.toggle)
         item('Previous', self.previous)
@@ -2559,7 +2896,7 @@ class Player(Gtk.Window):
         self.artist_filter = None
         self.artist_catalog = None
         self.search.set_text(album)
-        self.album_toolbar.hide()
+        self.album_search_revealer.set_reveal_child(False)
         self.show_view('albums')
         self.load_albums()
         return True
@@ -2602,11 +2939,14 @@ class Player(Gtk.Window):
                 context.remove_class('active')
 
     def change_album_sort(self, _button, sort):
-        if sort == self.album_sort:
+        filtered = bool(self.artist_filter or self.search.get_text().strip())
+        if sort == self.album_sort and not filtered:
             return
         self.album_sort = sort
         self.update_album_sort_buttons()
-        if self.client:
+        if filtered:
+            self.show_all_albums()
+        elif self.client:
             self.load_albums()
 
     def show_song_context_menu(self, event, song, index, play_action=None):
@@ -2754,7 +3094,7 @@ class Player(Gtk.Window):
         self.artist_filter = None
         self.artist_catalog = None
         self.artist_filter_bar.hide()
-        self.album_toolbar.hide()
+        self.album_search_revealer.set_reveal_child(False)
         self.search.set_text('')
         self.show_view('albums')
         self.load_albums()
@@ -2762,6 +3102,7 @@ class Player(Gtk.Window):
     def search_album_titles(self, *_):
         self.artist_filter = None
         self.artist_catalog = None
+        self.album_search_catalog = None
         self.artist_filter_bar.hide()
         self.load_albums()
 
@@ -3133,6 +3474,27 @@ class Player(Gtk.Window):
         context.restore()
         return False
 
+    def change_album_zoom(self, steps):
+        low, high = ALBUM_COLUMN_RANGE
+        columns = max(low, min(high, self.album_columns - steps))
+        if columns == self.album_columns:
+            return
+        self.album_columns = columns
+        self.apply_album_grid_layout()
+        if hasattr(self, 'album_grid_scale'):
+            self.album_grid_scale.set_value(columns)
+        try:
+            save_album_columns(columns)
+        except OSError:
+            self.status.set_text('Could not save album grid zoom.')
+
+    def reload_albums(self, *_):
+        if not self.client:
+            return
+        self.artist_catalog = None
+        self.album_search_catalog = None
+        self.load_albums(force_refresh=True)
+
     def zoom_art(self, _widget, event, view):
         if not event.state & Gdk.ModifierType.CONTROL_MASK:
             return False
@@ -3152,18 +3514,7 @@ class Player(Gtk.Window):
         if not steps:
             return True
         if view == 'albums':
-            low, high = ALBUM_COLUMN_RANGE
-            columns = max(low, min(high, self.album_columns - steps))
-            if columns == self.album_columns:
-                return True
-            self.album_columns = columns
-            self.apply_album_grid_layout()
-            if hasattr(self, 'album_grid_scale'):
-                self.album_grid_scale.set_value(columns)
-            try:
-                save_album_columns(columns)
-            except OSError:
-                self.status.set_text('Could not save album grid zoom.')
+            Player.change_album_zoom(self, steps)
         else:
             low, high = NOW_SIZE_RANGE
             size = max(low, min(high, self.now_art_size + 40 * steps))
@@ -4782,6 +5133,109 @@ class Player(Gtk.Window):
             self.persist_session(force=True)
         self.status.set_text(f'Removed {len(set(indices))} track(s) from queue')
 
+    def lastfm_work(self, work, done, generation):
+        def run():
+            try:
+                return work(), None
+            except lastfm.LastFMError as error:
+                return None, str(error)
+            except Exception:
+                return None, 'Last.fm operation failed. Check your connection and keyring.'
+        def finished(result):
+            value, error = result
+            if error:
+                self.lastfm_status.set_text(error)
+            else:
+                done(value)
+        self.async_work(run, finished, lambda: generation == self.lastfm_generation)
+
+    def initialize_lastfm(self):
+        generation = self.lastfm_generation
+        def loaded(session):
+            self.lastfm_session = session
+            self.lastfm_unlink_button.set_sensitive(bool(session))
+            self.lastfm_status.set_text(f'Linked to Last.fm as {session["username"]}'
+                                        if session else 'Last.fm is not linked.')
+        self.lastfm_work(lastfm.load_session, loaded, generation)
+        return False
+
+    def start_lastfm_link(self, *_):
+        key, secret = self.lastfm_key.get_text().strip(), self.lastfm_secret.get_text().strip()
+        if not key or not secret:
+            self.lastfm_status.set_text('Enter your Last.fm API key and shared secret first.')
+            return
+        self.lastfm_generation += 1
+        generation = self.lastfm_generation
+        self.lastfm_auth = None
+        self.lastfm_finish_button.set_sensitive(False)
+        self.lastfm_status.set_text('Requesting Last.fm authorization…')
+        api = lastfm.LastFM(key, secret)
+        def token_ready(token):
+            self.lastfm_auth = (api, token)
+            self.lastfm_finish_button.set_sensitive(True)
+            self.lastfm_status.set_text('Approve Apistat in your browser, then select Finish linking.')
+            try:
+                Gtk.show_uri_on_window(self, api.authorization_url(token), Gdk.CURRENT_TIME)
+            except GLib.Error:
+                self.lastfm_status.set_text('Could not open your browser. Try authorizing again.')
+        self.lastfm_work(api.get_token, token_ready, generation)
+
+    def finish_lastfm_link(self, *_):
+        if not self.lastfm_auth:
+            return
+        api, token = self.lastfm_auth
+        self.lastfm_generation += 1
+        generation = self.lastfm_generation
+        self.lastfm_status.set_text('Finishing Last.fm link…')
+        def link():
+            session = api.get_session(token)
+            with self.lastfm_vault_lock:
+                if generation != self.lastfm_generation:
+                    return None
+                lastfm.save_session(session)
+            return session
+        def linked(session):
+            self.lastfm_session = session
+            self.lastfm_auth = None
+            self.lastfm_key.set_text('')
+            self.lastfm_secret.set_text('')
+            self.lastfm_finish_button.set_sensitive(False)
+            self.lastfm_unlink_button.set_sensitive(True)
+            self.lastfm_status.set_text(f'Linked to Last.fm as {session["username"]}')
+        self.lastfm_work(link, linked, generation)
+
+    def unlink_lastfm(self, *_):
+        self.lastfm_generation += 1
+        generation = self.lastfm_generation
+        self.lastfm_session = None
+        self.lastfm_auth = None
+        self.lastfm_finish_button.set_sensitive(False)
+        self.lastfm_unlink_button.set_sensitive(False)
+        self.lastfm_status.set_text('Unlinking Last.fm…')
+        def clear():
+            with self.lastfm_vault_lock:
+                if generation == self.lastfm_generation:
+                    lastfm.clear_session()
+        self.lastfm_work(clear,
+                         lambda _value: self.lastfm_status.set_text('Last.fm is not linked.'),
+                         generation)
+
+    def update_lastfm_playback(self, position, playing):
+        tracker = getattr(self, 'lastfm_tracker', None)
+        session = getattr(self, 'lastfm_session', None)
+        if not tracker:
+            return
+        events = tracker.update(position, playing and bool(session))
+        if not session:
+            return
+        for event in events:
+            api = lastfm.LastFM(session['api_key'], session['secret'])
+            if event == 'now_playing':
+                work = lambda: api.now_playing(session['session'], tracker.track)
+            else:
+                work = lambda: api.scrobble(session['session'], tracker.track, tracker.started)
+            self.lastfm_work(work, lambda _result: None, self.lastfm_generation)
+
     def build_settings_view(self):
         self.settings_stack = Gtk.Stack()
         self.settings_stack.set_name('settings-stack')
@@ -4799,6 +5253,9 @@ class Player(Gtk.Window):
         self.server_label = Gtk.Label(label='Not connected', xalign=0)
         self.server_label.set_selectable(True)
         panel.pack_start(self.server_label, False, False, 0)
+        panel.pack_start(Gtk.Label(label='Music library', xalign=0), False, False, 0)
+        self.library.set_halign(Gtk.Align.START)
+        panel.pack_start(self.library, False, False, 0)
         connection_button = self.button('Change connection…', self.connect_dialog)
         connection_button.set_halign(Gtk.Align.START)
         panel.pack_start(connection_button, False, False, 0)
@@ -4839,6 +5296,32 @@ class Player(Gtk.Window):
         self.remote_request_status = Gtk.Label(label='No phone requests yet', xalign=0)
         self.remote_request_status.set_line_wrap(True)
         panel.pack_start(self.remote_request_status, False, False, 0)
+        panel.pack_start(Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL), False, False, 0)
+        panel.pack_start(Gtk.Label(label='Last.fm scrobbling', xalign=0), False, False, 0)
+        explanation = Gtk.Label(label='Use a Last.fm API account to connect and share your listening history.', xalign=0)
+        explanation.set_line_wrap(True)
+        panel.pack_start(explanation, False, False, 0)
+        api_link = Gtk.LinkButton.new_with_label('https://www.last.fm/api/account/create',
+                                                 'Get a Last.fm API account')
+        api_link.set_halign(Gtk.Align.START)
+        panel.pack_start(api_link, False, False, 0)
+        self.lastfm_key = Gtk.Entry(placeholder_text='Last.fm API key')
+        self.lastfm_secret = Gtk.Entry(placeholder_text='Last.fm shared secret')
+        self.lastfm_secret.set_visibility(False)
+        panel.pack_start(self.lastfm_key, False, False, 0)
+        panel.pack_start(self.lastfm_secret, False, False, 0)
+        lastfm_actions = Gtk.Box(spacing=12)
+        self.lastfm_link_button = self.button('Authorize Last.fm…', self.start_lastfm_link)
+        self.lastfm_finish_button = self.button('Finish linking', self.finish_lastfm_link)
+        self.lastfm_finish_button.set_sensitive(False)
+        self.lastfm_unlink_button = self.button('Unlink Last.fm', self.unlink_lastfm)
+        self.lastfm_unlink_button.set_sensitive(False)
+        for button in (self.lastfm_link_button, self.lastfm_finish_button, self.lastfm_unlink_button):
+            lastfm_actions.pack_start(button, False, False, 0)
+        panel.pack_start(lastfm_actions, False, False, 0)
+        self.lastfm_status = Gtk.Label(label='Checking Last.fm link…', xalign=0)
+        self.lastfm_status.set_line_wrap(True)
+        panel.pack_start(self.lastfm_status, False, False, 0)
         self.settings_pages.append(panel)
         self.settings_tabs.append_page(self.scroll(panel), Gtk.Label(label='Connection'))
         panel = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=18)
@@ -4904,6 +5387,11 @@ class Player(Gtk.Window):
         self.smooth_scrolling_toggle.connect('toggled', self.smooth_scrolling_changed)
         panel.pack_start(self.smooth_scrolling_toggle, False, False, 0)
         panel = appearance_section('Album grid')
+        self.gpu_wall_toggle = Gtk.CheckButton(label='Use experimental GPU album wall')
+        self.gpu_wall_toggle.set_sensitive(sys.platform.startswith('linux') or sys.platform == 'win32')
+        self.gpu_wall_toggle.set_active(self.gpu_wall_enabled)
+        self.gpu_wall_toggle.connect('toggled', self.gpu_wall_toggled)
+        panel.pack_start(self.gpu_wall_toggle, False, False, 0)
         self.album_details_toggle = Gtk.CheckButton(label='Show artist, album title and days since added on album covers')
         self.album_details_toggle.set_active(self.show_album_details)
         self.album_details_toggle.connect('toggled', self.album_details_changed)
@@ -5011,6 +5499,14 @@ class Player(Gtk.Window):
         heading = Gtk.Label(label='Global keyboard shortcuts', xalign=0)
         heading.set_name('now-title')
         shortcut_page.pack_start(heading, False, False, 0)
+        local_row = Gtk.Box(spacing=12)
+        local_row.pack_start(Gtk.Label(label='Album search (window shortcut)', xalign=0), True, True, 0)
+        self.search_shortcut_label = Gtk.Label(xalign=0)
+        local_row.pack_start(self.search_shortcut_label, False, False, 0)
+        local_row.pack_start(self.button('Set…', self.capture_search_shortcut), False, False, 0)
+        local_row.pack_start(self.button('Reset', self.reset_search_shortcut), False, False, 0)
+        shortcut_page.pack_start(local_row, False, False, 0)
+        self.update_search_shortcut_label()
         description = Gtk.Label(label=(
             'Global shortcut editing is currently available on Xfce/Linux. '
             'The window shortcuts still work on Windows.' if os.name == 'nt' else
@@ -5186,6 +5682,52 @@ class Player(Gtk.Window):
             current.set_text(', '.join(labels) if labels else 'Not set')
             set_button.set_sensitive(True)
             clear_button.set_sensitive(bool(names))
+
+    def update_search_shortcut_label(self):
+        key, modifiers = Gtk.accelerator_parse(self.search_shortcut)
+        self.search_shortcut_label.set_text(Gtk.accelerator_get_label(key, modifiers))
+
+    def reset_search_shortcut(self, *_):
+        self.set_search_shortcut('Tab')
+
+    def set_search_shortcut(self, accelerator):
+        try:
+            save_search_shortcut(accelerator)
+        except (OSError, ValueError):
+            self.status.set_text('Could not save the search shortcut.')
+            return
+        self.search_shortcut = accelerator
+        self.update_search_shortcut_label()
+
+    def capture_search_shortcut(self, *_):
+        dialog = Gtk.Dialog(title='Set album search shortcut', transient_for=self, modal=True)
+        dialog.add_button('Cancel', Gtk.ResponseType.CANCEL)
+        message = Gtk.Label(label='Press a shortcut. Escape cancels.', margin=24)
+        dialog.get_content_area().pack_start(message, True, True, 0)
+        captured = []
+        def key_pressed(_dialog, event):
+            if event.keyval == Gdk.KEY_Escape:
+                dialog.response(Gtk.ResponseType.CANCEL)
+                return True
+            key = Gdk.keyval_to_lower(event.keyval)
+            modifiers = event.state & Gtk.accelerator_get_default_mod_mask()
+            name = Gdk.keyval_name(key) or ''
+            if (not modifiers and key != Gdk.KEY_Tab and
+                    not (name.startswith('F') and name[1:].isdigit())):
+                message.set_text('Use Tab, a function key, or a key combination with modifiers.')
+                return True
+            if not Gtk.accelerator_valid(key, modifiers) and key != Gdk.KEY_Tab:
+                message.set_text('Choose a valid keyboard shortcut.')
+                return True
+            captured.append(Gtk.accelerator_name(key, modifiers))
+            dialog.response(Gtk.ResponseType.OK)
+            return True
+        dialog.connect('key-press-event', key_pressed)
+        dialog.show_all()
+        response = dialog.run()
+        dialog.destroy()
+        if response == Gtk.ResponseType.OK and captured:
+            self.set_search_shortcut(captured[0])
 
     def configure_portal_shortcuts(self, *_):
         if self.portal_shortcuts and self.portal_shortcuts.available:
@@ -5432,6 +5974,8 @@ class Player(Gtk.Window):
 
     def album_details_changed(self, button):
         self.show_album_details = button.get_active()
+        if getattr(self, 'gpu_wall', None):
+            self.gpu_wall.layout_changed()
         for child in self.grid.get_children():
             tile = child.get_child()
             tile.metadata_box.set_visible(self.show_album_details)
@@ -5444,9 +5988,11 @@ class Player(Gtk.Window):
     def album_margins_changed(self, *_):
         self.album_margin = int(self.album_outer_scale.get_value())
         self.album_spacing = int(self.album_gap_scale.get_value())
+        if getattr(self, 'gpu_wall', None):
+            self.gpu_wall.layout_changed()
         for side in ('start', 'end', 'bottom'):
             getattr(self.album_wall, f'set_margin_{side}')(self.album_margin)
-        self.album_wall.set_margin_top(self.album_margin + 36)
+        self.album_top_allocated()
         self.album_wall.set_spacing(self.album_spacing)
         self.grid.set_row_spacing(self.album_spacing)
         self.grid.set_column_spacing(self.album_spacing)
@@ -5481,6 +6027,10 @@ class Player(Gtk.Window):
 
     def single_flip_changed(self, button):
         self.single_flip_enabled = button.get_active()
+        if self.single_flip_enabled and getattr(self, 'gpu_wall', None):
+            self.gpu_wall.enforce_single_flip()
+        elif getattr(self, 'gpu_wall', None):
+            self.gpu_wall.pending_exclusive_flip = None
         if self.single_flip_enabled and self.pending_flipped_tile is None:
             keep = self.last_flipped_tile
             for child in self.grid.get_children():
@@ -5559,6 +6109,8 @@ class Player(Gtk.Window):
         bar = getattr(self, 'player_bar', None)
         inset = (bar.get_allocated_height()
                  if bar and self.frosted_player_bar and bar.get_visible() else 0)
+        if getattr(self, 'gpu_wall', None):
+            self.gpu_wall.set_bottom_inset(inset)
         for page in getattr(self, 'settings_pages', ()):
             if page.get_margin_bottom() != inset:
                 page.set_margin_bottom(max(0, inset))
@@ -5587,6 +6139,8 @@ class Player(Gtk.Window):
         for control in self.frosted_top_controls():
             style = control.get_style_context()
             (style.add_class if self.frosted_player_bar else style.remove_class)('solid-top-control')
+        if getattr(self, 'gpu_wall', None):
+            self.gpu_wall.queue_frame()
 
     def frosted_top_controls(self):
         return (self.search, self.library_search, self.style_search,
@@ -5630,13 +6184,30 @@ class Player(Gtk.Window):
                                 lambda: self.theme, edge='top',
                                 window_capture=widget is self.settings_tab_bar,
                                 capture_allowed=(lambda: not getattr(self, '_song_row_builds', 0))
-                                if widget is self.library_header else (lambda: True))
+                                if widget is self.library_header else (lambda: True),
+                                capture_content=lambda: not Player.gpu_wall_is_mapped(self),
+                                gpu_surface=lambda bar=widget: Player.gpu_glass_surface(self, bar))
             self.top_frosted_bars.append((widget, effect))
             if widget is self.settings_tab_bar:
                 self.settings_top_frost = effect
         for control in self.frosted_top_controls():
             control.get_style_context().add_provider(self.top_frosted_style,
                                                      Gtk.STYLE_PROVIDER_PRIORITY_USER)
+
+    @staticmethod
+    def gpu_wall_is_mapped(player):
+        wall = getattr(player, 'gpu_wall', None)
+        return bool(wall is not None and wall.area.get_mapped())
+
+    @staticmethod
+    def gpu_glass_surface(player, bar):
+        wall = getattr(player, 'gpu_wall', None)
+        return wall.glass_surfaces.get(id(bar)) if wall is not None and wall.area.get_mapped() else None
+
+    def set_album_frosted_source(self, source):
+        for widget, effect in getattr(self, 'top_frosted_bars', ()):
+            if widget is self.album_toolbar or widget is self.album_sort_bar:
+                effect.set_content(source)
 
     def invalidate_frosted_backdrops(self):
         effects = [getattr(self, 'frosted_bar', None)]
@@ -6090,7 +6661,9 @@ class Player(Gtk.Window):
             return
         song = Gtk.TargetEntry.new('application/x-plex-song-key',
                                    Gtk.TargetFlags.SAME_APP, 0)
-        widget.drag_dest_set(Gtk.DestDefaults.ALL, [song], Gdk.DragAction.COPY)
+        album = Gtk.TargetEntry.new('application/x-plex-album-key',
+                                    Gtk.TargetFlags.SAME_APP, 3)
+        widget.drag_dest_set(Gtk.DestDefaults.ALL, [song, album], Gdk.DragAction.COPY)
         widget.connect('drag-motion', self.playlist_drag_motion)
         widget.connect('drag-leave', self.playlist_drag_leave)
         widget.connect('drag-data-received', self.playlist_list_drop_received)
@@ -6149,7 +6722,8 @@ class Player(Gtk.Window):
     def playlist_drag_motion(self, widget, context, x, y, _time):
         target = widget.drag_dest_find_target(context, None)
         row = widget.get_row_at_y(int(y)) if (target is not None and
-              target.name() == 'application/x-plex-song-key') else None
+              target.name() in ('application/x-plex-song-key',
+                                'application/x-plex-album-key')) else None
         self.set_playlist_drop_target(row)
         return False
 
@@ -6179,7 +6753,7 @@ class Player(Gtk.Window):
 
     def playlist_list_drop_received(self, widget, context, x, y, selection, info, event_time):
         Player.set_playlist_drop_target(self, None)
-        if info == 0 and widget is self.playlist_list:
+        if info in (0, 3) and widget is self.playlist_list:
             row = widget.get_row_at_y(int(y))
             if row is not None and getattr(row, 'playlist', None) is not None:
                 self.playlist_drop_received(row, context, x, y, selection, info, event_time)
@@ -6790,6 +7364,28 @@ class Player(Gtk.Window):
     def drag_media_key(self, _widget, _context, selection, _info, _time, key):
         selection.set(selection.get_target(), 8, key.encode('utf-8'))
 
+    def album_drag_begin(self, _widget, context, album, image):
+        self.dragged_album = (self.client, album)
+        pixbuf = image.get_pixbuf()
+        if pixbuf is not None:
+            width, height = pixbuf.get_width(), pixbuf.get_height()
+            scale = min(1.0, 96 / max(width, height))
+            if scale < 1:
+                pixbuf = pixbuf.scale_simple(max(1, round(width * scale)),
+                                            max(1, round(height * scale)),
+                                            GdkPixbuf.InterpType.BILINEAR)
+            Gtk.drag_set_icon_pixbuf(context, pixbuf, 8, 8)
+
+    def album_drag_end(self, _widget, _context):
+        self.dragged_album = None
+
+    def dragged_album_for_selection(self, selection):
+        key = bytes(selection.get_data() or b'').decode('utf-8', errors='replace')
+        source = getattr(self, 'dragged_album', None)
+        if source:
+            return source[1] if source[0] is self.client and source[1].key == key else None
+        return next((album for album in getattr(self, 'albums', ()) if album.key == key), None)
+
     def resolve_loaded_tracks(self, keys):
         if not keys:
             return []
@@ -6832,8 +7428,7 @@ class Player(Gtk.Window):
             if tracks and self.client:
                 action = lambda: self.enqueue_tracks(tracks)
         elif info == 1:
-            key = bytes(selection.get_data() or b'').decode('ascii', errors='ignore')
-            album = next((item for item in self.albums if item.key == key), None)
+            album = Player.dragged_album_for_selection(self, selection)
             if album is not None and self.client:
                 action = lambda: self.enqueue_album(album)
         Gtk.drag_finish(context, action is not None, False, event_time)
@@ -6914,7 +7509,19 @@ class Player(Gtk.Window):
         self.queue_nav.get_style_context().add_class('queue-pulse')
         return True
 
-    def playlist_drop_received(self, row, context, _x, _y, selection, _info, event_time):
+    def playlist_drop_received(self, row, context, _x, _y, selection, info, event_time):
+        if info == 3:
+            album = Player.dragged_album_for_selection(self, selection)
+            playlist = row.playlist
+            client = self.client
+            valid = bool(album and client and playlist and not getattr(playlist, 'smart', False))
+            Gtk.drag_finish(context, valid, False, event_time)
+            if valid:
+                self.song_count.set_text(f'Loading tracks from {album.title}…')
+                self.async_work(lambda: client.tracks(album),
+                                lambda tracks: Player.add_tracks_to_playlist(self, playlist, tracks),
+                                lambda: client is self.client)
+            return
         keys = decode_track_keys(selection.get_data())
         tracks = self.resolve_loaded_tracks(keys)
         playlist = row.playlist
@@ -7483,6 +8090,10 @@ class Player(Gtk.Window):
 
     def clear_wall(self):
         self.art_epoch += 1
+        self.gpu_rebuild_generation = getattr(self, 'gpu_rebuild_generation', 0) + 1
+        self.gpu_rebuild_pending = False
+        if getattr(self, 'gpu_wall', None):
+            self.gpu_wall.set_albums(self.client, [], reset=True)
         self.last_flipped_tile = None
         self.pending_flipped_tile = None
         for child in self.grid.get_children():
@@ -7568,6 +8179,8 @@ class Player(Gtk.Window):
         self.set_placeholder_art(image, self.album_art_size,
                                  SMALL_PLACEHOLDER_LOGO_RATIO)
         front.add(image)
+        front.connect('drag-begin', self.album_drag_begin, album, image)
+        front.connect('drag-end', self.album_drag_end)
         metadata = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
         metadata.set_size_request(self.album_art_size, -1)
         tile.pack_end(metadata, False, False, 0)
@@ -7604,6 +8217,8 @@ class Player(Gtk.Window):
         heading_button.drag_source_set(Gdk.ModifierType.BUTTON1_MASK, album_target,
                                        Gdk.DragAction.COPY)
         heading_button.connect('drag-data-get', self.drag_media_key, album.key)
+        heading_button.connect('drag-begin', self.album_drag_begin, album, image)
+        heading_button.connect('drag-end', self.album_drag_end)
         heading_button.add(heading)
         self.set_tooltip(heading_button, 'Open full album view')
         heading_button.connect('clicked', lambda *_: tile.open_album(album))
@@ -7783,6 +8398,8 @@ class Player(Gtk.Window):
         self.start_track()
 
     def refresh_playing_highlight(self):
+        if getattr(self, 'gpu_wall_enabled', False) and getattr(self, 'gpu_wall', None):
+            self.gpu_wall.refresh_flip()
         for grid in (self.grid, getattr(self, 'style_album_grid', None)):
             if grid is None:
                 continue
@@ -7886,6 +8503,7 @@ class Player(Gtk.Window):
         return self.attach_smooth_scroll(scroll)
 
     def attach_smooth_scroll(self, scroll):
+        attach_background_drag(scroll)
         controller = SmoothScroller(scroll, self.smooth_scrolling_enabled)
         self.smooth_scrollers.add(controller)
         return scroll
@@ -8081,7 +8699,7 @@ class Player(Gtk.Window):
                         self.connect_dialog if automatic else None)
         return False
 
-    def load_albums(self, more=False):
+    def load_albums(self, more=False, force_refresh=False):
         section = self.library.get_active_id()
         if not self.client or not section:
             return
@@ -8114,7 +8732,10 @@ class Player(Gtk.Window):
         def loaded(result):
             albums, total, catalog = result
             if catalog is not None:
-                self.artist_catalog = catalog
+                if artist:
+                    self.artist_catalog = catalog
+                elif title:
+                    self.album_search_catalog = (client, section, title, catalog)
             self.total = total
             offset = 0
             self.busy.begin()
@@ -8126,7 +8747,10 @@ class Player(Gtk.Window):
                 deadline = time.monotonic() + 0.006
                 while offset < len(albums):
                     album = albums[offset]
-                    self.add_album_tile(album)
+                    if getattr(self, 'gpu_wall_enabled', False) and getattr(self, 'gpu_wall', None):
+                        self.gpu_wall.set_albums(client, [album])
+                    elif not getattr(self, 'gpu_rebuild_pending', False):
+                        self.add_album_tile(album)
                     self.albums.append(album)
                     offset += 1
                     if time.monotonic() >= deadline:
@@ -8135,6 +8759,8 @@ class Player(Gtk.Window):
                     return True
                 self.busy.end()
                 self.loading_albums = False
+                if getattr(self, 'gpu_wall_enabled', False) and getattr(self, 'gpu_wall', None):
+                    GLib.idle_add(self.gpu_load_more_albums)
                 if self.album_prefetch_pending:
                     self.album_prefetch_pending = False
                     self.prefetch_album_sort_pages()
@@ -8147,33 +8773,59 @@ class Player(Gtk.Window):
         def failed():
             self.loading_albums = False
             self.finish_startup_loading()
-        indexed = (self.indexed_albums if self.search_index_enabled and
+        indexed = (self.indexed_albums if not force_refresh and self.search_index_enabled and
                    self.index_section == section else None)
         if artist:
             existing_catalog = self.artist_catalog
+            sort = self.album_sort
             def artist_work():
                 catalog = existing_catalog
                 if catalog is None:
-                    source = indexed if indexed is not None else build_album_index(
-                        client, section, lambda: generation == self.generation and
-                        client is self.client and self.artist_filter == artist)
-                    if source is None:
+                    # The persistent search index can be older than the server.
+                    # Query Plex's album-artist filter and collect every page.
+                    catalog = []
+                    offset = 0
+                    while generation == self.generation and client is self.client and self.artist_filter == artist:
+                        page, total = client.albums(section, offset, sort=sort, artist=artist)
+                        catalog.extend(album for album in page
+                                       if album.artist.strip().casefold() == artist.strip().casefold())
+                        offset += len(page)
+                        if not page or offset >= total:
+                            break
+                    else:
                         return [], 0, None
-                    catalog = [album for album in source
-                               if album.artist.casefold() == artist.casefold()]
-                catalog = sort_albums(catalog, self.album_sort)
+                catalog = sort_albums(catalog, sort)
                 return catalog[start:start + 100], len(catalog), catalog
             work = artist_work
-        elif title and indexed is not None:
-            work = lambda: (*search_albums(sort_albums(indexed, self.album_sort), title, start), None)
+        elif title:
+            sort = self.album_sort
+            saved = None if force_refresh else getattr(self, 'album_search_catalog', None)
+            def search_work():
+                source = (saved[3] if start and saved and
+                          saved[:3] == (client, section, title) else indexed)
+                if source is None and saved and saved[:3] == (client, section, title):
+                    source = saved[3]
+                if source is None:
+                    source = build_album_index(
+                        client, section, lambda: generation == self.generation and
+                        client is self.client)
+                    if source is None:
+                        return [], 0, None
+                return *search_albums(sort_albums(source, sort), title, start), source
+            work = search_work
         else:
             sort = self.album_sort
             def page_work():
                 cache = LocalCache(client)
-                if start == 0 and not title:
+                if start == 0 and not title and not force_refresh:
                     page = cached_album_page(cache, client, section, sort)
                 else:
                     page = client.albums(section, start, title, sort)
+                    if start == 0 and force_refresh:
+                        try:
+                            cache.save_album_page(section, sort, *page)
+                        except OSError:
+                            pass
                 return *page, None
             work = page_work
         self.async_work(work, loaded,
@@ -8474,6 +9126,7 @@ class Player(Gtk.Window):
             source.set_property('timeout', 15)
 
     def stop(self, remember=True):
+        self.lastfm_tracker = None
         self.style_autoplay_generation += 1
         self.style_autoplay_pending = False
         self.style_autoplay_waiting = False
@@ -8592,6 +9245,7 @@ class Player(Gtk.Window):
             self.remote_opening = False
             self.stream_open = True
             self.current_played_track = track
+            self.lastfm_tracker = lastfm.PlaybackTracker(track)
             self.playing = not resume_paused
             self.refresh_live_waveform()
             self.pending_resume_seek_ms = self.playback_position_ms
@@ -8619,6 +9273,8 @@ class Player(Gtk.Window):
             else:
                 self.play_album(0)
             return
+        if getattr(self, 'lastfm_tracker', None):
+            self.lastfm_tracker.previous = None
         self.playing = not self.playing
         self.pipeline.set_state(Gst.State.PLAYING if self.playing else Gst.State.PAUSED)
         self.refresh_live_waveform()
@@ -8889,6 +9545,8 @@ class Player(Gtk.Window):
             return
         track = self.queue[self.index]
         position = max(0, min(position, track.duration * 1000)) if track.duration else max(0, position)
+        if getattr(self, 'lastfm_tracker', None):
+            self.lastfm_tracker.previous = None
         if self.pipeline.seek_simple(Gst.Format.TIME, Gst.SeekFlags.FLUSH | Gst.SeekFlags.KEY_UNIT,
                                      int(position * 1000)):
             self.playback_position_ms = position // 1000
@@ -8916,6 +9574,13 @@ class Player(Gtk.Window):
         self.apply_pending_resume_seek()
         ok, duration = self.pipeline.query_duration(Gst.Format.TIME)
         pos_ok, position = self.pipeline.query_position(Gst.Format.TIME)
+        if getattr(self, 'lastfm_tracker', None):
+            if self.lastfm_tracker.duration <= 0 and ok and duration > 0:
+                self.lastfm_tracker.duration = duration / Gst.SECOND
+            _result, state, _pending = self.pipeline.get_state(0)
+            self.update_lastfm_playback(position / Gst.SECOND if pos_ok else None,
+                                        self.stream_open and self.playing and
+                                        not self.buffering_busy and state == Gst.State.PLAYING)
         if ok and pos_ok and duration > 0:
             self.playback_position_ms = position // Gst.MSECOND
             self.seek.set_range(0, duration / Gst.SECOND)
@@ -9012,6 +9677,8 @@ class Player(Gtk.Window):
         return data
 
     def close(self, *_):
+        if getattr(self, 'gpu_wall', None):
+            self.gpu_wall.shutdown()
         if self._window_shape_resume_source:
             GLib.source_remove(self._window_shape_resume_source)
             self._window_shape_resume_source = 0
@@ -9031,6 +9698,12 @@ class Player(Gtk.Window):
         self.style_tile_art_workers.shutdown(wait=False, cancel_futures=True)
         self.rating_executor.shutdown(wait=False, cancel_futures=True)
         self.busy.close()
+        if self.sidebar_volume_timeout:
+            GLib.source_remove(self.sidebar_volume_timeout)
+            self.sidebar_volume_timeout = 0
+        if self.sidebar_volume_tick:
+            self.sidebar_volume_indicator.remove_tick_callback(self.sidebar_volume_tick)
+            self.sidebar_volume_tick = 0
         if self.queue_pulse_source:
             GLib.source_remove(self.queue_pulse_source)
             self.queue_pulse_source = 0
@@ -9090,6 +9763,9 @@ def runtime_self_test():
             raise RuntimeError('Bundled font is missing')
         app_icon()  # Also checks that the bundled icon can be decoded.
     if os.name == 'nt' and getattr(sys, 'frozen', False):
+        # Verify the optional GPU wall modules were included in Windows bundles.
+        import gpu_album_wall
+        import gpu_wgl
         import gi
         gi.require_version('PangoCairo', '1.0')
         from gi.repository import PangoCairo

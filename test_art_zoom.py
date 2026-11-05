@@ -255,6 +255,26 @@ class ArtZoomTests(unittest.TestCase):
         self.assertEqual(save_columns.call_args.args, (8,))
         self.assertEqual(save_now.call_args.args, (400,))
 
+    def test_album_zoom_buttons_step_one_column_and_update_slider(self):
+        player = SimpleNamespace(album_columns=8, apply_album_grid_layout=Mock(),
+                                 album_grid_scale=SimpleNamespace(set_value=Mock()),
+                                 status=SimpleNamespace(set_text=Mock()))
+        with patch('player.save_album_columns') as save:
+            Player.change_album_zoom(player, 1)
+            self.assertEqual(player.album_columns, 7)
+            Player.change_album_zoom(player, -1)
+        self.assertEqual(player.album_columns, 8)
+        self.assertEqual(player.album_grid_scale.set_value.call_count, 2)
+        self.assertEqual(save.call_count, 2)
+
+    def test_reload_discards_result_catalogs_and_forces_server_refresh(self):
+        player = SimpleNamespace(client=object(), artist_catalog=[object()],
+                                 album_search_catalog=object(), load_albums=Mock())
+        Player.reload_albums(player)
+        self.assertIsNone(player.artist_catalog)
+        self.assertIsNone(player.album_search_catalog)
+        player.load_albums.assert_called_once_with(force_refresh=True)
+
     def test_grid_slider_changes_same_column_count_as_ctrl_scroll(self):
         layouts = []
         subject = SimpleNamespace(

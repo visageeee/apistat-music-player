@@ -348,6 +348,114 @@ class LoadingResponsivenessTests(unittest.TestCase):
         self.assertEqual(player.add_album_tile.call_count, 1)
         player.busy.end.assert_called_once()
 
+    def test_artist_albums_use_fresh_paginated_server_results(self):
+        matching = [Item(f'/library/metadata/{i}', f'Album {i:03}', artist='Artist')
+                    for i in range(105)]
+        source = [*matching[:100], Item('/other', 'Other', artist='Artist Tribute'),
+                  *matching[100:]]
+        client = SimpleNamespace(albums=Mock(side_effect=lambda section, start, **kwargs:
+                                             (source[start:start + 100], len(source))))
+        label = SimpleNamespace(set_text=Mock())
+        player = SimpleNamespace(
+            library=SimpleNamespace(get_active_id=lambda: 'music'), client=client,
+            loading_albums=False, generation=0, album_generation=0,
+            albums=[], tracks=[], search=SimpleNamespace(get_text=lambda: ''),
+            artist_filter='Artist', artist_catalog=None, artist_filter_label=label,
+            artist_filter_bar=SimpleNamespace(set_no_show_all=Mock(), show_all=Mock()),
+            clear_wall=Mock(), track_store=SimpleNamespace(clear=Mock()),
+            album_label=label, album_artist=label, album_year=label, cover=object(),
+            set_placeholder_art=Mock(), status=label, search_index_enabled=True,
+            indexed_albums=matching[:1], index_section='music', album_sort='titleSort',
+            async_work=lambda work, done, valid, failed: done(work()) if valid() else None,
+            busy=SimpleNamespace(begin=Mock(), end=Mock()), closed=False,
+            add_album_tile=Mock(), album_prefetch_pending=False,
+            credential_warning='', finish_startup_loading=Mock())
+        def run_idle(callback, **_kwargs):
+            while callback():
+                pass
+        with patch('player.GLib.idle_add', side_effect=run_idle):
+            Player.load_albums(player)
+            self.assertEqual((len(player.albums), player.total), (100, 105))
+            Player.load_albums(player, more=True)
+        self.assertEqual(player.albums, matching)
+        self.assertEqual(client.albums.call_count, 2)
+        self.assertEqual(client.albums.call_args_list[1].args, ('music', 100))
+        self.assertEqual(client.albums.call_args_list[0].kwargs['artist'], 'Artist')
+
+    def test_album_sort_buttons_return_from_filtered_results(self):
+        for selected_sort in ('addedAt:desc', 'titleSort'):
+            with self.subTest(sort=selected_sort):
+                player = SimpleNamespace(artist_filter='Artist',
+                                         search=SimpleNamespace(get_text=lambda: ''),
+                                         album_sort='addedAt:desc', client=object(),
+                                         update_album_sort_buttons=Mock(),
+                                         show_all_albums=Mock(), load_albums=Mock())
+                Player.change_album_sort(player, None, selected_sort)
+                self.assertEqual(player.album_sort, selected_sort)
+                player.show_all_albums.assert_called_once()
+                player.load_albums.assert_not_called()
+
+    def test_reloaded_search_pages_use_fresh_results_not_stale_index(self):
+        albums = [Item(f'/library/metadata/{i}', f'Fresh {i:03}', artist='Artist')
+                  for i in range(105)]
+        client = object()
+        label = SimpleNamespace(set_text=Mock())
+        player = SimpleNamespace(
+            library=SimpleNamespace(get_active_id=lambda: 'music'), client=client,
+            loading_albums=False, generation=0, album_generation=0,
+            albums=[], tracks=[], search=SimpleNamespace(get_text=lambda: 'Fresh'),
+            artist_filter=None, artist_filter_label=label,
+            artist_filter_bar=SimpleNamespace(set_no_show_all=Mock(), show_all=Mock()),
+            clear_wall=Mock(), track_store=SimpleNamespace(clear=Mock()),
+            album_label=label, album_artist=label, album_year=label, cover=object(),
+            set_placeholder_art=Mock(), status=label, search_index_enabled=True,
+            indexed_albums=albums[:1], index_section='music', album_sort='titleSort',
+            async_work=lambda work, done, valid, failed: done(work()) if valid() else None,
+            busy=SimpleNamespace(begin=Mock(), end=Mock()), closed=False,
+            add_album_tile=Mock(), album_prefetch_pending=False,
+            credential_warning='', finish_startup_loading=Mock())
+        def run_idle(callback, **_kwargs):
+            while callback():
+                pass
+        with patch('player.build_album_index', return_value=albums), \
+                patch('player.GLib.idle_add', side_effect=run_idle):
+            Player.load_albums(player, force_refresh=True)
+            self.assertEqual(len(player.albums), 100)
+            Player.load_albums(player, more=True)
+        self.assertEqual(player.albums, albums)
+
+    def test_uncached_album_search_finds_titles_and_artists_across_pages(self):
+        title_match = Item('/library/metadata/1', 'Blue album', artist='Someone')
+        artist_matches = [Item(f'/library/metadata/{index + 2}', f'Record {index:03}',
+                               artist='Blue artist') for index in range(100)]
+        source = [title_match, *artist_matches]
+        client = object()
+        label = SimpleNamespace(set_text=Mock())
+        player = SimpleNamespace(
+            library=SimpleNamespace(get_active_id=lambda: 'music'), client=client,
+            loading_albums=False, generation=0, album_generation=0,
+            albums=[], tracks=[], search=SimpleNamespace(get_text=lambda: 'blue'),
+            artist_filter=None, artist_filter_label=label,
+            artist_filter_bar=SimpleNamespace(set_no_show_all=Mock(), show_all=Mock()),
+            clear_wall=Mock(), track_store=SimpleNamespace(clear=Mock()),
+            album_label=label, album_artist=label, album_year=label, cover=object(),
+            set_placeholder_art=Mock(), status=label, search_index_enabled=False,
+            index_section=None, album_sort='titleSort',
+            async_work=lambda work, done, valid, failed: done(work()) if valid() else None,
+            busy=SimpleNamespace(begin=Mock(), end=Mock()), closed=False,
+            add_album_tile=Mock(), album_prefetch_pending=False,
+            credential_warning='', finish_startup_loading=Mock())
+        def run_idle(callback, **_kwargs):
+            while callback():
+                pass
+        with patch('player.build_album_index', return_value=source) as build, \
+                patch('player.GLib.idle_add', side_effect=run_idle):
+            Player.load_albums(player)
+            self.assertEqual((len(player.albums), player.total), (100, 101))
+            Player.load_albums(player, more=True)
+        self.assertEqual(player.albums, source)
+        build.assert_called_once()
+
 
 if __name__ == '__main__':
     unittest.main()

@@ -16,7 +16,8 @@ class FrostedBar:
     _capture_depth = 0
 
     def __init__(self, bar, content, background, theme, timeline=lambda: None,
-                 edge='bottom', window_capture=False, capture_allowed=lambda: True):
+                 edge='bottom', window_capture=False, capture_allowed=lambda: True,
+                 capture_content=lambda: True, gpu_surface=lambda: None):
         self.bar = bar
         self.content = content
         self.background = background
@@ -25,6 +26,8 @@ class FrostedBar:
         self.edge = edge
         self.window_capture = window_capture
         self.capture_allowed = capture_allowed
+        self.capture_content = capture_content
+        self.gpu_surface = gpu_surface
         self.surface = None
         self.enabled = False
         self._top_idle = 0
@@ -169,7 +172,17 @@ class FrostedBar:
                     context.restore()
             else:
                 draw_allocated(self.background, context)
-            draw_allocated(self.content, context)
+            if self.capture_content():
+                draw_allocated(self.content, context)
+            else:
+                surface = self.gpu_surface()
+                if (surface is not None and surface.get_width() == size[0] and
+                        surface.get_height() == size[1]):
+                    context.save()
+                    context.identity_matrix()
+                    context.set_source_surface(surface, 0, 0)
+                    context.paint()
+                    context.restore()
         finally:
             FrostedBar._capture_depth -= 1
         return True

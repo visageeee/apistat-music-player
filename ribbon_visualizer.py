@@ -29,16 +29,16 @@ def ribbon_profile(u, phase, mid, high):
 
 
 def trace_curve(context, width, height, layer, phase, bass, mid, high, pulse,
-                line_energy=0.0):
+                line_energy=0.0, volume=1.0):
     center = height * 0.51
     swell = min(1.0, 0.035 + 0.72 * bass + 0.26 * mid + 0.16 * pulse)
     spread = (0.25 + 0.92 * layer / (LINE_COUNT - 1)) * (1.0 + 0.32 * mid)
-    amplitude = height * 0.34 * swell * spread
+    amplitude = height * 0.34 * swell * spread * volume
     offset = (layer - (LINE_COUNT - 1) / 2) * 0.014
     fraction = layer / (LINE_COUNT - 1)
     ripple_cycles = 1.15 + 4.85 * fraction
     # Keep quiet bands visible while preserving a continuous response to silence.
-    ripple_amplitude = height * (0.12 - 0.030 * fraction) * math.sqrt(line_energy)
+    ripple_amplitude = height * (0.12 - 0.030 * fraction) * math.sqrt(line_energy) * volume
     points = []
     for index in range(NODE_COUNT):
         u = index / (NODE_COUNT - 1)
@@ -72,6 +72,7 @@ class RibbonVisualizer(Gtk.DrawingArea):
         self.line_envelopes = [0.0] * LINE_COUNT
         self.bass = self.mid = self.high = self.pulse = 0.0
         self.phase = 0.0
+        self.volume = self.target_volume = 1.0
         self.active = False
         self.playing = False
         self.last_audio = 0.0
@@ -102,6 +103,13 @@ class RibbonVisualizer(Gtk.DrawingArea):
             else:
                 self.line_target = (0.0,) * LINE_COUNT
             self.last_audio = time.monotonic()
+
+    def set_volume(self, value):
+        self.target_volume = max(0.0, min(1.0, float(value)))
+        if self.active:
+            self._start_ticking()
+        else:
+            self.volume = self.target_volume
 
     def set_active(self, active):
         self.active = bool(active)
@@ -143,6 +151,7 @@ class RibbonVisualizer(Gtk.DrawingArea):
         self.last_render = now
         dt = max(0.001, min(0.05, now - self.last_frame))
         self.last_frame = now
+        self.volume = approach(self.volume, self.target_volume, dt, 0.10, 0.16)
         if self.playing and now - self.last_audio > 0.9:
             self.target = (0.0, 0.0, 0.0)
             self.line_target = (0.0,) * LINE_COUNT
@@ -163,7 +172,8 @@ class RibbonVisualizer(Gtk.DrawingArea):
         self.queue_draw()
         if (not self.playing and
                 max(self.bass, self.mid, self.high, self.pulse,
-                    *self.line_envelopes) < 0.003):
+                    *self.line_envelopes) < 0.003 and
+                abs(self.target_volume - self.volume) < 0.003):
             self.tick_id = 0
             return False
         return True
@@ -205,7 +215,7 @@ class RibbonVisualizer(Gtk.DrawingArea):
             context.new_path()
             trace_curve(context, width, height, layer, self.phase,
                         self.bass, self.mid, self.high, self.pulse,
-                        self.line_envelopes[layer])
+                        self.line_envelopes[layer], self.volume)
             context.set_source_rgba(*color, 0.095 * strength)
             context.set_line_width(8 + 2 * fraction + 2 * self.pulse)
             context.stroke_preserve()

@@ -13,6 +13,7 @@ Plexamp’s appeal, with some of the iTunes features worth bringing back.
 - Organise the play queue, add similar tracks and keep music playing with automatic recommendations.
 - Control playback from Plexamp on your phone, or use desktop media controls.
 - View lyrics, track information and artwork, with custom themes and album-art colors.
+- Optionally scrobble listening history to Last.fm.
 
 ## Install
 

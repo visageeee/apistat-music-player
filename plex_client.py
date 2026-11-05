@@ -283,13 +283,15 @@ class PlexClient:
                 return facet, songs
         return None, []
 
-    def albums(self, section, start=0, title='', sort='addedAt:desc'):
+    def albums(self, section, start=0, title='', sort='addedAt:desc', artist=''):
         if sort not in ('addedAt:desc', 'year:desc', ALBUM_SORT_ARTIST, 'titleSort'):
             raise ValueError('Unsupported album sort')
         params = {'type': 9, 'sort': sort,
                   'X-Plex-Container-Start': start, 'X-Plex-Container-Size': 100}
         if title:
             params['title'] = title
+        if artist:
+            params['artist.title'] = artist
         root = self.xml('/library/sections/' + section + '/all', **params)
         items = [Item(x.attrib['key'], x.get('title', 'Untitled'),
                       x.get('parentTitle', ''), x.get('year', ''), thumb=x.get('thumb', ''),

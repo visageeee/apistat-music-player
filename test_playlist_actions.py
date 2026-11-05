@@ -124,6 +124,23 @@ class PlaylistActionsTests(unittest.TestCase):
         player.playlist_drop_received.assert_called_once_with(
             row, 'context', 5, 23, selection, 0, 10)
 
+    def test_album_drop_loads_tracks_before_adding_to_playlist(self):
+        album = Item('/library/metadata/10', 'Album')
+        playlist = Item('/playlists/7/items', 'Destination')
+        tracks = [Item('/library/metadata/11', 'Song')]
+        client = SimpleNamespace(tracks=Mock(return_value=tracks))
+        player = SimpleNamespace(client=client, albums=[], dragged_album=(client, album),
+                                 song_count=Mock())
+        player.async_work = lambda work, done, valid: done(work()) if valid() else None
+        selection = SimpleNamespace(get_data=lambda: album.key.encode())
+        with patch('player.Gtk.drag_finish') as finish, \
+                patch.object(Player, 'add_tracks_to_playlist') as add:
+            Player.playlist_drop_received(player, SimpleNamespace(playlist=playlist),
+                                          None, 0, 0, selection, 3, 12)
+        finish.assert_called_once_with(None, True, False, 12)
+        client.tracks.assert_called_once_with(album)
+        add.assert_called_once_with(player, playlist, tracks)
+
     def test_playlist_drop_cannot_cross_sidebar_sections(self):
         playlist_list, smart_list = Mock(), Mock()
         client = object()

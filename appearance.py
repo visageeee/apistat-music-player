@@ -298,6 +298,16 @@ def load_gradient_enabled():
     return _read_settings().get('album_art_gradient', True) is True
 
 
+def load_gpu_album_wall_enabled():
+    return _read_settings().get('gpu_album_wall', False) is True
+
+
+def save_gpu_album_wall_enabled(enabled):
+    settings = _read_settings()
+    settings['gpu_album_wall'] = bool(enabled)
+    _write_settings(settings)
+
+
 def load_info_panel_width():
     width = _read_settings().get('info_panel_width', 360)
     return width if type(width) is int and 240 <= width <= 1000 else 360
@@ -438,6 +448,23 @@ def load_tooltips_hidden():
 
 def load_star_ratings_hidden():
     return _read_settings().get('hide_star_ratings') is True
+
+
+def load_search_shortcut():
+    value = _read_settings().get('search_shortcut', 'Tab')
+    if not isinstance(value, str) or len(value) > 100:
+        return 'Tab'
+    key, _modifiers = Gtk.accelerator_parse(value)
+    return value if key else 'Tab'
+
+
+def save_search_shortcut(accelerator):
+    key, _modifiers = Gtk.accelerator_parse(accelerator)
+    if not key:
+        raise ValueError('Invalid search shortcut')
+    settings = _read_settings()
+    settings['search_shortcut'] = accelerator
+    _write_settings(settings)
 
 
 def load_smooth_scrolling_enabled():

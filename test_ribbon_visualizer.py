@@ -53,6 +53,19 @@ class RibbonVisualizerTests(unittest.TestCase):
         self.assertGreater(max(abs(value) for value in front), 3)
         self.assertGreater(crossings(front), crossings(back) + 4)
 
+    def test_volume_scales_whole_curve_including_frequency_ripples(self):
+        surface = cairo.RecordingSurface(cairo.CONTENT_COLOR_ALPHA, None)
+        context = cairo.Context(surface)
+        def points(volume):
+            context.new_path()
+            trace_curve(context, 900, 420, 12, .2, .8, .4, .2, .1, .8, volume)
+            return [step[1][-1] for step in list(context.copy_path())]
+        muted, half, full = points(0), points(.5), points(1)
+        center = 420 * .51
+        self.assertTrue(all(abs(y - center) < .01 for y in muted))
+        for quiet, loud in zip(half, full):
+            self.assertAlmostEqual(quiet - center, (loud - center) * .5, delta=.02)
+
     def test_frequency_distortion_is_visible_across_the_line(self):
         surface = cairo.RecordingSurface(cairo.CONTENT_COLOR_ALPHA, None)
         context = cairo.Context(surface)

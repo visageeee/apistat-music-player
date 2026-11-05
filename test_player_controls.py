@@ -3,7 +3,7 @@ from collections import OrderedDict, deque
 import weakref
 import threading
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import gi
 gi.require_version('Gst', '1.0')
@@ -554,6 +554,57 @@ class PlayerControlTests(unittest.TestCase):
                 appearance.save_sidebar_order(['now'] * 6)
             self.assertEqual(appearance.load_sidebar_order(), order)
 
+    def test_sidebar_volume_scroll_clamps_and_reveals_level(self):
+        values = []
+        player = SimpleNamespace(volume=SimpleNamespace(get_value=lambda: .98),
+                                 set_volume=values.append, show_sidebar_volume=Mock())
+        self.assertTrue(Player.sidebar_volume_scroll(
+            player, None, SimpleNamespace(direction=Gdk.ScrollDirection.UP)))
+        self.assertEqual(values, [1])
+        player.show_sidebar_volume.assert_called_once()
+        smooth = SimpleNamespace(direction=Gdk.ScrollDirection.SMOOTH,
+                                 get_scroll_deltas=lambda: (True, 0, .5))
+        self.assertTrue(Player.sidebar_volume_scroll(player, None, smooth))
+        self.assertAlmostEqual(values[-1], .955)
+
+    def test_sidebar_volume_click_mutes_and_restores(self):
+        value = [.6]
+        player = SimpleNamespace(volume=SimpleNamespace(get_value=lambda: value[0]),
+                                 set_volume=lambda v: value.__setitem__(0, v),
+                                 sidebar_volume_restore=.8, show_sidebar_volume=Mock())
+        Player.sidebar_volume_clicked(player)
+        self.assertEqual(value[0], 0)
+        Player.sidebar_volume_clicked(player)
+        self.assertEqual(value[0], .6)
+        self.assertEqual(player.show_sidebar_volume.call_count, 2)
+
+    def test_sidebar_volume_indicator_uses_accent_and_level(self):
+        context = Mock()
+        widget = SimpleNamespace(get_allocated_width=lambda: 80,
+                                 get_allocated_height=lambda: 200)
+        player = SimpleNamespace(sidebar_volume_visible=True, sidebar_volume_opacity=1.0,
+                                 volume=SimpleNamespace(get_value=lambda: .75),
+                                 art_accent_enabled=False, accent_color='#ff8000')
+        self.assertFalse(Player.draw_sidebar_volume(player, widget, context))
+        context.rectangle.assert_called_once_with(0, 50, 80, 150)
+        context.set_source_rgba.assert_called_once_with(1, 128 / 255, 0, .16)
+
+    def test_sidebar_volume_fades_smoothly_and_stops(self):
+        draws = Mock()
+        player = SimpleNamespace(sidebar_volume_fade_start=None, sidebar_volume_opacity=1,
+                                 sidebar_volume_visible=True, sidebar_volume_tick=42,
+                                 sidebar_volume_indicator=SimpleNamespace(queue_draw=draws))
+        clock = SimpleNamespace(get_frame_time=lambda: 1_000_000)
+        self.assertTrue(Player.fade_sidebar_volume(player, None, clock))
+        clock.get_frame_time = lambda: 1_250_000
+        self.assertTrue(Player.fade_sidebar_volume(player, None, clock))
+        self.assertAlmostEqual(player.sidebar_volume_opacity, .5)
+        clock.get_frame_time = lambda: 1_500_000
+        self.assertFalse(Player.fade_sidebar_volume(player, None, clock))
+        self.assertFalse(player.sidebar_volume_visible)
+        self.assertEqual(player.sidebar_volume_tick, 0)
+        self.assertEqual(draws.call_count, 3)
+
     def test_sidebar_drop_reorders_even_on_empty_surface(self):
         order = ['now', 'albums', 'library', 'queue', 'settings']
         moved = []
@@ -567,6 +618,7 @@ class PlayerControlTests(unittest.TestCase):
                                                          moved.append((button, index))),
                                  status=SimpleNamespace(set_text=lambda _text: None),
                                  update_nav_drag=lambda _y: None,
+                                 position_sidebar_volume=Mock(),
                                  nav_drop_root_y=lambda _widget, _x, _y: 500)
         with patch('player.save_sidebar_order') as save, \
                 patch('player.Gtk.drag_finish') as finish:
@@ -575,6 +627,7 @@ class PlayerControlTests(unittest.TestCase):
         self.assertEqual(player.sidebar_order, ['now', 'settings', 'albums', 'library', 'queue'])
         self.assertEqual(moved[1], (buttons['settings'], 1))
         save.assert_called_once_with(player.sidebar_order)
+        player.position_sidebar_volume.assert_called_once()
         finish.assert_called_once()
 
     def test_sidebar_drag_uses_vertical_root_coordinates(self):
@@ -679,6 +732,70 @@ class PlayerControlTests(unittest.TestCase):
         self.assertNotIn('hovering', classes)
         self.assertEqual(len(redraws), 2)
 
+    def test_search_shortcut_opens_and_respects_text_entry(self):
+        entry = Gtk.Entry()
+        player = SimpleNamespace(
+            startup_loading=False, search_shortcut='Tab', get_focus=lambda: None,
+            content_views=SimpleNamespace(get_visible_child_name=lambda: 'albums'),
+            album_search_revealer=SimpleNamespace(get_reveal_child=lambda: False),
+            toggle_album_search=Mock(), space_held=False)
+        event = SimpleNamespace(keyval=Gdk.KEY_Tab, state=0)
+        self.assertTrue(Player.global_key_pressed(player, None, event))
+        player.toggle_album_search.assert_called_once()
+        player.get_focus = lambda: entry
+        self.assertFalse(Player.global_key_pressed(player, None, event))
+        self.assertEqual(player.toggle_album_search.call_count, 1)
+        player.get_focus = lambda: None
+        player.search_shortcut = '<Control>f'
+        self.assertFalse(Player.global_key_pressed(player, None, event))
+        self.assertTrue(Player.global_key_pressed(
+            player, None, SimpleNamespace(keyval=Gdk.KEY_f, state=Gdk.ModifierType.CONTROL_MASK)))
+        self.assertEqual(player.toggle_album_search.call_count, 2)
+
+    def test_search_shortcut_persists_and_recovers_from_invalid_settings(self):
+        import tempfile
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.object(appearance, 'SETTINGS_PATH', Path(directory) / 'settings.json'):
+            self.assertEqual(appearance.load_search_shortcut(), 'Tab')
+            appearance.save_search_shortcut('<Control>f')
+            self.assertEqual(appearance.load_search_shortcut(), '<Control>f')
+            with self.assertRaises(ValueError):
+                appearance.save_search_shortcut('not a key name')
+
+    def test_album_search_slides_open_and_focuses_then_closes(self):
+        state = [False]
+        reveal = SimpleNamespace(get_reveal_child=lambda: state[0],
+                                 set_reveal_child=lambda value: state.__setitem__(0, value))
+        player = SimpleNamespace(content_views=SimpleNamespace(get_visible_child_name=lambda: 'albums'),
+                                 album_search_revealer=reveal,
+                                 views=SimpleNamespace(set_visible_child_name=Mock()),
+                                 search=SimpleNamespace(grab_focus=Mock()),
+                                 search_button=SimpleNamespace(grab_focus=Mock()))
+        Player.toggle_album_search(player)
+        self.assertTrue(state[0])
+        player.search.grab_focus.assert_called_once()
+        Player.toggle_album_search(player)
+        self.assertFalse(state[0])
+        player.search_button.grab_focus.assert_called_once()
+
+    def test_album_header_reserves_search_height_without_extra_artist_gap(self):
+        header = SimpleNamespace(get_visible=lambda: True, set_margin_start=Mock(),
+                                 set_margin_top=Mock())
+        surface = SimpleNamespace(get_margin_top=lambda: 36, set_margin_top=Mock())
+        scrollbar = SimpleNamespace(set_margin_top=Mock())
+        wall = SimpleNamespace(get_margin_top=lambda: 0, set_margin_top=Mock())
+        player = SimpleNamespace(album_top=SimpleNamespace(get_allocated_height=lambda: 84),
+                                 album_margin=40, album_wall=wall,
+                                 gpu_wall=SimpleNamespace(render_surface=surface,
+                                                          scrollbar=scrollbar),
+                                 gpu_filter_header=header)
+        Player.album_top_allocated(player)
+        wall.set_margin_top.assert_called_once_with(124)
+        header.set_margin_top.assert_called_once_with(88)
+        surface.set_margin_top.assert_called_once_with(0)
+        scrollbar.set_margin_top.assert_called_once_with(0)
+
     def test_now_album_click_opens_album_search_in_grid(self):
         actions = []
         player = SimpleNamespace(
@@ -686,7 +803,8 @@ class PlayerControlTests(unittest.TestCase):
             queue=[Item('/library/metadata/2', 'Song', album='Blue Train')],
             queue_album=None, artist_filter='Old Artist', artist_catalog=[object()],
             search=SimpleNamespace(set_text=lambda value: actions.append(('search', value))),
-            album_toolbar=SimpleNamespace(hide=lambda: actions.append('hide')),
+            album_search_revealer=SimpleNamespace(
+                set_reveal_child=lambda _value: actions.append('hide')),
             show_view=lambda view: actions.append(('view', view)),
             load_albums=lambda: actions.append('load'))
         self.assertTrue(Player.now_album_pressed(player, None, SimpleNamespace(button=1)))

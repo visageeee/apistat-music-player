@@ -8,6 +8,50 @@ from frosted_bar import FrostedBar
 
 
 class FrostedBarTests(unittest.TestCase):
+    def test_gpu_backdrop_is_composited_without_redrawing_content(self):
+        bar = SimpleNamespace(connect=Mock(), get_mapped=lambda: True,
+                              get_allocated_width=lambda: 120,
+                              get_allocated_height=lambda: 60, queue_draw=Mock())
+        content = SimpleNamespace(connect=Mock(), connect_after=Mock(),
+                                  get_mapped=lambda: True,
+                                  get_allocated_height=lambda: 400, draw=Mock())
+        background = SimpleNamespace(connect=Mock(), connect_after=Mock(),
+                                     draw=lambda context: None)
+        gpu = cairo.ImageSurface(cairo.FORMAT_ARGB32, 5, 5)
+        context = cairo.Context(gpu)
+        context.set_source_rgb(1, 0, 0)
+        context.paint()
+        glass = FrostedBar(bar, content, background, lambda: 'dark',
+                           capture_content=lambda: False, gpu_surface=lambda: gpu)
+        glass.enabled = True
+        glass.drawn(content, None)
+        glass.drawn(background, None)
+        glass.refresh()
+        content.draw.assert_not_called()
+        pixel = struct.unpack_from('=I', glass.surface.get_data(), 0)[0]
+        self.assertGreater((pixel >> 16) & 255, pixel & 255)
+
+    def test_backdrop_can_skip_gpu_content_but_still_draw_background(self):
+        bar = SimpleNamespace(connect=Mock(), get_mapped=lambda: True,
+                              get_allocated_width=lambda: 120,
+                              get_allocated_height=lambda: 60, queue_draw=Mock())
+        content = SimpleNamespace(connect=Mock(), connect_after=Mock(),
+                                  get_mapped=lambda: True,
+                                  get_allocated_height=lambda: 400, draw=Mock())
+        background = SimpleNamespace(connect=Mock(), connect_after=Mock(), draw=Mock())
+        safe = [False]
+        glass = FrostedBar(bar, content, background, lambda: 'dark',
+                           capture_content=lambda: safe[0])
+        glass.enabled = True
+        glass.drawn(content, None)
+        glass.drawn(background, None)
+        glass.refresh()
+        background.draw.assert_called_once()
+        content.draw.assert_not_called()
+        safe[0] = True
+        glass.refresh()
+        content.draw.assert_called_once()
+
     def test_capture_waits_for_library_rows_and_resumes_afterwards(self):
         bar = SimpleNamespace(connect=Mock(), get_mapped=lambda: True,
                               get_allocated_width=lambda: 120,

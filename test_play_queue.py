@@ -526,6 +526,15 @@ class PlayQueueTests(unittest.TestCase):
         self.assertEqual([call.args[1] for call in finish.call_args_list],
                          [True, True, False, False])
 
+    def test_album_art_drag_uses_actual_source_and_rejects_server_changes(self):
+        album = Item('/library/metadata/10', 'Style album')
+        client = object()
+        player = SimpleNamespace(client=client, albums=[], dragged_album=(client, album))
+        selection = SimpleNamespace(get_data=lambda: album.key.encode())
+        self.assertIs(Player.dragged_album_for_selection(player, selection), album)
+        player.client = object()
+        self.assertIsNone(Player.dragged_album_for_selection(player, selection))
+
     def test_queue_pointer_press_keeps_multi_selection_for_reorder(self):
         selection = SimpleNamespace(path_is_selected=lambda _path: True)
         view = SimpleNamespace(get_path_at_pos=lambda _x, _y: ('row', None, None, None),

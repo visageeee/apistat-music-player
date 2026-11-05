@@ -1,0 +1,126 @@
+name: Build Linux and Windows and draft release
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  timestamp:
+    name: Set release timestamp
+    runs-on: ubuntu-24.04
+    outputs:
+      stamp: ${{ steps.timestamp.outputs.stamp }}
+    steps:
+      - name: Generate UTC timestamp
+        id: timestamp
+        run: echo "stamp=$(date -u +%Y-%m-%d_%H-%M-%S-UTC)" >> "$GITHUB_OUTPUT"
+
+  flatpak:
+    needs: timestamp
+    name: Build Flatpak
+    runs-on: ubuntu-24.04
+    container:
+      image: ghcr.io/flathub-infra/flatpak-github-actions:gnome-50
+      options: --privileged
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build Flatpak bundle
+        uses: flatpak/flatpak-github-actions/flatpak-builder@v6
+        with:
+          manifest-path: org.apistat.Apistat.json
+          bundle: Apistat-Flatpak-x86_64-${{ needs.timestamp.outputs.stamp }}.flatpak
+          branch: stable
+          upload-artifact: false
+      - name: Check packaged runtime
+        run: |
+          dbus-run-session -- flatpak build --runtime flatpak_app /app/bin/apistat --self-test
+          dbus-run-session -- flatpak build --runtime flatpak_app python3 -c 'import mutagen, gi; gi.require_version("Secret", "1"); gi.require_version("Gst", "1.0"); from gi.repository import Secret, Gst; Gst.init(None); missing = [name for name in ("flacdec", "mpg123audiodec") if not Gst.ElementFactory.find(name)]; assert not missing, "Missing decoders: " + ", ".join(missing)'
+          flatpak build --runtime flatpak_app python3 -c 'from pathlib import Path; import cairo; assert Path("/app/share/apistat/fonts/Nunito-wght.ttf").is_file(); assert cairo.ImageSurface.create_from_png("/app/share/apistat/apistat.png").get_width() > 0'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Apistat-Flatpak-x86_64-${{ needs.timestamp.outputs.stamp }}
+          path: Apistat-Flatpak-x86_64-${{ needs.timestamp.outputs.stamp }}.flatpak
+          if-no-files-found: error
+
+  windows:
+    needs: timestamp
+    name: Build Windows
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: true
+          install: >-
+            mingw-w64-ucrt-x86_64-python
+            mingw-w64-ucrt-x86_64-python-gobject
+            mingw-w64-ucrt-x86_64-python-cairo
+            mingw-w64-ucrt-x86_64-python-psutil
+            mingw-w64-ucrt-x86_64-python-mutagen
+            mingw-w64-ucrt-x86_64-pyinstaller
+            mingw-w64-ucrt-x86_64-gtk3
+            mingw-w64-ucrt-x86_64-gst-python
+            mingw-w64-ucrt-x86_64-gst-plugins-base
+            mingw-w64-ucrt-x86_64-gst-plugins-good
+            mingw-w64-ucrt-x86_64-gst-plugins-bad
+            mingw-w64-ucrt-x86_64-gst-plugins-ugly
+      - name: Validate source
+        run: |
+          python -m compileall -q .
+          python player.py --self-test
+          python -m unittest discover -q
+      - name: Build portable app
+        run: |
+          pyinstaller --noconfirm --clean windows/Apistat.spec
+          test -f dist/Apistat/Apistat.exe
+          test ! -e dist/Apistat/Apistat-Debug.exe
+      - name: Check frozen runtime
+        shell: pwsh
+        run: |
+          $env:APISTAT_SELF_TEST_REPORT = Join-Path $env:RUNNER_TEMP 'apistat-self-test.txt'
+          $process = Start-Process -FilePath (Resolve-Path dist/Apistat/Apistat.exe) -ArgumentList '--self-test' -PassThru
+          if (-not $process.WaitForExit(120000)) { Stop-Process -Id $process.Id -Force; throw 'Apistat self-test timed out' }
+          if ($process.ExitCode -ne 0) {
+            if (Test-Path $env:APISTAT_SELF_TEST_REPORT) { Get-Content $env:APISTAT_SELF_TEST_REPORT }
+            throw "Apistat self-test failed with exit code $($process.ExitCode)"
+          }
+      - name: Package Windows build
+        shell: pwsh
+        run: Compress-Archive -Path dist/Apistat -DestinationPath Apistat-Windows-x64-${{ needs.timestamp.outputs.stamp }}.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Apistat-Windows-x64-${{ needs.timestamp.outputs.stamp }}
+          path: Apistat-Windows-x64-${{ needs.timestamp.outputs.stamp }}.zip
+          if-no-files-found: error
+
+  draft:
+    name: Prepare draft release
+    needs: [timestamp, flatpak, windows]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: Apistat-*
+          path: release-assets
+          merge-multiple: true
+      - name: Create draft with Linux and Windows packages
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          stamp='${{ needs.timestamp.outputs.stamp }}'
+          flatpak="release-assets/Apistat-Flatpak-x86_64-${stamp}.flatpak"
+          windows="release-assets/Apistat-Windows-x64-${stamp}.zip"
+          for asset in "$flatpak" "$windows"; do test -s "$asset"; done
+          tag="draft-${stamp}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          gh release create "$tag" "$flatpak" "$windows" \
+            --draft --target "$GITHUB_SHA" --title "Apistat development build ${stamp}" \
+            --notes "Development build from commit $GITHUB_SHA, built at ${stamp}. Packages are unsigned; test them before publishing."

@@ -112,6 +112,15 @@ class ClientTests(unittest.TestCase):
         self.assertNotIn('test-secret', path)
         self.assertEqual(token, 'test-secret')
 
+    def test_album_artist_filter_is_forwarded_to_plex(self):
+        self.client.albums('2', 100, sort='titleSort', artist='Artist & Band')
+        path, token = Handler.requests[-1]
+        query = parse_qs(urlsplit(path).query)
+        self.assertEqual(query['type'], ['9'])
+        self.assertEqual(query['artist.title'], ['Artist & Band'])
+        self.assertEqual(query['X-Plex-Container-Start'], ['100'])
+        self.assertEqual(token, 'test-secret')
+
     def test_album_sort_is_forwarded_and_invalid_sort_rejected(self):
         sort = 'artist.titleSort,album.titleSort,album.index,album.id,album.originallyAvailableAt'
         self.client.albums('2', sort=sort)
