@@ -644,7 +644,7 @@ class PlayerControlTests(unittest.TestCase):
                                  nav_drag_insert=None,
                                  get_window=lambda: SimpleNamespace(get_origin=lambda: (1, 50, 100)))
         player.nav_drop_root_y = lambda widget, x, y: Player.nav_drop_root_y(player, widget, x, y)
-        with patch('player.Gtk.drag_set_icon_name'):
+        with patch('player.Gtk.drag_set_icon_widget'):
             Player.nav_drag_begin(player, buttons['now'], object(), 'now')
         self.assertEqual(player.nav_drag_centers, [200, 260, 320, 380])
 

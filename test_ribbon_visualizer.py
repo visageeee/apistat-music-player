@@ -1,12 +1,55 @@
 import unittest
+import time
+
+import gi
+gi.require_version('Gtk', '3.0')
+from gi.repository import Gtk
 
 import cairo
 
-from ribbon_visualizer import (LINE_COUNT, NODE_COUNT, approach,
+from ribbon_visualizer import (LINE_COUNT, NODE_COUNT, RibbonVisualizer, approach,
                                ribbon_profile, trace_curve)
 
 
 class RibbonVisualizerTests(unittest.TestCase):
+    def test_background_visualizer_paints_below_foreground_widgets(self):
+        window = Gtk.OffscreenWindow()
+        window.set_default_size(80, 80)
+        overlay = Gtk.Overlay()
+        window.add(overlay)
+        base = Gtk.DrawingArea()
+        overlay.add(base)
+        ribbon = RibbonVisualizer(windowless=True)
+        self.assertFalse(ribbon.get_has_window())
+        def paint_red(_widget, context):
+            context.set_source_rgb(1, 0, 0)
+            context.paint()
+            return False
+        ribbon.connect_after('draw', paint_red)
+        overlay.add_overlay(ribbon)
+        overlay.set_overlay_pass_through(ribbon, True)
+        foreground = Gtk.DrawingArea()
+        foreground.set_has_window(False)
+        foreground.set_halign(Gtk.Align.CENTER)
+        foreground.set_valign(Gtk.Align.CENTER)
+        foreground.set_size_request(30, 30)
+        def paint_green(_widget, context):
+            context.set_source_rgb(0, 1, 0)
+            context.paint()
+            return False
+        foreground.connect('draw', paint_green)
+        overlay.add_overlay(foreground)
+        window.show_all()
+        deadline = time.monotonic() + .1
+        while time.monotonic() < deadline:
+            while Gtk.events_pending():
+                Gtk.main_iteration()
+        pixbuf = window.get_pixbuf()
+        pixels = pixbuf.get_pixels()
+        offset = 40 * pixbuf.get_rowstride() + 40 * pixbuf.get_n_channels()
+        self.assertEqual(tuple(pixels[offset:offset + 3]), (0, 255, 0))
+        window.destroy()
+
     def test_envelopes_attack_quickly_and_release_gently(self):
         self.assertGreater(approach(0, 1, .05, .075, .34), .4)
         self.assertGreater(approach(1, 0, .05, .075, .34), .8)

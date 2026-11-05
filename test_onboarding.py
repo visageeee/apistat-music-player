@@ -22,6 +22,34 @@ class OnboardingTests(unittest.TestCase):
         Player.restore_connection(player)
         self.assertEqual(actions, ['ready', 'account'])
 
+    def test_source_choice_dispatches_to_local_or_plex(self):
+        for response, expected in ((Gtk.ResponseType.NO, 'local'),
+                                   (Gtk.ResponseType.YES, 'plex'),
+                                   (Gtk.ResponseType.CANCEL, None)):
+            actions = []
+            class Dialog:
+                def __init__(self, **_kwargs):
+                    self.box = Gtk.Box()
+                def add_button(self, *_args):
+                    pass
+                def get_content_area(self):
+                    return self.box
+                def show_all(self):
+                    pass
+                def run(self):
+                    return response
+                def destroy(self):
+                    pass
+            player = SimpleNamespace(finish_startup_loading=lambda: None,
+                                     show_view=lambda _view: None,
+                                     settings_tabs=SimpleNamespace(set_current_page=lambda _page: None),
+                                     status=SimpleNamespace(set_text=lambda _text: None),
+                                     add_local_source=lambda: actions.append('local'),
+                                     choose_server_from_account=lambda: actions.append('plex'))
+            with patch('player.Gtk.Dialog', Dialog):
+                Player.begin_first_run_setup(player)
+            self.assertEqual(actions, [expected] if expected else [])
+
     def test_first_account_connection_asks_for_music_library(self):
         class Dialog:
             def __init__(self, **_kwargs):

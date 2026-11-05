@@ -1,9 +1,9 @@
-"""Validate same-app track drag data before changing Plex playlists or playback."""
+"""Validate same-app track drag data before changing playlists or playback."""
 
 import re
 
 
-TRACK_KEY = re.compile(r'/library/metadata/\d+\Z')
+TRACK_KEY = re.compile(r'(?:/library/metadata/\d+|/local/track/[0-9a-f]{32})\Z')
 
 
 def encode_track_keys(keys):

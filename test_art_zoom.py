@@ -63,6 +63,40 @@ class ArtZoomTests(unittest.TestCase):
         self.assertFalse(player.hero_waveform_active)
         self.assertEqual(player.refresh_live_waveform.call_count, 2)
 
+    def test_background_visualizer_follows_panel_playback_and_theme(self):
+        current = ['styles']
+        tap = Mock()
+        hero = Mock()
+        background = Mock()
+        player = SimpleNamespace(live_waveform_tap=tap, hero_waveform_active=True,
+                                 content_views=SimpleNamespace(get_visible_child_name=lambda: current[0]),
+                                 background_visualizer_enabled=True, gradient_enabled=True,
+                                 theme='dark', stream_open=True, playing=True,
+                                 hero_waveform=hero, background_visualizer=background)
+        Player.refresh_live_waveform(player)
+        tap.set_enabled.assert_called_with(True)
+        hero.set_active.assert_called_with(False)
+        background.set_active.assert_called_with(True)
+        background.set_playing.assert_called_with(True)
+        current[0] = 'library'
+        Player.refresh_live_waveform(player)
+        background.set_active.assert_called_with(False)
+        background.set_visible.assert_called_with(False)
+        tap.set_enabled.assert_called_with(False)
+        current[0] = 'now'
+        Player.refresh_live_waveform(player)
+        background.set_active.assert_called_with(False)
+        hero.set_active.assert_called_with(True)
+        current[0] = 'styles'
+        player.playing = False
+        Player.refresh_live_waveform(player)
+        tap.set_enabled.assert_called_with(False)
+        background.set_playing.assert_called_with(False)
+        player.theme = 'black'
+        Player.refresh_live_waveform(player)
+        background.set_active.assert_called_with(False)
+        background.set_visible.assert_called_with(False)
+
     def test_visualizer_background_click_preserves_song_info_controls(self):
         group = object()
         info = object()

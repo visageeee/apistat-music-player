@@ -64,8 +64,10 @@ def trace_curve(context, width, height, layer, phase, bass, mid, high, pulse,
 
 
 class RibbonVisualizer(Gtk.DrawingArea):
-    def __init__(self):
+    def __init__(self, *, windowless=False):
         super().__init__()
+        if windowless:
+            self.set_has_window(False)
         self.colors = (self._rgba('#5fe1df'), self._rgba('#b58cce'))
         self.target = (0.0, 0.0, 0.0)
         self.line_target = (0.0,) * LINE_COUNT

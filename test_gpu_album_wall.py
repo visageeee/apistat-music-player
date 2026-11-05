@@ -65,14 +65,35 @@ class GPUAlbumWallTests(unittest.TestCase):
         Player.gpu_load_more_albums(player)
         self.assertEqual(player.load_albums.call_count, 1)
 
-    def test_gpu_setting_defaults_off_and_round_trips(self):
+    def test_gpu_setting_defaults_on_and_round_trips(self):
         with tempfile.TemporaryDirectory() as tmp, \
                 patch.object(appearance, 'SETTINGS_PATH', Path(tmp) / 'settings.json'):
-            self.assertFalse(appearance.load_gpu_album_wall_enabled())
+            self.assertTrue(appearance.load_gpu_album_wall_enabled())
             appearance.save_gpu_album_wall_enabled(True)
             self.assertTrue(appearance.load_gpu_album_wall_enabled())
             appearance.save_gpu_album_wall_enabled(False)
             self.assertFalse(appearance.load_gpu_album_wall_enabled())
+
+    def test_gpu_wall_redraws_and_composites_background_visualizer(self):
+        background = Mock()
+        visualizer = Mock()
+        visualizer.get_visible.return_value = True
+        surface = Mock()
+        surface.get_mapped.return_value = True
+        surface.translate_coordinates.return_value = (4, 7)
+        wall = SimpleNamespace(player=SimpleNamespace(shared_background=background,
+                                                       background_visualizer=visualizer),
+                               render_surface=surface, closed=False)
+        context = Mock()
+        GPUAlbumWall.draw_background(wall, None, context)
+        background.draw_gradient.assert_called_once_with(background, context)
+        visualizer.draw_ribbon.assert_called_once_with(visualizer, context)
+        GPUAlbumWall.visualizer_drawn(wall, visualizer, context)
+        surface.queue_draw.assert_called_once()
+        visualizer.get_visible.return_value = False
+        visualizer.draw_ribbon.reset_mock()
+        GPUAlbumWall.draw_background(wall, None, context)
+        visualizer.draw_ribbon.assert_not_called()
 
     def test_click_and_drag_use_the_album_under_the_pointer(self):
         album = SimpleNamespace(key='/library/metadata/1', artist='Artist')

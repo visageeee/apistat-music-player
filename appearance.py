@@ -298,8 +298,31 @@ def load_gradient_enabled():
     return _read_settings().get('album_art_gradient', True) is True
 
 
+def load_background_visualizer_enabled():
+    return _read_settings().get('background_visualizer', False) is True
+
+
+def save_background_visualizer_enabled(enabled):
+    settings = _read_settings()
+    settings['background_visualizer'] = bool(enabled)
+    _write_settings(settings)
+
+
+def load_library_view_mode():
+    mode = _read_settings().get('library_view_mode', 'songs')
+    return mode if mode in ('songs', 'albums') else 'songs'
+
+
+def save_library_view_mode(mode):
+    if mode not in ('songs', 'albums'):
+        raise ValueError('Invalid library view mode')
+    settings = _read_settings()
+    settings['library_view_mode'] = mode
+    _write_settings(settings)
+
+
 def load_gpu_album_wall_enabled():
-    return _read_settings().get('gpu_album_wall', False) is True
+    return _read_settings().get('gpu_album_wall', True) is True
 
 
 def save_gpu_album_wall_enabled(enabled):
@@ -403,6 +426,26 @@ def save_playlist_order(address, token, order):
         orders = {}
     orders[scope] = list(order)
     settings['playlist_orders'] = orders
+    _write_settings(settings)
+
+
+def load_sidebar_note_animation_enabled():
+    return bool(_read_settings().get('sidebar_note_animation_enabled', True))
+
+
+def save_sidebar_note_animation_enabled(enabled):
+    settings = _read_settings()
+    settings['sidebar_note_animation_enabled'] = bool(enabled)
+    _write_settings(settings)
+
+
+def load_sidebar_labels_enabled():
+    return bool(_read_settings().get('sidebar_labels_enabled', False))
+
+
+def save_sidebar_labels_enabled(enabled):
+    settings = _read_settings()
+    settings['sidebar_labels_enabled'] = bool(enabled)
     _write_settings(settings)
 
 

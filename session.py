@@ -27,7 +27,7 @@ def item_from_data(data):
     if not data['key'].startswith('/') or not isinstance(data.get('title'), str):
         return None
     fields = {}
-    for name in ('artist', 'year', 'album', 'number', 'thumb', 'genre', 'mood',
+    for name in ('artist', 'year', 'album', 'number', 'thumb', 'album_key', 'album_thumb', 'genre', 'mood',
                  'label', 'album_artist', 'release_date', 'codec'):
         value = data.get(name, '')
         if not isinstance(value, str):

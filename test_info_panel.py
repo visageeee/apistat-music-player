@@ -65,6 +65,27 @@ class InfoPanelTests(unittest.TestCase):
         player.info_biography.set_text.assert_called_with('Plex description')
         player.info_source_label.set_text.assert_called_with('Artist information from Plex')
 
+    def test_local_artist_lookup_is_on_demand_and_updates_after_file_info(self):
+        client = Mock(is_local=True)
+        client.track_details.return_value = ({'codec': 'flac'}, '')
+        client.artist_description.return_value = ('A biography.', 'https://en.wikipedia.org/wiki/Artist')
+        jobs = []
+        player = SimpleNamespace(
+            info_generation=0, info_source_label=Mock(), info_track_title=Mock(),
+            info_artist_name=Mock(), info_file=Gtk.Label(), info_file_grid=Gtk.Grid(),
+            info_biography=Mock(), queue_client=client,
+            queue=[Item('/local/track/1', 'Song', artist='Artist')], index=0,
+            closed=False, info_revealer=SimpleNamespace(get_reveal_child=lambda: True))
+        player.async_work = lambda work, done, valid, *args: jobs.append((work, done, valid))
+        Player.load_current_info(player)
+        client.artist_description.assert_not_called()
+        jobs[0][1](jobs[0][0]())
+        self.assertEqual(len(jobs), 2)
+        jobs[1][1](jobs[1][0]())
+        client.artist_description.assert_called_once_with('Artist', '')
+        player.info_biography.set_text.assert_called_with('A biography.')
+        player.info_source_label.set_text.assert_called_with('Wikipedia · https://en.wikipedia.org/wiki/Artist')
+
     def test_resize_from_both_edges_clamps_and_saves_width(self):
         from gi.repository import Gdk
         player = SimpleNamespace(info_panel_resize=None, info_panel_width=360,

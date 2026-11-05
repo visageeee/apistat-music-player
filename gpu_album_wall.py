@@ -1,4 +1,4 @@
-"""Experimental virtualized GPU album wall for GTK 3."""
+"""Virtualized GPU album wall for GTK 3."""
 import ctypes
 import math
 from types import SimpleNamespace
@@ -143,6 +143,9 @@ class GPUAlbumWall(Gtk.Box, GLProgram):
         self.background_state = None
         if background is not None:
             background.connect_after('draw', self.shared_background_drawn)
+        visualizer = getattr(player, 'background_visualizer', None)
+        if visualizer is not None:
+            visualizer.connect_after('draw', self.visualizer_drawn)
         self.scrollbar = Gtk.Scrollbar(orientation=Gtk.Orientation.VERTICAL, adjustment=self.adjustment)
         self.scrollbar.set_margin_top(36)
         self.pack_start(self.scrollbar, False, False, 0)
@@ -161,7 +164,15 @@ class GPUAlbumWall(Gtk.Box, GLProgram):
         context.save()
         context.translate(-position[-2], -position[-1])
         background.draw_gradient(background, context)
+        visualizer = getattr(self.player, 'background_visualizer', None)
+        if visualizer is not None and visualizer.get_visible():
+            visualizer.draw_ribbon(visualizer, context)
         context.restore()
+        return False
+
+    def visualizer_drawn(self, _visualizer, _context):
+        if not self.closed and self.render_surface.get_mapped():
+            self.render_surface.queue_draw()
         return False
 
     def shared_background_drawn(self, background, _context):

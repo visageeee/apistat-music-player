@@ -54,15 +54,19 @@ from appearance import (ALBUM_SIZE_RANGE, ALBUM_COLUMN_RANGE, NOW_SIZE_RANGE,
                         load_star_ratings_hidden,
                         load_smooth_scrolling_enabled, load_search_shortcut, save_search_shortcut,
                         load_custom_font, load_gradient_enabled, load_search_index_enabled,
+                        load_background_visualizer_enabled, save_background_visualizer_enabled,
                         load_album_margins, save_album_margins,
                         load_keep_style_playing_enabled, save_keep_style_playing_enabled,
                         load_gpu_album_wall_enabled, save_gpu_album_wall_enabled,
                         load_library_layout, save_library_layout,
+                        load_library_view_mode, save_library_view_mode,
                         load_library_sort_buttons,
                         load_info_panel_width, save_info_panel_width,
                         load_playlist_order, save_playlist_order,
                         load_sidebar_order, save_sidebar_order,
                         load_sidebar_visible, save_sidebar_visible,
+                        load_sidebar_labels_enabled, save_sidebar_labels_enabled,
+                        load_sidebar_note_animation_enabled, save_sidebar_note_animation_enabled,
                         load_theme, save_theme,
                         theme_gradient_colors,
                         load_timeline_waveform_enabled, save_timeline_waveform_enabled,
@@ -82,6 +86,7 @@ from appearance import (ALBUM_SIZE_RANGE, ALBUM_COLUMN_RANGE, NOW_SIZE_RANGE,
 from local_cache import (LocalCache, build_album_index, cached_album_page,
                          search_albums, sort_albums)
 from library_catalog import build_song_catalog, filter_sort_songs
+from local_library import LocalLibrary, load_sources, save_sources, create_source, DATA as LOCAL_LIBRARY_DATA
 from music_facets import MusicFacet
 from style_art import square_preview
 from smart_playlists import apply_definition, load_for_scope, save_for_scope
@@ -92,7 +97,7 @@ from drag_payload import encode_track_keys, decode_track_keys
 from ratings import filled_stars, star_text, stars_from_click
 from window_shape import rounded_region
 import windows_window
-from track_waveform import TrackWaveform, analyze_track_waveform
+from track_waveform import TrackWaveform, analyze_track_waveform, analyze_audio_uri
 from ribbon_audio import RibbonAudioTap
 from ribbon_visualizer import RibbonVisualizer
 from frosted_bar import FrostedBar
@@ -103,6 +108,8 @@ from album_card import FlipCard
 from gtk_snapshot import draw_allocated
 from app_assets import app_icon, placeholder_art, SMALL_PLACEHOLDER_LOGO_RATIO
 from smooth_scroll import SmoothScroller
+from sidebar_icons import CUSTOM_SIDEBAR_ICONS, SidebarIcon
+from library_album_view import AlbumGroupOverlay, album_group_row_height, group_songs_by_album
 from background_drag_scroll import attach_background_drag
 from busy_indicator import BusyIndicator
 from session import load_session, save_session, item_to_data
@@ -217,7 +224,7 @@ class LyricsTrackInfo(Gtk.Box):
 
 
 LIBRARY_COLUMNS = (
-    ('Song', 'title'), ('Artist', 'artist'), ('Album', 'album'),
+    ('Name', 'title'), ('Artist', 'artist'), ('Album', 'album'),
     ('Time', 'duration'), ('Rating', 'user_rating'), ('Genre', 'genre'), ('Year', 'year'),
     ('Added', 'added_at'), ('Mood', 'mood'), ('Label', 'label'),
     ('Album artist', 'album_artist'), ('Release date', 'release_date'),
@@ -321,6 +328,9 @@ class Player(Gtk.Window):
         self.restored_credentials = None
         self.credential_warning = ''
         self.sections = []
+        self.source_config = load_sources()
+        self.account_servers = []
+        self._updating_source_selector = False
         self.albums = []
         self.tracks = []
         self.queue = []
@@ -490,6 +500,8 @@ class Player(Gtk.Window):
             #player-bar #transport-skip { min-width: 40px; min-height: 40px; padding: 0; }
             #player-bar #transport-skip:disabled image { opacity: 0.35; }
             #player-bar #transport-play { min-width: 52px; min-height: 52px; padding: 0; }
+            #side-nav #sidebar-icon-label { font-size: 10px; }
+            #side-nav.show-labels button { padding: 5px 3px; }
             #album-track-number { font-weight: bold; }
             #full-library-button { background: transparent;
                 border: 0; box-shadow: none; border-radius: 0; padding: 6px 8px; }
@@ -532,6 +544,12 @@ class Player(Gtk.Window):
             #side-nav button.active { background: #35302a; }
             #side-nav image { color: #eee; }
             #library-split { background: #181818; border: 0; box-shadow: none; }
+            #library-stable-scrollbar { min-width: 14px; padding: 0; margin: 0;
+                border: 0; }
+            #library-stable-scrollbar slider,
+            #library-stable-scrollbar slider:hover,
+            #library-stable-scrollbar slider:active {
+                min-width: 6px; margin: 0 4px; border: 0; transition: none; }
             #library-split separator { background: #181818; border: 0;
                 box-shadow: none; min-width: 8px; }
             #library-side-split separator { background: #363636; border: 0;
@@ -634,6 +652,7 @@ class Player(Gtk.Window):
             Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION + 5)
         self.theme = load_theme()
         self.gradient_enabled = load_gradient_enabled()
+        self.background_visualizer_enabled = load_background_visualizer_enabled()
         self.frosted_player_bar = load_frosted_player_bar()
         self.timeline_waveform_enabled = load_timeline_waveform_enabled()
         self.accent_color = load_accent_color()
@@ -644,6 +663,7 @@ class Player(Gtk.Window):
         self.star_ratings_hidden = load_star_ratings_hidden()
         self.search_shortcut = load_search_shortcut()
         self.smooth_scrolling_enabled = load_smooth_scrolling_enabled()
+        self.library_view_mode = load_library_view_mode()
         self.smooth_scrollers = weakref.WeakSet()
         self.tooltip_texts = weakref.WeakKeyDictionary()
         self.desktop_tooltips_enabled = Gtk.Settings.get_default().get_property('gtk-enable-tooltips')
@@ -737,6 +757,10 @@ class Player(Gtk.Window):
         self.sidebar_drop_surface.connect('drag-data-received', self.nav_drag_data_received)
         self.sidebar_order = load_sidebar_order()
         self.sidebar_visible = load_sidebar_visible()
+        self.sidebar_labels_enabled = load_sidebar_labels_enabled()
+        self.sidebar_note_animation_enabled = load_sidebar_note_animation_enabled()
+        if self.sidebar_labels_enabled:
+            self.sidebar.get_style_context().add_class('show-labels')
         self.nav_buttons = {}
         nav_items = {'now': ('Now playing', 'media-playback-start-symbolic'),
                      'albums': ('Albums', 'media-optical-symbolic'),
@@ -769,6 +793,7 @@ class Player(Gtk.Window):
         self.sidebar_volume_button = Gtk.Button()
         self.sidebar_volume_button.set_image(Gtk.Image.new_from_icon_name(
             'audio-volume-high-symbolic', Gtk.IconSize.LARGE_TOOLBAR))
+        self.setup_sidebar_label(self.sidebar_volume_button, 'Volume')
         self.sidebar_volume_button.get_accessible().set_name('Volume')
         self.set_tooltip(self.sidebar_volume_button, 'Scroll to change volume; click to mute')
         self.sidebar_volume_button.add_events(Gdk.EventMask.SCROLL_MASK | Gdk.EventMask.SMOOTH_SCROLL_MASK)
@@ -803,6 +828,12 @@ class Player(Gtk.Window):
         self.shared_background = DitheredGradient()
         self.shared_background.connect('size-allocate', self.background_allocated)
         self.content_overlay.add(self.shared_background)
+        self.background_visualizer = RibbonVisualizer(windowless=True)
+        self.background_visualizer.set_no_show_all(True)
+        self.background_visualizer.set_hexpand(True)
+        self.background_visualizer.set_vexpand(True)
+        self.content_overlay.add_overlay(self.background_visualizer)
+        self.content_overlay.set_overlay_pass_through(self.background_visualizer, True)
         self.content_overlay.add_overlay(self.content_views)
         main.pack_start(self.content_overlay, True, True, 0)
         self.build_info_panel()
@@ -1050,7 +1081,7 @@ class Player(Gtk.Window):
         bar.get_style_context().add_provider(self.frosted_style, Gtk.STYLE_PROVIDER_PRIORITY_USER)
         self.frosted_bar = FrostedBar(bar, self.content_views, self.shared_background,
                                       lambda: self.theme,
-                                      lambda: getattr(self, 'timeline_stack', None),
+                                      lambda: Player.solid_timeline_background(self),
                                       capture_allowed=lambda: Player.library_frosted_capture_allowed(self),
                                       capture_content=lambda: not Player.gpu_wall_is_mapped(self),
                                       gpu_surface=lambda: Player.gpu_glass_surface(self, self.player_bar))
@@ -1177,6 +1208,7 @@ class Player(Gtk.Window):
                                      step_increment=0.05, page_increment=0.1)
         self.pipeline.set_property('volume', 0.8)
         self.hero_waveform.set_volume(0.8)
+        self.background_visualizer.set_volume(0.8)
         self.volume.connect('value-changed',
                             lambda adjustment: self.volume_changed(adjustment, adjustment.get_value()))
         self.update_sidebar_volume()
@@ -1247,6 +1279,8 @@ class Player(Gtk.Window):
         self.pipeline.set_property('volume', value)
         if hasattr(self, 'hero_waveform'):
             self.hero_waveform.set_volume(value)
+        if hasattr(self, 'background_visualizer'):
+            self.background_visualizer.set_volume(value)
         if hasattr(self, 'mpris'):
             self.mpris.changed()
         if hasattr(self, 'sidebar_volume_button'):
@@ -1267,8 +1301,7 @@ class Player(Gtk.Window):
                 'audio-volume-low-symbolic' if value < .34 else
                 'audio-volume-medium-symbolic' if value < .67 else
                 'audio-volume-high-symbolic')
-        self.sidebar_volume_button.set_image(Gtk.Image.new_from_icon_name(
-            icon, Gtk.IconSize.LARGE_TOOLBAR))
+        self.sidebar_volume_button.get_image().set_from_icon_name(icon, Gtk.IconSize.LARGE_TOOLBAR)
         self.sidebar_volume_button.get_accessible().set_description(f'{round(value * 100)} percent')
         if self.sidebar_volume_visible:
             self.sidebar_volume_indicator.queue_draw()
@@ -1405,8 +1438,8 @@ class Player(Gtk.Window):
                 box-shadow: inset 0 0 0 2px {color}; }}
             #settings-tab-button.active {{ background: {wash};
                 border-bottom-color: {color}; }}
-            #smart-playlist-header, #playlist-header {{
-                border-bottom: 2px solid {color}; }}
+            #playlist-header-underline {{ background: {faded_accent}; min-height: 2px; border: 0; }}
+            #side-nav button.active #sidebar-icon-label {{ color: {color}; }}
             #style-mode-button.active {{ background: {wash};
                 border-bottom: 2px solid {color}; }}
             #style-result-mode.active {{ background: {wash};
@@ -1428,14 +1461,16 @@ class Player(Gtk.Window):
         if hasattr(self, 'hero_waveform'):
             wave_colors = self.current_wave_colors or (color, color)
             self.hero_waveform.set_colors(*wave_colors)
+        if hasattr(self, 'background_visualizer'):
+            wave_colors = self.current_wave_colors or (color, color)
+            self.background_visualizer.set_colors(*wave_colors)
         if hasattr(self, 'lyrics_highlight'):
             self.lyrics_highlight.set_property('foreground', color)
         if hasattr(self, 'top_frosted_style'):
             self.update_frosted_top_style()
         if hasattr(self, 'sidebar_volume_indicator') and self.sidebar_volume_visible:
             self.sidebar_volume_indicator.queue_draw()
-        if hasattr(self, 'nav_buttons') and 'styles' in self.nav_buttons:
-            self.nav_buttons['styles'].get_image().queue_draw()
+        Player.redraw_sidebar_icons(self)
         for name in ('song_view', 'queue_view', 'track_view'):
             view = getattr(self, name, None)
             if view is not None:
@@ -1562,6 +1597,17 @@ class Player(Gtk.Window):
             '''
         else:
             css = ''
+        if self.theme != 'black':
+            # These panels sit above the shared gradient and ribbon. Keep their
+            # surfaces transparent while preserving card and selection styling.
+            css += '''
+                #styles-panel, #styles-results, #style-scroll, #style-scroll viewport,
+                #style-grid, #style-song-scroll, #style-song-scroll viewport,
+                #style-song-view, #styles-results #library-wall,
+                #styles-results #library-wall viewport {
+                    background: transparent; background-image: none;
+                }
+            '''
         css += '''
             #album-sort-bar #album-actions button,
             #album-sort-bar #album-actions button:hover,
@@ -1573,8 +1619,7 @@ class Player(Gtk.Window):
         self.theme_provider.load_from_data(css.encode())
         if hasattr(self, 'resize_grip'):
             self.resize_grip.queue_draw()
-        if hasattr(self, 'nav_buttons') and 'styles' in self.nav_buttons:
-            self.nav_buttons['styles'].get_image().queue_draw()
+        Player.redraw_sidebar_icons(self)
         if hasattr(self, 'gradient_toggle'):
             self.gradient_toggle.set_sensitive(self.theme != 'black')
         fallback = '#f5f5f3' if self.theme == 'light' else '#000000'
@@ -1591,7 +1636,10 @@ class Player(Gtk.Window):
                     getattr(tile, 'back_art_colors', None), self.theme))
         if hasattr(self, 'shared_background'):
             self.render_gradient()
+        if hasattr(self, 'hero_waveform'):
+            self.refresh_live_waveform()
         if hasattr(self, 'song_view'):
+            Player.bind_song_cell_backgrounds(self)
             self.song_view.queue_draw()
         if hasattr(self, 'queue_store'):
             self.refresh_queue_view()
@@ -2052,6 +2100,13 @@ class Player(Gtk.Window):
 
     def restore_connection(self):
         self.finish_startup_loading()
+        sources = getattr(self, 'source_config', {'active': '', 'local': []})
+        active = sources.get('active', '')
+        local = next((item for item in sources['local']
+                      if active == 'local:' + item['id']), None)
+        if local:
+            self.connect_local_source(local)
+            return False
         self.status.set_text('Looking for saved server login…')
         def restored(credentials):
             if credentials:
@@ -2069,9 +2124,22 @@ class Player(Gtk.Window):
     def begin_first_run_setup(self):
         self.finish_startup_loading()
         self.show_view('settings')
-        self.settings_tabs.set_current_page(0)
-        self.status.set_text('Link your Plex account, then choose a server and music library.')
-        self.choose_server_from_account()
+        self.settings_tabs.set_current_page(2)
+        self.status.set_text('Choose a Plex server or add a local music folder in Library settings.')
+        dialog = Gtk.Dialog(title='Choose a music library', transient_for=self, modal=True)
+        dialog.add_button('Later', Gtk.ResponseType.CANCEL)
+        dialog.add_button('Local music folder', Gtk.ResponseType.NO)
+        dialog.add_button('Plex server', Gtk.ResponseType.YES)
+        box = dialog.get_content_area()
+        box.set_border_width(18)
+        box.pack_start(Gtk.Label(label='Where is your music library?', xalign=0), False, False, 0)
+        dialog.show_all()
+        response = dialog.run()
+        dialog.destroy()
+        if response == Gtk.ResponseType.NO:
+            self.add_local_source()
+        elif response == Gtk.ResponseType.YES:
+            self.choose_server_from_account()
         return False
 
     def choose_initial_library(self, sections):
@@ -2127,6 +2195,8 @@ class Player(Gtk.Window):
         def ready(result):
             self.remote_link_loading = False
             self.remote_link_token, self.remote_link_user = result
+            if result[0] and result[1] and hasattr(self, 'source_selector'):
+                self.refresh_account_sources()
             if self.remote_receiver:
                 self.remote_receiver.set_link(*result)
             if self.remote_config['enabled']:
@@ -2218,7 +2288,7 @@ class Player(Gtk.Window):
         receiver = CompanionReceiver(self.remote_config['identifier'],
                                      self.remote_config['name'], self.remote_account,
                                      self.apply_remote_command, self.verify_remote_token)
-        if self.client:
+        if self.client and not getattr(self.client, 'is_local', False):
             receiver.set_server(self.client, self.remote_server_machine)
         receiver.set_link(self.remote_link_token, self.remote_link_user)
         def work():
@@ -2381,6 +2451,8 @@ class Player(Gtk.Window):
             return user
         def ready(user):
             self.remote_link_token, self.remote_link_user = token, user
+            if hasattr(self, 'source_selector'):
+                self.refresh_account_sources()
             with self.remote_token_lock:
                 self.remote_token_cache.clear()
             if self.remote_receiver:
@@ -2396,6 +2468,169 @@ class Player(Gtk.Window):
             self.account_status.set_text(f'Could not save Plex link in {store}.')
             self.update_remote_status('Could not save Plex link; no plaintext fallback is used.')
         self.remote_work(work, ready, failed)
+
+    def populate_source_selector(self):
+        if not hasattr(self, 'source_selector'):
+            return
+        self._updating_source_selector = True
+        try:
+            self.source_selector.remove_all()
+            self.source_selector.append('plex:current', 'Current Plex server')
+            for server in self.account_servers:
+                self.source_selector.append('plex:' + server.identifier,
+                                            'Plex: ' + server.name + ('' if server.owned else ' (shared)'))
+            for source in self.source_config['local']:
+                self.source_selector.append('local:' + source['id'], 'Local: ' + source['name'])
+            client = getattr(self, 'client', None)
+            active = ('local:' + client.source['id'] if getattr(client, 'is_local', False) else
+                      'plex:' + self.remote_server_machine if client and self.remote_server_machine else
+                      self.source_config.get('active', 'plex:current'))
+            if not self.source_selector.set_active_id(active):
+                self.source_selector.set_active_id('plex:current')
+            is_local = bool(getattr(client, 'is_local', False))
+            if hasattr(self, 'local_rescan_button'):
+                self.local_rescan_button.set_sensitive(is_local)
+                self.local_remove_button.set_sensitive(is_local)
+        finally:
+            self._updating_source_selector = False
+
+    def refresh_account_sources(self, *_):
+        if self.remote_link_loading:
+            self.account_status.set_text('Checking saved Plex account link…')
+            return
+        if not self.remote_link_token:
+            self.start_remote_link()
+            return
+        token = self.remote_link_token
+        def ready(servers):
+            if token != self.remote_link_token:
+                return
+            self.account_servers = servers
+            self.populate_source_selector()
+            self.account_status.set_text('Linked to Plex account')
+        self.remote_work(lambda: self.remote_account.resources(token), ready,
+                         lambda _error: self.account_status.set_text('Could not list Plex servers.'))
+
+    def source_selected(self, selector):
+        if self._updating_source_selector:
+            return
+        chosen = selector.get_active_id() or ''
+        client = getattr(self, 'client', None)
+        if chosen.startswith('local:'):
+            source = next((item for item in self.source_config['local']
+                           if 'local:' + item['id'] == chosen), None)
+            if source and not (getattr(client, 'is_local', False) and client.source['id'] == source['id']):
+                self.connect_local_source(source)
+        elif chosen == 'plex:current':
+            if client is None or getattr(client, 'is_local', False):
+                self.source_config['active'] = ''
+                self.restore_connection()
+        elif chosen.startswith('plex:'):
+            server = next((item for item in self.account_servers
+                           if 'plex:' + item.identifier == chosen), None)
+            if server and (getattr(client, 'is_local', False) or self.remote_server_machine != server.identifier):
+                self.connect_account_server(server)
+
+    def add_local_source(self, *_):
+        dialog = Gtk.FileChooserNative.new('Choose a local music folder', self,
+                                           Gtk.FileChooserAction.SELECT_FOLDER, 'Add', 'Cancel')
+        response = dialog.run()
+        path = dialog.get_filename() if response == Gtk.ResponseType.ACCEPT else None
+        dialog.destroy()
+        if not path:
+            return
+        try:
+            source = create_source(path)
+            existing = next((item for item in self.source_config['local']
+                             if item['path'] == source['path']), None)
+            if existing is None:
+                self.source_config['local'].append(source)
+                save_sources(self.source_config)
+            else:
+                source = existing
+            self.connect_local_source(source)
+        except (OSError, ValueError) as error:
+            self.status.set_text(f'Could not add local library: {error}')
+
+    def connect_local_source(self, source):
+        try:
+            client = LocalLibrary(source)
+        except (OSError, ValueError) as error:
+            self.status.set_text(f'Could not open local library: {error}')
+            self.populate_source_selector()
+            return
+        self.connect_to_server('', '', source=client)
+
+    def rescan_local_source(self, *_, force=True):
+        client = self.client
+        if not getattr(client, 'is_local', False):
+            return
+        self.status.set_text('Scanning local music…')
+        self.local_rescan_button.set_sensitive(False)
+        valid = lambda: not self.closed and self.client is client
+        def done(result):
+            self.local_rescan_button.set_sensitive(True)
+            if result is None:
+                return
+            count, errors = result
+            self.index_generation += 1
+            self.indexed_albums = None
+            self.index_section = None
+            self.index_building = False
+            self.artist_catalog = None
+            self.album_search_catalog = None
+            self.song_view_cache.clear()
+            self.invalidate_song_catalog()
+            self.load_albums(force_refresh=True)
+            self.load_songs()
+            self.status.set_text(f'Scanned {count} local tracks' +
+                                 (f' • {errors} files or folders could not be read' if errors else ''))
+        def failed():
+            self.local_rescan_button.set_sensitive(True)
+            self.status.set_text('Local music folder is unavailable or could not be scanned.')
+        self.async_work(lambda: client.scan(valid, force=force), done, valid, failed)
+
+    def remove_local_source(self, *_):
+        client = self.client
+        if not getattr(client, 'is_local', False):
+            return
+        dialog = Gtk.MessageDialog(transient_for=self, modal=True, message_type=Gtk.MessageType.QUESTION,
+                                   buttons=Gtk.ButtonsType.NONE,
+                                   text=f'Remove “{client.source["name"]}” from Apistat?')
+        dialog.format_secondary_text('Your music files will not be deleted.')
+        dialog.add_buttons('Cancel', Gtk.ResponseType.CANCEL, 'Remove', Gtk.ResponseType.OK)
+        response = dialog.run()
+        dialog.destroy()
+        if response != Gtk.ResponseType.OK:
+            return
+        updated = {'local': [item for item in self.source_config['local']
+                             if item['id'] != client.source['id']], 'active': ''}
+        try:
+            save_sources(updated)
+        except OSError:
+            self.status.set_text('Could not save library sources.')
+            return
+        self.source_config = updated
+        self.connection_generation += 1
+        self.generation += 1
+        self.stop(remember=False)
+        self.client = self.queue_client = None
+        self.remote_server_machine = ''
+        if self.remote_receiver:
+            self.remote_receiver.set_server(None, '')
+        self.library.remove_all()
+        self.clear_wall()
+        self.albums, self.tracks, self.songs, self.queue = [], [], [], []
+        self.index = -1
+        self.selected_album = self.queue_album = None
+        self.track_store.clear()
+        self.song_store.clear()
+        self.song_view_cache.clear()
+        self.invalidate_song_catalog()
+        self.refresh_queue_view()
+        self.server_label.set_text('No library selected')
+        self.status.set_text('Local library removed; music files were not changed.')
+        self.populate_source_selector()
 
     def choose_server_from_account(self, *_):
         if self.remote_link_loading:
@@ -2590,8 +2825,9 @@ class Player(Gtk.Window):
 
     def add_nav_button(self, view, label, icon):
         button = Gtk.Button()
-        button.set_image(self.sparkle_icon() if view == 'styles' else
+        button.set_image(SidebarIcon(self, view) if view in CUSTOM_SIDEBAR_ICONS else
                          Gtk.Image.new_from_icon_name(icon, Gtk.IconSize.LARGE_TOOLBAR))
+        self.setup_sidebar_label(button, 'Moods\n& styles' if view == 'styles' else label)
         self.set_tooltip(button, label)
         button.get_accessible().set_name(label)
         button.connect('clicked', lambda *_: self.show_view(view))
@@ -2608,32 +2844,56 @@ class Player(Gtk.Window):
         self.nav_buttons[view] = button
         return button
 
-    def sparkle_icon(self):
-        icon = Gtk.DrawingArea()
-        icon.set_size_request(28, 28)
-        icon.connect('draw', self.draw_sparkles)
-        return icon
+    def setup_sidebar_label(self, button, text):
+        button.set_label(text)
+        button.set_always_show_image(True)
+        button.set_image_position(Gtk.PositionType.TOP)
+        def find_label(widget):
+            if isinstance(widget, Gtk.Label):
+                return widget
+            if isinstance(widget, Gtk.Container):
+                for child in widget.get_children():
+                    found = find_label(child)
+                    if found is not None:
+                        return found
+            return None
+        label = find_label(button)
+        label.set_name('sidebar-icon-label')
+        label.set_justify(Gtk.Justification.CENTER)
+        label.set_no_show_all(True)
+        label.set_visible(self.sidebar_labels_enabled)
+        button.sidebar_label = label
 
-    def draw_sparkles(self, _icon, cr):
-        active = (hasattr(self, 'content_views') and
-                  self.content_views.get_visible_child_name() == 'styles')
-        color = ((self.current_art_bright if self.art_accent_enabled else None) or
-                 self.accent_color) if active else (
-                     '#202326' if self.theme == 'light' else '#eeeeee')
-        rgb = [int(color[index:index + 2], 16) / 255 for index in (1, 3, 5)]
-        cr.set_source_rgb(*rgb)
-        for center_x, center_y, outer, inner in ((13, 13, 7, 2.2),
-                                                  (23, 5, 3.2, 1.0),
-                                                  (5, 22, 3.6, 1.1)):
-            for point in range(8):
-                angle = -math.pi / 2 + point * math.pi / 4
-                radius = outer if point % 2 == 0 else inner
-                x = center_x + math.cos(angle) * radius
-                y = center_y + math.sin(angle) * radius
-                (cr.move_to if point == 0 else cr.line_to)(x, y)
-            cr.close_path()
-            cr.fill()
-        return False
+    def sidebar_labels_changed(self, button):
+        self.sidebar_labels_enabled = button.get_active()
+        style = self.sidebar.get_style_context()
+        if self.sidebar_labels_enabled:
+            style.add_class('show-labels')
+        else:
+            style.remove_class('show-labels')
+        for nav_button in list(self.nav_buttons.values()) + [self.sidebar_volume_button]:
+            nav_button.sidebar_label.set_visible(self.sidebar_labels_enabled)
+        try:
+            save_sidebar_labels_enabled(self.sidebar_labels_enabled)
+        except OSError:
+            self.status.set_text('Could not save sidebar label setting')
+
+    def sidebar_note_animation_changed(self, button):
+        self.sidebar_note_animation_enabled = button.get_active()
+        now_icon = self.nav_buttons['now'].get_image()
+        if isinstance(now_icon, SidebarIcon):
+            now_icon.set_playing(self.sidebar_note_animation_enabled and self.playing)
+        try:
+            save_sidebar_note_animation_enabled(self.sidebar_note_animation_enabled)
+        except OSError:
+            self.status.set_text('Could not save sidebar animation setting')
+
+    @staticmethod
+    def redraw_sidebar_icons(player):
+        for button in getattr(player, 'nav_buttons', {}).values():
+            image = button.get_image()
+            if isinstance(image, SidebarIcon):
+                image.queue_draw()
 
     def nav_drag_begin(self, button, context, view):
         self.nav_drag_source = view
@@ -2646,8 +2906,10 @@ class Player(Gtk.Window):
                                  for name in others]
         self.nav_drag_insert = sum(self.sidebar_order.index(name) <
                                    self.sidebar_order.index(view) for name in others)
-        if view == 'styles':
-            Gtk.drag_set_icon_widget(context, self.sparkle_icon(), 14, 14)
+        if view in CUSTOM_SIDEBAR_ICONS:
+            drag_icon = SidebarIcon(self, view)
+            drag_icon.show()
+            Gtk.drag_set_icon_widget(context, drag_icon, 14, 14)
         else:
             name, _size = button.get_image().get_icon_name()
             Gtk.drag_set_icon_name(context, name, 18, 18)
@@ -2763,7 +3025,7 @@ class Player(Gtk.Window):
                 context.add_class('active')
             else:
                 context.remove_class('active')
-        self.nav_buttons['styles'].get_image().queue_draw()
+        Player.redraw_sidebar_icons(self)
         if hasattr(self, 'status'):
             self.status_changed()
 
@@ -2961,7 +3223,8 @@ class Player(Gtk.Window):
         item('Show info', lambda: self.show_track_info(song))
         item('Add to queue', lambda: self.enqueue_tracks([song]))
         item('Play next', lambda: self.enqueue_tracks([song], play_next=True))
-        item('Add similar songs to queue', lambda: self.enqueue_similar_songs(song))
+        if not getattr(self.client, 'is_local', False):
+            item('Add similar songs to queue', lambda: self.enqueue_similar_songs(song))
         loved = song.user_rating >= 9.5
         item('Remove Love' if loved else 'Love Song',
              lambda: self.set_song_loved(song, not loved))
@@ -3286,12 +3549,32 @@ class Player(Gtk.Window):
     def refresh_live_waveform(self):
         if self.live_waveform_tap is None:
             return
-        active = (self.hero_waveform_active and self.stream_open and self.playing and
-                  self.content_views.get_visible_child_name() == 'now')
-        self.live_waveform_tap.set_enabled(active)
-        self.hero_waveform.set_active(self.hero_waveform_active and
-                                      self.content_views.get_visible_child_name() == 'now')
-        self.hero_waveform.set_playing(active)
+        view = self.content_views.get_visible_child_name()
+        shown = self.hero_waveform_active and view == 'now'
+        background = (self.hero_waveform_active and view not in ('now', 'library', 'loading') and
+                      getattr(self, 'background_visualizer_enabled', False) and
+                      self.gradient_enabled and self.theme != 'black')
+        playing = self.stream_open and self.playing
+        self.live_waveform_tap.set_enabled(bool((shown or background) and playing))
+        self.hero_waveform.set_active(shown)
+        self.hero_waveform.set_playing(bool(shown and playing))
+        visualizer = getattr(self, 'background_visualizer', None)
+        if visualizer is not None:
+            visibility_changed = visualizer.get_visible() != background
+            visualizer.set_visible(background)
+            visualizer.set_active(background)
+            visualizer.set_playing(bool(background and playing))
+            wall = getattr(self, 'gpu_wall', None)
+            if visibility_changed and wall is not None:
+                wall.render_surface.queue_draw()
+
+    def background_visualizer_changed(self, button):
+        self.background_visualizer_enabled = button.get_active()
+        self.refresh_live_waveform()
+        try:
+            save_background_visualizer_enabled(self.background_visualizer_enabled)
+        except OSError:
+            self.status.set_text('Could not save the appearance setting.')
 
     def rate_now_track(self, _button, stars):
         if 0 <= self.index < len(self.queue) and (self.stream_open or self.remote_opening):
@@ -3528,6 +3811,17 @@ class Player(Gtk.Window):
                 self.status.set_text('Could not save artwork size.')
         return True
 
+    @staticmethod
+    def library_sidebar_heading(text, icon):
+        row = Gtk.Box(spacing=8)
+        row.set_margin_start(8)
+        row.set_margin_end(32)
+        row.pack_start(Gtk.Image.new_from_icon_name(icon, Gtk.IconSize.MENU), False, False, 0)
+        label = Gtk.Label(label=text, xalign=0)
+        label.set_name('full-library-title')
+        row.pack_start(label, True, True, 0)
+        return row
+
     def build_library_view(self):
         split = Gtk.Paned(orientation=Gtk.Orientation.HORIZONTAL)
         split.set_name('library-split')
@@ -3557,16 +3851,24 @@ class Player(Gtk.Window):
         smart_panel = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6, margin=8)
         smart_panel.set_margin_end(0)
         smart_panel.set_name('smart-playlist-panel')
-        smart_header = Gtk.Box(spacing=4)
+        smart_header = Gtk.Overlay()
         smart_header.set_name('smart-playlist-header')
-        smart_header.pack_start(Gtk.Label(label='SMART PLAYLISTS', xalign=0), True, True, 0)
+        smart_header.add(self.library_sidebar_heading('Smart playlists', 'emblem-system-symbolic'))
         self.new_smart_playlist_button = Gtk.Button.new_from_icon_name(
             'list-add-symbolic', Gtk.IconSize.BUTTON)
         self.set_tooltip(self.new_smart_playlist_button, 'Create a local smart playlist')
         self.new_smart_playlist_button.get_accessible().set_name('Create smart playlist')
         self.new_smart_playlist_button.connect('clicked', self.create_smart_playlist_dialog)
-        smart_header.pack_end(self.new_smart_playlist_button, False, False, 0)
-        smart_panel.pack_start(smart_header, False, False, 0)
+        self.new_smart_playlist_button.set_halign(Gtk.Align.END)
+        self.new_smart_playlist_button.set_valign(Gtk.Align.CENTER)
+        self.new_smart_playlist_button.set_margin_bottom(2)
+        smart_header.add_overlay(self.new_smart_playlist_button)
+        smart_header_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+        smart_header_box.pack_start(smart_header, False, False, 0)
+        underline = Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL)
+        underline.set_name('playlist-header-underline')
+        smart_header_box.pack_start(underline, False, False, 0)
+        smart_panel.pack_start(smart_header_box, False, False, 0)
         self.smart_playlist_list = Gtk.ListBox()
         self.smart_playlist_list.set_name('smart-playlist-list')
         self.smart_playlist_list.set_selection_mode(Gtk.SelectionMode.SINGLE)
@@ -3577,21 +3879,29 @@ class Player(Gtk.Window):
         smart_scroll.set_name('smart-playlist-scroll')
         smart_scroll.set_shadow_type(Gtk.ShadowType.NONE)
         smart_scroll.set_min_content_height(50)
-        smart_panel.pack_start(smart_scroll, True, True, 0)
+        smart_panel.pack_start(self.stable_library_scrollbar(smart_scroll, auto_hide=True), True, True, 0)
         self.library_side_split.pack1(smart_panel, True, False)
         playlists = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6, margin=8)
         playlists.set_margin_end(0)
         playlists.set_name('playlist-panel')
         playlists.set_size_request(170, -1)
-        playlist_header = Gtk.Box(spacing=4)
+        playlist_header = Gtk.Overlay()
         playlist_header.set_name('playlist-header')
-        playlist_header.pack_start(Gtk.Label(label='PLAYLISTS', xalign=0), True, True, 0)
+        playlist_header.add(self.library_sidebar_heading('Playlists', 'view-list-symbolic'))
         self.new_playlist_button = Gtk.Button.new_from_icon_name('list-add-symbolic', Gtk.IconSize.BUTTON)
         self.set_tooltip(self.new_playlist_button, 'Create playlist on Plex')
         self.new_playlist_button.get_accessible().set_name('Create playlist')
         self.new_playlist_button.connect('clicked', self.create_playlist_dialog)
-        playlist_header.pack_end(self.new_playlist_button, False, False, 0)
-        playlists.pack_start(playlist_header, False, False, 0)
+        self.new_playlist_button.set_halign(Gtk.Align.END)
+        self.new_playlist_button.set_valign(Gtk.Align.CENTER)
+        self.new_playlist_button.set_margin_bottom(2)
+        playlist_header.add_overlay(self.new_playlist_button)
+        playlist_header_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+        playlist_header_box.pack_start(playlist_header, False, False, 0)
+        underline = Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL)
+        underline.set_name('playlist-header-underline')
+        playlist_header_box.pack_start(underline, False, False, 0)
+        playlists.pack_start(playlist_header_box, False, False, 0)
         self.playlist_list = Gtk.ListBox()
         self.playlist_list.set_name('playlist-list')
         self.playlist_list.set_selection_mode(Gtk.SelectionMode.SINGLE)
@@ -3601,7 +3911,7 @@ class Player(Gtk.Window):
         playlist_scroll = self.scroll(self.playlist_list, overlay_scrolling=False)
         playlist_scroll.set_name('playlist-scroll')
         playlist_scroll.set_shadow_type(Gtk.ShadowType.NONE)
-        playlists.pack_start(playlist_scroll, True, True, 0)
+        playlists.pack_start(self.stable_library_scrollbar(playlist_scroll, auto_hide=True), True, True, 0)
         self.all_songs_row = self.playlist_row('All songs', None)
         self.all_songs_row.set_no_show_all(True)
         self.all_songs_row.hide()
@@ -3616,7 +3926,17 @@ class Player(Gtk.Window):
         self.songs_heading.set_margin_top(8)
         self.songs_heading.set_margin_start(8)
         self.songs_heading.set_margin_end(8)
-        self.library_header.pack_start(self.songs_heading, False, False, 0)
+        title_group = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+        title_group.pack_start(self.songs_heading, False, False, 0)
+        self.song_count = Gtk.Label(label='Connect to a server to browse songs', xalign=0.5)
+        self.song_count.set_hexpand(True)
+        self.song_count.set_halign(Gtk.Align.FILL)
+        self.song_count.set_justify(Gtk.Justification.CENTER)
+        self.song_count.set_ellipsize(Pango.EllipsizeMode.END)
+        self.song_count.set_max_width_chars(1)
+        self.song_count.get_style_context().add_class('dim-label')
+        title_group.pack_start(self.song_count, False, False, 0)
+        self.library_header.pack_start(title_group, False, False, 0)
         self.library_back_button = self.button('‹ All songs', self.clear_library_album_filter)
         self.library_back_button.set_no_show_all(True)
         self.library_back_button.set_halign(Gtk.Align.START)
@@ -3629,11 +3949,25 @@ class Player(Gtk.Window):
         self.library_search.connect('search-changed', self.library_search_changed)
         self.library_search_bar = Gtk.Box()
         self.library_search_bar.pack_start(self.library_search, True, True, 0)
+        self.library_list_mode_button = Gtk.ToggleButton()
+        self.library_list_mode_button.set_image(Player.library_list_lines_icon())
+        self.library_list_mode_button.get_accessible().set_name('Song list view')
+        self.set_tooltip(self.library_list_mode_button, 'Song list view')
+        self.library_album_mode_button = Gtk.ToggleButton()
+        self.library_album_mode_button.set_image(Gtk.Image.new_from_icon_name('view-list-symbolic', Gtk.IconSize.BUTTON))
+        self.library_album_mode_button.get_accessible().set_name('Albums and songs view')
+        self.set_tooltip(self.library_album_mode_button, 'Albums and songs view')
+        self.library_list_mode_button.set_active(self.library_view_mode == 'songs')
+        self.library_album_mode_button.set_active(self.library_view_mode == 'albums')
+        self.library_list_mode_button.connect('clicked', self.library_view_mode_changed, 'songs')
+        self.library_album_mode_button.connect('clicked', self.library_view_mode_changed, 'albums')
+        self.library_search_bar.pack_start(self.library_list_mode_button, False, False, 0)
+        self.library_search_bar.pack_start(self.library_album_mode_button, False, False, 0)
         self.library_header.pack_start(self.library_search_bar, False, False, 0)
         songs_panel.pack_start(self.library_header, False, False, 0)
         self.song_sort = 'addedAt:desc'
-        self.song_store = Gtk.ListStore(*([str] * (len(LIBRARY_COLUMNS) + 1)))
-        self.song_view = self.table(self.song_store, ['Song', 'Artist', 'Album', 'Time'])
+        self.song_store = Gtk.ListStore(*([str] * (len(LIBRARY_COLUMNS) + 4)))
+        self.song_view = self.table(self.song_store, ['Name', 'Artist', 'Album', 'Time'])
         self.song_view.connect('key-press-event', self.search_escape_pressed)
         self.song_view.set_name('song-view')
         self.song_view.get_selection().set_mode(Gtk.SelectionMode.MULTIPLE)
@@ -3665,10 +3999,26 @@ class Player(Gtk.Window):
         title_column.pack_start(marker, False)
         title_column.reorder(marker, 0)
         title_column.set_cell_data_func(marker, self.library_playing_marker)
-        for column in self.song_view.get_columns():
+        self.song_cell_attributes = []
+        for index, (_label, field) in enumerate(LIBRARY_COLUMNS):
+            column = self.song_columns[field]
             for renderer in column.get_cells():
-                if renderer is not marker:
-                    column.set_cell_data_func(renderer, self.song_row_background)
+                text_column = (None if renderer is marker else
+                               len(LIBRARY_COLUMNS) if renderer is heart else index)
+                self.song_cell_attributes.append((column, renderer, text_column))
+        Player.bind_song_cell_backgrounds(self)
+        gutter_renderer = Gtk.CellRendererText()
+        self.album_gutter_column = Gtk.TreeViewColumn('', gutter_renderer)
+        self.album_gutter_column.set_sizing(Gtk.TreeViewColumnSizing.FIXED)
+        self.album_gutter_column.set_fixed_width(AlbumGroupOverlay.GUTTER)
+        self.album_gutter_column.set_min_width(AlbumGroupOverlay.MIN_GUTTER)
+        self.album_gutter_column.set_max_width(AlbumGroupOverlay.MAX_GUTTER)
+        self.album_gutter_column.set_cell_data_func(gutter_renderer, self.album_gutter_row_size)
+        self.album_gutter_column.set_resizable(True)
+        self.song_view.append_column(self.album_gutter_column)
+        self.song_view.move_column_after(self.album_gutter_column, None)
+        self.album_gutter_column.set_visible(self.library_view_mode == 'albums')
+        Player.apply_library_row_alignment(self)
         self.song_view.connect('columns-changed', self.library_columns_changed)
         self.song_view.connect('row-activated', self.activate_song)
         self.song_view.connect('button-press-event', self.library_artist_pressed)
@@ -3688,17 +4038,18 @@ class Player(Gtk.Window):
         self.song_scroll = song_scroll
         song_scroll.set_name('song-scroll')
         song_scroll.set_shadow_type(Gtk.ShadowType.NONE)
-        song_scroll.set_margin_end(8)
-        songs_panel.pack_start(song_scroll, True, True, 0)
-        self.song_count = Gtk.Label(label='Connect to a server to browse songs', xalign=0.5)
-        self.song_count.set_hexpand(True)
-        self.song_count.set_halign(Gtk.Align.FILL)
-        self.song_count.set_justify(Gtk.Justification.CENTER)
-        self.song_count.set_ellipsize(Pango.EllipsizeMode.END)
-        self.song_count.set_max_width_chars(1)
-        self.song_count.set_margin_end(8)
-        self.song_count.set_margin_bottom(8)
-        songs_panel.pack_start(self.song_count, False, False, 0)
+        song_scroll_row = self.stable_library_scrollbar(song_scroll)
+        song_scroll_row.set_margin_end(8)
+        self.library_tracks_container = Gtk.Overlay()
+        self.library_tracks_container.add(song_scroll_row)
+        self.album_group_overlay = AlbumGroupOverlay(self, self.song_view, song_scroll)
+        self.album_gutter_column.connect('notify::width', self.album_group_overlay.redraw)
+        self.album_gutter_column.connect('notify::width', self.library_columns_changed)
+        self.library_tracks_container.add_overlay(self.album_group_overlay)
+        self.library_tracks_container.set_overlay_pass_through(self.album_group_overlay, True)
+        self.album_group_overlay.set_no_show_all(True)
+        self.album_group_overlay.set_visible(self.library_view_mode == 'albums')
+        songs_panel.pack_start(self.library_tracks_container, True, True, 0)
         split.pack2(songs_panel, True, False)
         self.content_views.add_named(split, 'library')
         self.playlists = []
@@ -5257,9 +5608,6 @@ class Player(Gtk.Window):
         self.server_label = Gtk.Label(label='Not connected', xalign=0)
         self.server_label.set_selectable(True)
         panel.pack_start(self.server_label, False, False, 0)
-        panel.pack_start(Gtk.Label(label='Music library', xalign=0), False, False, 0)
-        self.library.set_halign(Gtk.Align.START)
-        panel.pack_start(self.library, False, False, 0)
         connection_button = self.button('Change connection…', self.connect_dialog)
         connection_button.set_halign(Gtk.Align.START)
         panel.pack_start(connection_button, False, False, 0)
@@ -5364,6 +5712,11 @@ class Player(Gtk.Window):
         self.gradient_toggle.set_active(self.gradient_enabled)
         self.gradient_toggle.connect('toggled', self.gradient_changed)
         panel.pack_start(self.gradient_toggle, False, False, 0)
+        self.background_visualizer_toggle = Gtk.CheckButton(
+            label='Show the Now Playing visualizer on other gradient backgrounds')
+        self.background_visualizer_toggle.set_active(self.background_visualizer_enabled)
+        self.background_visualizer_toggle.connect('toggled', self.background_visualizer_changed)
+        panel.pack_start(self.background_visualizer_toggle, False, False, 0)
         accent_row = Gtk.Box(spacing=12)
         accent_row.pack_start(Gtk.Label(label='Pick accent color', xalign=0), False, False, 0)
         self.accent_color_button = Gtk.ColorButton()
@@ -5398,7 +5751,7 @@ class Player(Gtk.Window):
         self.smooth_scrolling_toggle.connect('toggled', self.smooth_scrolling_changed)
         panel.pack_start(self.smooth_scrolling_toggle, False, False, 0)
         panel = appearance_section('Album grid')
-        self.gpu_wall_toggle = Gtk.CheckButton(label='Use experimental GPU album wall')
+        self.gpu_wall_toggle = Gtk.CheckButton(label='Use GPU album wall')
         self.gpu_wall_toggle.set_sensitive(sys.platform.startswith('linux') or sys.platform == 'win32')
         self.gpu_wall_toggle.set_active(self.gpu_wall_enabled)
         self.gpu_wall_toggle.connect('toggled', self.gpu_wall_toggled)
@@ -5487,6 +5840,32 @@ class Player(Gtk.Window):
         library_heading = Gtk.Label(label='Library and Search', xalign=0)
         library_heading.set_name('now-title')
         panel.pack_start(library_heading, False, False, 0)
+        panel.pack_start(Gtk.Label(label='Library source', xalign=0), False, False, 0)
+        source_row = Gtk.Box(spacing=8)
+        self.source_selector = Gtk.ComboBoxText()
+        self.source_selector.set_hexpand(True)
+        self.source_selector.connect('changed', self.source_selected)
+        source_row.pack_start(self.source_selector, True, True, 0)
+        refresh_sources = self.button('Refresh Plex servers', self.refresh_account_sources)
+        source_row.pack_start(refresh_sources, False, False, 0)
+        panel.pack_start(source_row, False, False, 0)
+        source_actions = Gtk.Box(spacing=8)
+        source_actions.pack_start(self.button('Add local library…', self.add_local_source), False, False, 0)
+        self.local_rescan_button = self.button('Rescan local library', self.rescan_local_source)
+        self.local_rescan_button.set_sensitive(False)
+        source_actions.pack_start(self.local_rescan_button, False, False, 0)
+        self.local_remove_button = self.button('Remove local library', self.remove_local_source)
+        self.local_remove_button.set_sensitive(False)
+        source_actions.pack_start(self.local_remove_button, False, False, 0)
+        panel.pack_start(source_actions, False, False, 0)
+        self.populate_source_selector()
+        local_data_label = Gtk.Label(label=f'Local library data: {LOCAL_LIBRARY_DATA}', xalign=0)
+        local_data_label.set_line_wrap(True)
+        local_data_label.set_selectable(True)
+        panel.pack_start(local_data_label, False, False, 0)
+        panel.pack_start(Gtk.Label(label='Music library', xalign=0), False, False, 0)
+        self.library.set_halign(Gtk.Align.START)
+        panel.pack_start(self.library, False, False, 0)
         self.search_index_toggle = Gtk.CheckButton(
             label='Cache an album index for title and artist search')
         self.search_index_toggle.set_active(self.search_index_enabled)
@@ -5565,6 +5944,14 @@ class Player(Gtk.Window):
         sidebar_page.pack_start(Gtk.Label(
             label='Choose which buttons appear in the left sidebar.', xalign=0),
             False, False, 0)
+        labels_toggle = Gtk.CheckButton(label='Show labels under sidebar icons')
+        labels_toggle.set_active(self.sidebar_labels_enabled)
+        labels_toggle.connect('toggled', self.sidebar_labels_changed)
+        sidebar_page.pack_start(labels_toggle, False, False, 0)
+        note_toggle = Gtk.CheckButton(label='Animate Now Playing icon during playback')
+        note_toggle.set_active(self.sidebar_note_animation_enabled)
+        note_toggle.connect('toggled', self.sidebar_note_animation_changed)
+        sidebar_page.pack_start(note_toggle, False, False, 0)
         for view, label in (('now', 'Now playing'), ('albums', 'Albums'),
                             ('library', 'Library'), ('styles', 'Styles and moods'),
                             ('queue', 'Play queue'), ('lyrics', 'Lyrics')):
@@ -5802,6 +6189,7 @@ class Player(Gtk.Window):
 
     def gradient_changed(self, button):
         self.gradient_enabled = button.get_active()
+        self.refresh_live_waveform()
         self.render_gradient()
         self.prefetch_next_track()
         try:
@@ -5882,9 +6270,12 @@ class Player(Gtk.Window):
                              waveform_generation == self.waveform_generation and
                              play_generation == self.play_generation)
             try:
-                peaks = (analyze_track_waveform(uri, client.address, client.token,
-                                               track.duration, lambda: not valid())
-                         if valid() else None)
+                if valid() and getattr(client, 'is_local', False) and client.stream(track) == uri:
+                    peaks = analyze_audio_uri(uri, '', track.duration, lambda: not valid())
+                else:
+                    peaks = (analyze_track_waveform(uri, client.address, client.token,
+                                                   track.duration, lambda: not valid())
+                             if valid() else None)
                 if peaks is not None and valid():
                     try:
                         cache.save_waveform(track.key, track.duration, peaks)
@@ -6112,6 +6503,11 @@ class Player(Gtk.Window):
         self.update_queue_bottom_inset()
 
     @staticmethod
+    def solid_timeline_background(player):
+        stack = getattr(player, 'timeline_stack', None)
+        return stack if stack is not None and stack.get_visible_child_name() == 'line' else None
+
+    @staticmethod
     def library_frosted_capture_allowed(player):
         return (not getattr(player, '_song_row_builds', 0) or
                 player.content_views.get_visible_child_name() != 'library')
@@ -6129,10 +6525,11 @@ class Player(Gtk.Window):
             self.keep_style_playing.set_margin_bottom(16 + max(0, inset))
         if hasattr(self, 'lyrics_details'):
             self.lyrics_details.set_margin_bottom(max(0, inset))
-        if hasattr(self, 'song_count'):
+        bottom = getattr(self, 'library_tracks_container', getattr(self, 'song_count', None))
+        if bottom is not None:
             margin = 8 + max(0, inset)
-            if self.song_count.get_margin_bottom() != margin:
-                self.song_count.set_margin_bottom(margin)
+            if bottom.get_margin_bottom() != margin:
+                bottom.set_margin_bottom(margin)
 
     def apply_frosted_player_bar(self):
         self.invalidate_frosted_backdrops()
@@ -6154,7 +6551,7 @@ class Player(Gtk.Window):
             self.gpu_wall.queue_frame()
 
     def frosted_top_controls(self):
-        return (self.search, self.library_search, self.style_search,
+        return (self.search, self.style_search,
                 *self.album_sort_buttons.values(), self.search_button,
                 *self.style_mode_buttons.values(), *self.settings_tab_buttons)
 
@@ -6185,7 +6582,6 @@ class Player(Gtk.Window):
         self.top_frosted_bars = []
         for widget, source in ((self.album_toolbar, self.wall_scroll),
                                (self.album_sort_bar, self.wall_scroll),
-                               (self.library_header, self.song_scroll),
                                (self.style_header, self.style_scroll),
                                (self.settings_tab_bar,
                                 self.settings_tabs.get_nth_page(self.settings_tabs.get_current_page()))):
@@ -6194,8 +6590,6 @@ class Player(Gtk.Window):
             effect = FrostedBar(widget, source, self.shared_background,
                                 lambda: self.theme, edge='top',
                                 window_capture=widget is self.settings_tab_bar,
-                                capture_allowed=(lambda: not getattr(self, '_song_row_builds', 0))
-                                if widget is self.library_header else (lambda: True),
                                 capture_content=lambda: not Player.gpu_wall_is_mapped(self),
                                 gpu_surface=lambda bar=widget: Player.gpu_glass_surface(self, bar))
             self.top_frosted_bars.append((widget, effect))
@@ -6304,6 +6698,10 @@ class Player(Gtk.Window):
     def ensure_search_index(self):
         section = self.library.get_active_id()
         if not self.search_index_enabled or not self.client or not section:
+            return
+        if getattr(self.client, 'is_local', False):
+            self.index_refresh.set_sensitive(False)
+            self.index_status.set_text('Local library is indexed automatically')
             return
         self.index_refresh.set_sensitive(True)
         if self.index_section == section and (self.indexed_albums is not None or
@@ -6617,12 +7015,34 @@ class Player(Gtk.Window):
                          self.info_revealer.get_reveal_child() and
                          (getattr(self, 'info_target', None) == target) and
                          (self.client is client if target else self.queue_client is client))
+        local = getattr(client, 'is_local', False) is True
+        def lookup_local_artist():
+            def lookup():
+                try:
+                    return client.artist_description(track.artist, track.album), False
+                except Exception:
+                    return None, True
+            def ready(result):
+                def apply():
+                    description, failed = result
+                    if description:
+                        summary, url = description
+                        self.info_biography.set_text(format_artist_description(summary))
+                        self.info_source_label.set_text('Wikipedia · ' + url)
+                    else:
+                        self.info_biography.set_text(
+                            'Could not reach the artist information service.' if failed else
+                            'No unambiguous artist description was found on Wikipedia.')
+                Player.apply_info_after_slide(self, generation, apply)
+            self.async_work(lookup, ready, valid)
         def details_ready(result):
             def apply():
                 details, summary = result
                 lines = file_info_lines(details)
                 Player.set_info_file(self, lines, 'No file information is available.')
-                if summary:
+                if local:
+                    lookup_local_artist()
+                elif summary:
                     self.info_biography.set_text(format_artist_description(summary))
                     self.info_source_label.set_text('Artist information from Plex')
                 else:
@@ -6631,8 +7051,11 @@ class Player(Gtk.Window):
         def details_failed():
             def apply():
                 if not fallback:
-                    Player.set_info_file(self, [], 'Could not load file information from Plex.')
-                self.info_biography.set_text('Could not load the artist description from Plex.')
+                    Player.set_info_file(self, [], 'Could not load file information.')
+                if local:
+                    lookup_local_artist()
+                else:
+                    self.info_biography.set_text('Could not load the artist description from Plex.')
             Player.apply_info_after_slide(self, generation, apply)
         self.async_work(lambda: client.track_details(track), details_ready, valid, details_failed)
 
@@ -7225,7 +7648,8 @@ class Player(Gtk.Window):
             selection.set(selection.get_target(), 8, data)
 
     def playlist_pointer_mode(self):
-        return bool(self.active_playlist and not self.active_playlist.smart and
+        return bool(getattr(self, 'library_view_mode', 'songs') != 'albums' and
+                    self.active_playlist and not self.active_playlist.smart and
                     not self.active_smart_playlist and
                     self.library_album_filter is None and
                     not self.library_search.get_text().strip() and
@@ -7577,6 +8001,61 @@ class Player(Gtk.Window):
             self.song_count.set_text('Could not add every selected track to ' + playlist.title)
         self.async_work(work, added, lambda: client is self.client, failed)
 
+    @staticmethod
+    def library_list_lines_icon():
+        icon = Gtk.DrawingArea()
+        icon.set_has_window(False)
+        icon.set_size_request(20, 20)
+        def draw(widget, context):
+            parent = widget.get_parent()
+            style = (parent or widget).get_style_context()
+            Gdk.cairo_set_source_rgba(context, style.get_color(style.get_state()))
+            context.set_line_width(2)
+            context.set_line_cap(cairo.LINE_CAP_ROUND)
+            width = widget.get_allocated_width()
+            for y in (4.5, 9.5, 14.5):
+                context.move_to(3, y)
+                context.line_to(max(3, width - 3), y)
+            context.stroke()
+            return False
+        icon.connect('draw', draw)
+        return icon
+
+    @staticmethod
+    def apply_library_row_alignment(player):
+        alignment = 0.0 if getattr(player, 'library_view_mode', 'songs') == 'albums' else 0.5
+        for _column, renderer, _text in getattr(player, 'song_cell_attributes', ()):
+            renderer.set_property('yalign', alignment)
+
+    def album_gutter_row_size(self, _column, cell, model, row, _data=None):
+        overlay = getattr(self, 'album_group_overlay', None)
+        index = model.get_path(row).get_indices()[0]
+        count = (overlay.group_ends.get(index) if overlay is not None and
+                 getattr(self, 'library_view_mode', 'songs') == 'albums' else None)
+        cell.set_fixed_size(-1, album_group_row_height(count, self.text_size) if count else -1)
+
+    def library_view_mode_changed(self, _button, mode):
+        if mode not in ('songs', 'albums') or getattr(self, '_changing_library_view_mode', False):
+            return
+        changed = self.library_view_mode != mode
+        self._changing_library_view_mode = True
+        try:
+            self.library_view_mode = mode
+            self.library_list_mode_button.set_active(mode == 'songs')
+            self.library_album_mode_button.set_active(mode == 'albums')
+        finally:
+            self._changing_library_view_mode = False
+        if not changed:
+            return
+        self.album_gutter_column.set_visible(mode == 'albums')
+        self.album_group_overlay.set_visible(mode == 'albums')
+        Player.apply_library_row_alignment(self)
+        try:
+            save_library_view_mode(mode)
+        except OSError:
+            self.status.set_text('Could not save library view setting.')
+        self.load_songs()
+
     def library_search_changed(self, *_):
         if self.library_search_timeout:
             GLib.source_remove(self.library_search_timeout)
@@ -7629,25 +8108,35 @@ class Player(Gtk.Window):
             header.requested_width = width
             header.set_size_request(width, -1)
 
-    def song_row_background(self, _column, cell, model, row, _data=None):
-        path = model.get_path(row)
-        selected = self.song_view.get_selection().path_is_selected(path)
-        cell.set_property('cell-background-set', not selected)
-        if not selected:
-            colors = ('#000000', '#000000') if self.theme == 'black' else (
-                ('#f3f3f1', '#ffffff') if self.theme == 'light' else ('#181818', '#111111'))
-            cell.set_property('cell-background', colors[path.get_indices()[0] % 2])
+    @staticmethod
+    def bind_song_cell_backgrounds(player):
+        # Let GTK paint alternating rows and selections natively. Rebinding a
+        # column for a theme change avoids updating every row in large models.
+        color_column = len(LIBRARY_COLUMNS) + {'dark': 1, 'light': 2, 'black': 3}.get(
+            player.theme, 1)
+        for column, cell, text_column in getattr(player, 'song_cell_attributes', ()):
+            column.clear_attributes(cell)
+            if text_column is not None:
+                column.add_attribute(cell, 'text', text_column)
+            column.add_attribute(cell, 'cell-background', color_column)
 
     def library_playing_marker(self, column, cell, model, row, _data=None):
-        self.song_row_background(column, cell, model, row)
         index = model.get_path(row).get_indices()[0]
         marker = (Player.current_track_marker(self, self.songs[index].key)
                   if index < len(self.songs) else '')
-        cell.set_property('text', marker)
-        Player.style_playback_cell(cell, marker)
-        cell.set_property('foreground', self.current_art_bright
-                          if self.art_accent_enabled and self.current_art_bright
-                          else self.accent_color)
+        # A renderer is reused for every row. Most rows have no marker, so
+        # avoid rebuilding the same Pango style on every cell and every frame.
+        if getattr(cell, '_library_marker', None) != marker:
+            cell.set_property('text', marker)
+            Player.style_playback_cell(cell, marker)
+            if getattr(self, 'library_view_mode', 'songs') == 'albums':
+                cell.set_property('yalign', 0.0)
+            cell._library_marker = marker
+        color = (self.current_art_bright if self.art_accent_enabled and
+                 self.current_art_bright else self.accent_color)
+        if getattr(cell, '_library_marker_color', None) != color:
+            cell.set_property('foreground', color)
+            cell._library_marker_color = color
 
     def queue_marker_cell(self, _column, cell, model, row, _data=None):
         marker = model.get_value(row, 1)
@@ -7703,7 +8192,7 @@ class Player(Gtk.Window):
         return hashlib.sha256('\0'.join(parts).encode('utf-8')).hexdigest()
 
     def library_columns_changed(self, *_):
-        if self.library_layout_restoring or self.current_library_layout_key is None:
+        if getattr(self, 'library_layout_restoring', False) or getattr(self, 'current_library_layout_key', None) is None:
             return
         if self.library_layout_save_timeout:
             GLib.source_remove(self.library_layout_save_timeout)
@@ -7718,7 +8207,9 @@ class Player(Gtk.Window):
                  for field, candidate in self.song_columns.items() if candidate is column]
         widths = {field: max(50, min(1200, column.get_fixed_width() or column.get_width()))
                   for field, column in self.song_columns.items()}
-        layout = {'order': order, 'widths': widths, 'rating_column_available': True,
+        gutter = getattr(self, 'album_gutter_column', None)
+        art_width = (gutter.get_width() or gutter.get_fixed_width()) if gutter is not None else AlbumGroupOverlay.GUTTER
+        layout = {'order': order, 'widths': widths, 'album_art_width': art_width, 'rating_column_available': True,
                   'visible': [field for field, column in self.song_columns.items()
                               if column.get_visible() or
                               (field == 'user_rating' and
@@ -7750,6 +8241,12 @@ class Player(Gtk.Window):
         if not layout.get('rating_column_available'):
             visible.add('user_rating')
         self.rating_column_preferred = 'user_rating' in visible
+        gutter = getattr(self, 'album_gutter_column', None)
+        if gutter is not None:
+            art_width = layout.get('album_art_width')
+            if type(art_width) is not int or not AlbumGroupOverlay.MIN_GUTTER <= art_width <= AlbumGroupOverlay.MAX_GUTTER:
+                art_width = AlbumGroupOverlay.GUTTER
+            gutter.set_fixed_width(art_width)
         widths = layout.get('widths') if isinstance(layout.get('widths'), dict) else {}
         for field, column in self.song_columns.items():
             column.set_visible((field in BASE_LIBRARY_FIELDS or field in visible) and
@@ -7764,7 +8261,7 @@ class Player(Gtk.Window):
         ordered = list(dict.fromkeys(field for field in order
                                      if isinstance(field, str) and field in fields))
         ordered.extend(field for _name, field in LIBRARY_COLUMNS if field not in ordered)
-        previous = None
+        previous = getattr(self, 'album_gutter_column', None)
         for field in ordered:
             column = self.song_columns[field]
             self.song_view.move_column_after(column, previous)
@@ -7923,6 +8420,8 @@ class Player(Gtk.Window):
         def work():
             if album_filter:
                 return client.tracks(album_filter), False
+            if getattr(client, 'is_local', False):
+                return fetch_catalog(), False
             entry = cache.read_song_index_entry(section, playlist_key)
             if entry is not None:
                 cached, built_at = entry
@@ -8065,7 +8564,7 @@ class Player(Gtk.Window):
     def prefetch_album_sort_pages(self):
         section = self.library.get_active_id()
         client = self.client
-        if not client or not section:
+        if not client or not section or getattr(client, 'is_local', False):
             return
         generation = self.album_prefetch_generation
         active_sort = self.album_sort if not self.search.get_text().strip() else None
@@ -8496,6 +8995,10 @@ class Player(Gtk.Window):
         return button
 
     def set_play_button_state(self, playing):
+        button = getattr(self, 'nav_buttons', {}).get('now')
+        image = button.get_image() if button is not None else None
+        if isinstance(image, SidebarIcon):
+            image.set_playing(playing and getattr(self, 'sidebar_note_animation_enabled', True))
         name = 'Pause' if playing else 'Play'
         icon = 'media-playback-pause-symbolic' if playing else 'media-playback-start-symbolic'
         image = Gtk.Image.new_from_icon_name(icon, Gtk.IconSize.BUTTON)
@@ -8512,6 +9015,40 @@ class Player(Gtk.Window):
             scroll.set_overlay_scrolling(overlay_scrolling)
         scroll.add(child)
         return self.attach_smooth_scroll(scroll)
+
+    @staticmethod
+    def stable_library_scrollbar(scroll, auto_hide=False):
+        """Keep the library scrollbar outside the redrawn scrolled window."""
+        horizontal, _vertical = scroll.get_policy()
+        scroll.set_policy(horizontal, Gtk.PolicyType.EXTERNAL)
+        scroll.set_overlay_scrolling(False)
+        row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
+        row.pack_start(scroll, True, True, 0)
+        scrollbar = Gtk.Scrollbar(orientation=Gtk.Orientation.VERTICAL,
+                                  adjustment=scroll.get_vadjustment())
+        scrollbar.set_name('library-stable-scrollbar')
+        row.pack_start(scrollbar, False, False, 0)
+        if auto_hide:
+            scrollbar.set_no_show_all(True)
+            pending = [0]
+            def update_visibility(adjustment):
+                if pending[0]:
+                    return
+                def apply_visibility():
+                    pending[0] = 0
+                    if not scrollbar.in_destruction():
+                        scrollbar.set_visible(adjustment.get_upper() - adjustment.get_lower() >
+                                              adjustment.get_page_size() + 0.5)
+                    return False
+                pending[0] = GLib.idle_add(apply_visibility)
+            def cancel_visibility(*_args):
+                if pending[0]:
+                    GLib.source_remove(pending[0])
+                    pending[0] = 0
+            scroll.connect('destroy', cancel_visibility)
+            scroll.get_vadjustment().connect('changed', update_visibility)
+            update_visibility(scroll.get_vadjustment())
+        return row
 
     def attach_smooth_scroll(self, scroll):
         attach_background_drag(scroll)
@@ -8571,7 +9108,8 @@ class Player(Gtk.Window):
         box.set_border_width(18)
         box.pack_start(Gtk.Label(label='Server URL (HTTPS for remote servers)', xalign=0), False, False, 0)
         address = Gtk.Entry(placeholder_text='http://192.168.1.10:32400')
-        current = (self.client.address, self.client.token) if self.client else self.restored_credentials
+        current = ((self.client.address, self.client.token) if self.client and
+                   not getattr(self.client, 'is_local', False) else self.restored_credentials)
         if current:
             address.set_text(current[0])
         box.pack_start(address, False, False, 0)
@@ -8591,14 +9129,15 @@ class Player(Gtk.Window):
             self.choose_server_from_account()
             return False
         if response != Gtk.ResponseType.OK:
+            self.populate_source_selector()
             return False
         self.connect_to_server(url, secret, remember=True)
         return False
 
-    def connect_to_server(self, url, secret, remember=False, automatic=False):
+    def connect_to_server(self, url, secret, remember=False, automatic=False, source=None):
         try:
-            client = PlexClient(url, secret, self.remote_config['identifier'],
-                                self.remote_config['name'])
+            client = source or PlexClient(url, secret, self.remote_config['identifier'],
+                                          self.remote_config['name'])
         except ValueError as exc:
             self.status.set_text(str(exc))
             if automatic:
@@ -8613,7 +9152,7 @@ class Player(Gtk.Window):
         def work():
             sections = client.sections()
             try:
-                machine = client.xml('/').get('machineIdentifier', '')
+                machine = '' if getattr(client, 'is_local', False) else client.xml('/').get('machineIdentifier', '')
             except Exception:
                 machine = ''
             saved = True
@@ -8626,12 +9165,22 @@ class Player(Gtk.Window):
         def connected(result):
             sections, saved, machine = result
             self.client = client
+            self.new_playlist_button.set_sensitive(not getattr(client, 'is_local', False))
+            self.keep_style_playing.set_sensitive(not getattr(client, 'is_local', False))
             self.song_view_cache.clear()
             self.song_view_key = None
             self.remote_server_machine = machine
             self.clear_remote_queue()
             if self.remote_receiver:
-                self.remote_receiver.set_server(client, machine)
+                self.remote_receiver.set_server(None if getattr(client, 'is_local', False) else client, machine)
+            if hasattr(self, 'source_config'):
+                self.source_config['active'] = ('local:' + client.source['id']
+                                                if getattr(client, 'is_local', False) else 'plex:current')
+                try:
+                    save_sources(self.source_config)
+                except OSError:
+                    self.status.set_text('Could not save selected library source.')
+                self.populate_source_selector()
             self.update_remote_status()
             self.index_generation += 1
             self.index_cache = None
@@ -8677,7 +9226,7 @@ class Player(Gtk.Window):
             self.hero_title.set_text('Nothing playing')
             self.hero_artist.set_text('Choose an album or song to start listening')
             self.hero_album.set_text('')
-            self.server_label.set_text(client.address)
+            self.server_label.set_text(client.source['path'] if getattr(client, 'is_local', False) else client.address)
             self.album_generation += 1
             self.song_generation += 1
             self.playlist_generation += 1
@@ -8694,7 +9243,10 @@ class Player(Gtk.Window):
             if sections:
                 saved_section = (self.saved_session.get('section')
                                  if self.saved_session.get('server') == client.address else None)
-                first_section = self.choose_initial_library(sections)
+                first_section = (None if getattr(client, 'is_local', False)
+                                 else self.choose_initial_library(sections))
+                if getattr(client, 'is_local', False):
+                    self.first_run_setup = False
                 selection = first_section or saved_section
                 if not selection or not self.library.set_active_id(selection):
                     self.library.set_active(0)
@@ -8706,6 +9258,8 @@ class Player(Gtk.Window):
                 self.status.set_text(self.credential_warning)
             self.restore_saved_session()
             self.mpris.changed()
+            if getattr(client, 'is_local', False):
+                self.rescan_local_source(force=False)
         self.async_work(work, connected, lambda: generation == self.connection_generation,
                         self.connect_dialog if automatic else None)
         return False
@@ -8784,7 +9338,7 @@ class Player(Gtk.Window):
         def failed():
             self.loading_albums = False
             self.finish_startup_loading()
-        indexed = (self.indexed_albums if not force_refresh and self.search_index_enabled and
+        indexed = (self.indexed_albums if not force_refresh and not getattr(client, 'is_local', False) and self.search_index_enabled and
                    self.index_section == section else None)
         if artist:
             existing_catalog = self.artist_catalog
@@ -8828,7 +9382,7 @@ class Player(Gtk.Window):
             sort = self.album_sort
             def page_work():
                 cache = LocalCache(client)
-                if start == 0 and not title and not force_refresh:
+                if start == 0 and not title and not force_refresh and not getattr(client, 'is_local', False):
                     page = cached_album_page(cache, client, section, sort)
                 else:
                     page = client.albums(section, start, title, sort)
@@ -8922,6 +9476,8 @@ class Player(Gtk.Window):
         sort = self.effective_library_sort()
         view_key = ((*source, smart['id'], tag_filter, query, sort) if smart
                     else (*source, tag_filter, query, sort))
+        if getattr(self, 'library_view_mode', 'songs') == 'albums':
+            view_key += ('album-groups',)
         cached_view = self.song_view_cache.get(view_key)
         if cached_view is not None and time.monotonic() - cached_view.get('built_at', 0) >= 3600:
             del self.song_view_cache[view_key]
@@ -8929,7 +9485,7 @@ class Player(Gtk.Window):
             if self.song_catalog_source == source:
                 self.invalidate_song_catalog()
         if cached_view is None:
-            cached_view = {'store': Gtk.ListStore(*([str] * (len(LIBRARY_COLUMNS) + 1))),
+            cached_view = {'store': Gtk.ListStore(*([str] * (len(LIBRARY_COLUMNS) + 4))),
                            'rows': [], 'results': None, 'total': 0, 'message': '',
                            'built_at': time.monotonic()}
             self.song_view_cache[view_key] = cached_view
@@ -8944,6 +9500,10 @@ class Player(Gtk.Window):
             self.song_view.set_model(self.song_store)
         self.songs = cached_view['rows']
         self.song_results = cached_view['results']
+        overlay = getattr(self, 'album_group_overlay', None)
+        if overlay is not None:
+            overlay.set_results(self.song_results if self.song_results is not None and
+                                getattr(self, 'library_view_mode', 'songs') == 'albums' else ())
         if self.song_results is not None:
             self.song_total = cached_view['total']
             if len(self.songs) == self.song_total:
@@ -8964,7 +9524,9 @@ class Player(Gtk.Window):
             # Keep random membership stable while the user searches this smart list.
             selected = (apply_definition(catalog, smart, loved,
                                          random.Random(smart['id'])) if smart else catalog)
-            return filter_sort_songs(selected, query, sort)
+            result = filter_sort_songs(selected, query, sort)
+            return (group_songs_by_album(result) if getattr(self, 'library_view_mode', 'songs') == 'albums'
+                    else result)
         if len(catalog) > 2000:
             self.song_count.set_text('Sorting songs…')
             self.async_work(filtered, ready,
@@ -8974,6 +9536,9 @@ class Player(Gtk.Window):
 
     def display_song_page(self, songs, total, playlist, album_filter, query):
         self.song_total = total
+        overlay = getattr(self, 'album_group_overlay', None)
+        if overlay is not None and getattr(self, 'library_view_mode', 'songs') == 'albums':
+            overlay.set_results(songs)
         if album_filter:
             message = f'{total} of {total} tracks in {album_filter.title}'
         elif getattr(self, 'library_tag_filter', None):
@@ -9038,7 +9603,10 @@ class Player(Gtk.Window):
                     self.songs.append(song)
                     self.song_store.append([self.song_column_value(song, field)
                                             for _name, field in LIBRARY_COLUMNS] +
-                                           ['♥' if song.user_rating >= 9.5 else ''])
+                                           ['♥' if song.user_rating >= 9.5 else '',
+                                            ('#181818', '#111111')[offset % 2],
+                                            ('#f3f3f1', '#ffffff')[offset % 2],
+                                            '#000000'])
                     offset += 1
                     if time.monotonic() >= deadline:
                         break
@@ -9127,7 +9695,7 @@ class Player(Gtk.Window):
         self.start_track()
 
     def source_setup(self, pipeline, source):
-        if source.find_property('extra-headers'):
+        if source.find_property('extra-headers') and self.queue_client and self.queue_client.token:
             headers = Gst.Structure.new_empty('headers')
             headers.set_value('X-Plex-Token', self.queue_client.token)
             source.set_property('extra-headers', headers)
@@ -9326,7 +9894,7 @@ class Player(Gtk.Window):
             self.index += 1
         elif self.repeat.get_active():
             self.index = 0
-        elif self.keep_style_playing_enabled:
+        elif self.keep_style_playing_enabled and not getattr(getattr(self, 'queue_client', None), 'is_local', False):
             if self.style_autoplay_exhausted:
                 self.stop()
                 self.status.set_text('No more songs found in this mood')
@@ -9342,7 +9910,8 @@ class Player(Gtk.Window):
         self.start_track()
 
     def maybe_prefetch_same_style(self):
-        if (self.keep_style_playing_enabled and self.playing and self.queue and
+        if (self.keep_style_playing_enabled and not getattr(getattr(self, 'queue_client', None), 'is_local', False)
+                and self.playing and self.queue and
                 self.index == len(self.queue) - 1 and
                 not self.repeat.get_active() and
                 not (self.shuffle.get_active() and len(self.queue) > 1) and
@@ -9441,6 +10010,7 @@ class Player(Gtk.Window):
                 levels = self.live_waveform_tap.read_message(message)
                 if levels is not None:
                     self.hero_waveform.set_audio(levels)
+                    self.background_visualizer.set_audio(levels)
         elif message.type == Gst.MessageType.EOS:
             self.advance()
         elif message.type == Gst.MessageType.ERROR:

@@ -65,6 +65,33 @@ class AppearanceTests(unittest.TestCase):
                 appearance.save_keep_style_playing_enabled(False)
                 self.assertFalse(appearance.load_keep_style_playing_enabled())
 
+    def test_background_visualizer_preference_persists(self):
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.object(appearance, 'SETTINGS_PATH', Path(directory) / 'settings.json'):
+            self.assertFalse(appearance.load_background_visualizer_enabled())
+            appearance.save_background_visualizer_enabled(True)
+            self.assertTrue(appearance.load_background_visualizer_enabled())
+            appearance.save_background_visualizer_enabled(False)
+            self.assertFalse(appearance.load_background_visualizer_enabled())
+
+    def test_sidebar_note_animation_preference_persists(self):
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.object(appearance, 'SETTINGS_PATH', Path(directory) / 'settings.json'):
+            self.assertTrue(appearance.load_sidebar_note_animation_enabled())
+            appearance.save_sidebar_note_animation_enabled(False)
+            self.assertFalse(appearance.load_sidebar_note_animation_enabled())
+            appearance.save_sidebar_note_animation_enabled(True)
+            self.assertTrue(appearance.load_sidebar_note_animation_enabled())
+
+    def test_sidebar_labels_preference_persists(self):
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.object(appearance, 'SETTINGS_PATH', Path(directory) / 'settings.json'):
+            self.assertFalse(appearance.load_sidebar_labels_enabled())
+            appearance.save_sidebar_labels_enabled(True)
+            self.assertTrue(appearance.load_sidebar_labels_enabled())
+            appearance.save_sidebar_labels_enabled(False)
+            self.assertFalse(appearance.load_sidebar_labels_enabled())
+
     def test_sidebar_order_migrates_and_visibility_persists(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / 'settings.json'

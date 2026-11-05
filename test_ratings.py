@@ -87,6 +87,19 @@ class RatingsTests(unittest.TestCase):
         self.assertEqual(cell.get_property('text'), PAUSE_MARKER)
         self.assertLess(cell.get_property('scale'), 1)
 
+    def test_library_marker_reuses_style_for_unchanged_rows(self):
+        model = Gtk.ListStore(str)
+        row = model.append(['Track'])
+        cell = Gtk.CellRendererText()
+        player = SimpleNamespace(queue=[], index=-1, songs=[Item('/track/1', 'Track')],
+                                 art_accent_enabled=False, current_art_bright=None,
+                                 accent_color='#c06020')
+        with patch.object(Player, 'style_playback_cell', wraps=Player.style_playback_cell) as style:
+            Player.library_playing_marker(player, None, cell, model, row)
+            Player.library_playing_marker(player, None, cell, model, row)
+            style.assert_called_once_with(cell, '')
+        self.assertEqual(cell.get_property('text'), '')
+
     def test_hide_star_rating_controls_preserves_library_column_preference(self):
         rating = Gtk.Box()
         rating.set_no_show_all(True)

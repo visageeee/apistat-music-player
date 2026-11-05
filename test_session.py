@@ -109,6 +109,14 @@ class SessionTests(unittest.TestCase):
         self.assertTrue(player.shuffle.get_active())
         self.assertEqual(calls, [{'resume_paused': True, 'resume_position_ms': 42500}])
 
+    def test_local_track_album_metadata_survives_session_round_trip(self):
+        from session import item_from_data, item_to_data
+        track = Item('/local/track/abc', 'Song', album_key='/local/album/abc',
+                     album_thumb='/local/art/abc/123')
+        restored = item_from_data(item_to_data(track))
+        self.assertEqual(restored.album_key, track.album_key)
+        self.assertEqual(restored.album_thumb, track.album_thumb)
+
     def test_mismatched_server_does_not_consume_saved_playback(self):
         player = SimpleNamespace(session_applied=False,
                                  saved_session={'server': 'https://saved.example'},

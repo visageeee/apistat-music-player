@@ -88,6 +88,12 @@ class SmoothScroller:
         anchor = self.target if self.source else current
         target = max(lower, min(upper, anchor + amount * step))
         if target == current:
+            if self.source:
+                # Opposite wheel input can cancel the remaining glide exactly.
+                # Consume it rather than letting GTK start a competing scroll.
+                self.cancel()
+                self.target = current
+                return True
             return False
         self.target = target
         if not self.source:

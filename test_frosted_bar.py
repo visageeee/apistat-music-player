@@ -255,6 +255,33 @@ class FrostedBarTests(unittest.TestCase):
         self.assertGreater((first >> 16) & 255, first & 255)
         self.assertGreater(second & 255, (second >> 16) & 255)
 
+    def test_waveform_keeps_glass_instead_of_solid_timeline_background(self):
+        from player import Player
+        bar = SimpleNamespace(connect=Mock(), get_mapped=lambda: True,
+                              get_allocated_width=lambda: 120,
+                              get_allocated_height=lambda: 60, queue_draw=Mock())
+        color = [1.0, 0.0, 0.0]
+        def draw_content(context):
+            context.set_source_rgb(*color)
+            context.paint()
+        content = SimpleNamespace(connect=Mock(), connect_after=Mock(),
+                                  get_mapped=lambda: True,
+                                  get_allocated_height=lambda: 400, draw=draw_content)
+        background = SimpleNamespace(connect=Mock(), connect_after=Mock(), draw=lambda _context: None)
+        stack = SimpleNamespace(get_visible_child_name=lambda: 'waveform')
+        glass = FrostedBar(bar, content, background, lambda: 'dark',
+                           lambda: Player.solid_timeline_background(SimpleNamespace(timeline_stack=stack)))
+        glass.enabled = True
+        glass.drawn(content, None); glass.drawn(background, None)
+        canvas = cairo.ImageSurface(cairo.FORMAT_ARGB32, 120, 60)
+        glass.draw(bar, cairo.Context(canvas))
+        first = bytes(canvas.get_data())
+        color[:] = [0.0, 0.0, 1.0]
+        glass.draw(bar, cairo.Context(canvas))
+        second = bytes(canvas.get_data())
+        top = 10 * canvas.get_stride() + 60 * 4
+        self.assertNotEqual(first[top:top + 4], second[top:top + 4])
+
     def test_timeline_has_an_opaque_background_over_changing_content(self):
         bar = SimpleNamespace(connect=Mock(), get_mapped=lambda: True,
                               get_allocated_width=lambda: 120,
