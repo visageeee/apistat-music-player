@@ -3,54 +3,49 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="description" content="Apistat is a desktop music player for Plex and local libraries, with smart playlists, a flexible queue, and a beautiful album wall.">
-  <meta name="theme-color" content="#111014">
-  <meta property="og:title" content="Apistat — Your music, at home on the desktop">
-  <meta property="og:description" content="A desktop music player for Plex and local libraries.">
-  <title>Apistat — Your music, at home on the desktop</title>
+  <meta name="description" content="Apistat is a desktop music player for Plex and local libraries, with smart playlists and a flexible play queue.">
+  <meta name="theme-color" content="#141316">
+  <title>Apistat — Desktop music player</title>
   <link rel="icon" href="assets/apistat.png" type="image/png">
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
-  <header class="header wrap">
-    <a class="brand" href="#top" aria-label="Apistat home"><img src="assets/apistat.png" alt="" width="32" height="32"><span>apistat</span></a>
-    <nav aria-label="Main navigation">
-      <a href="#features">Features</a><a href="#download">Download</a><a href="https://github.com/visageeee/apistat-music-player">GitHub <span aria-hidden="true">↗</span></a>
-    </nav>
+<main>
+  <header>
+    <img class="logo" src="assets/apistat.png" alt="" width="64" height="64">
+    <h1>APISTAT</h1>
+    <div class="downloads" aria-label="Download Apistat">
+      <div><a class="download" id="linux" href="https://github.com/visageeee/apistat-music-player/releases">Linux <span aria-hidden="true">↓</span></a><span class="format">Flatpak · x86_64</span></div>
+      <div><a class="download" id="windows" href="https://github.com/visageeee/apistat-music-player/releases">Windows <span aria-hidden="true">↓</span></a><span class="format">Portable ZIP · x64</span></div>
+      <div><a class="download" href="https://github.com/visageeee/apistat-music-player/releases">macOS <span aria-hidden="true">↗</span></a><span class="format">Experimental builds</span></div>
+    </div>
+    <p class="description">Apistat brings the style and music discovery of Plexamp to your desktop, with the depth and control of classic iTunes. Browse Plex or local music, make smart playlists, and keep your queue playing.</p>
   </header>
-
-  <main id="top">
-    <section class="hero wrap" aria-labelledby="hero-title">
-      <div class="hero-copy">
-        <div class="eyebrow"><span class="live-dot"></span> A MUSIC PLAYER FOR THE DESKTOP</div>
-        <h1 id="hero-title">Your music.<br><span>Your space.</span></h1>
-        <p>For people who love Plexamp, but miss the depth and control of classic iTunes. Meet your music collection right where it belongs: on your desktop.</p>
-        <div class="actions"><a class="button primary" href="#download">Get Apistat <span aria-hidden="true">↗</span></a><a class="button secondary" href="https://github.com/visageeee/apistat-music-player">View on GitHub <span aria-hidden="true">↗</span></a></div>
-        <div class="platforms"><span class="platform-line"></span> FOR LINUX &amp; WINDOWS <span class="separator">·</span> macOS EXPERIMENTAL</div>
-      </div>
-      <div class="player-illustration" role="img" aria-label="Illustration of an album wall in a desktop music player">
-        <div class="window-bar"><div class="window-dots"><i></i><i></i><i></i></div><span>YOUR MUSIC, YOUR WAY</span><span class="window-symbol">⌕</span></div>
-        <div class="mock-body"><div class="mock-sidebar"><div class="mock-selected">◉</div><div class="grid-icon">▦</div><div>≡</div><div>✦</div><div>♫</div><div class="mock-gear">⚙</div></div>
-          <div class="mock-content"><div class="mock-nav"><span class="mock-active">RECENTLY ADDED</span><span>BY YEAR</span><span>BY ARTIST</span><span>BY ALBUM</span></div>
-            <div class="covers"><div class="cover cover-one"><span>STILL<br>LIGHT</span></div><div class="cover cover-two"><span>AFTER<br>HOURS</span></div><div class="cover cover-three"><span>soft<br>focus</span></div><div class="cover cover-four"><span>THE<br>LONG<br>WAY</span></div><div class="cover cover-five"><span>DAYBREAK</span></div><div class="cover cover-six"><span>WAVES</span></div><div class="cover cover-seven"><span>somewhere<br>else</span></div><div class="cover cover-eight"><span>BLUE<br>HOUR</span></div></div>
-          </div></div>
-        <div class="mock-player"><div class="mock-track"><div class="mini-cover"></div><div><strong>Something to listen to</strong><small>Your collection</small></div></div><div class="mock-controls"><span>◀◀</span><b>▶</b><span>▶▶</span></div><div class="mock-time">2:14 &nbsp; ━━━━ &nbsp; 4:08</div></div>
-      </div>
-      <div class="hero-glow" aria-hidden="true"></div>
-    </section>
-
-    <section class="intro wrap" id="features"><div class="section-label">MADE FOR MUSIC PEOPLE <span>01 / 03</span></div><div class="intro-grid"><h2>All the things you love.<br><em>Room to make them yours.</em></h2><p>A music player should feel like your space. Browse your collection, build the perfect playlist, and let the next great song find you.</p></div></section>
-
-    <section class="feature-grid wrap" aria-label="Features">
-      <article class="feature feature-wide"><div class="feature-icon">▦</div><div><div class="feature-number">01 / YOUR LIBRARY</div><h3>The whole collection,<br>beautifully in view.</h3><p>Bring your Plex music and local libraries to the desktop. Browse the album wall, search your collection, or settle into a detailed list.</p></div><div class="feature-decoration discs" aria-hidden="true"><i></i><i></i><i></i></div></article>
-      <article class="feature"><div class="feature-icon">✳</div><div class="feature-number">02 / MAKE IT YOURS</div><h3>Playlists with a little more personality.</h3><p>Build smart playlists with precise rules, manage playlists with drag and drop, and keep the queue just the way you like it.</p></article>
-      <article class="feature"><div class="feature-icon">✦</div><div class="feature-number">03 / KEEP DISCOVERING</div><h3>There’s always another song.</h3><p>Explore Plex styles and moods, add similar tracks, or keep the music going with an automatic queue.</p></article>
-      <article class="feature"><div class="feature-icon">◌</div><div class="feature-number">04 / SET THE MOOD</div><h3>Make the player feel like yours.</h3><p>Choose a theme, let album colors set the background, and bring your music to life with a visualizer.</p></article>
-      <article class="feature"><div class="feature-icon">↗</div><div class="feature-number">05 / STAY CONNECTED</div><h3>At your desk or in your hand.</h3><p>Control Apistat from Plexamp on your phone, see lyrics and track information, and scrobble to Last.fm.</p></article>
-    </section>
-
-    <section class="download wrap" id="download"><div class="section-label">READY WHEN YOU ARE <span>02 / 03</span></div><div class="download-inner"><div><h2>Make yourself<br><em>at home.</em></h2><p>Apistat is free to explore, with its source available on GitHub. Choose your platform and start listening.</p><a class="button primary" href="https://github.com/visageeee/apistat-music-player/releases">Download from GitHub <span aria-hidden="true">↗</span></a></div><div class="download-options"><a href="https://github.com/visageeee/apistat-music-player/releases"><span class="os-icon">◈</span><span><strong>Linux</strong><small>Flatpak</small></span><span>↗</span></a><a href="https://github.com/visageeee/apistat-music-player/releases"><span class="os-icon">⊞</span><span><strong>Windows</strong><small>Portable ZIP</small></span><span>↗</span></a><a href="https://github.com/visageeee/apistat-music-player/releases"><span class="os-icon">◇</span><span><strong>macOS</strong><small>Experimental · unsigned</small></span><span>↗</span></a><p>Windows and macOS builds are unsigned. macOS builds are not notarized.</p></div></div></section>
-  </main>
-  <footer class="wrap footer"><div class="section-label">UNTIL THE NEXT TRACK <span>03 / 03</span></div><div class="footer-row"><a class="brand" href="#top"><img src="assets/apistat.png" alt="" width="28" height="28"><span>apistat</span></a><p>For the love of music and the joy of listening.</p><div><a href="https://github.com/visageeee/apistat-music-player/blob/master/docs/guide.md">Documentation ↗</a><a href="https://github.com/visageeee/apistat-music-player">GitHub ↗</a></div></div><div class="fine-print">Apistat is an independent project and is not affiliated with Plex.</div></footer>
+  <section class="gallery" aria-label="Screenshots">
+    <div class="screenshot"><span>Album wall<br><small>Screenshot coming soon</small></span></div>
+    <div class="screenshot"><span>Music library<br><small>Screenshot coming soon</small></span></div>
+    <div class="screenshot"><span>Now playing<br><small>Screenshot coming soon</small></span></div>
+  </section>
+  <details class="demo"><summary>Watch the demo</summary><div class="video-placeholder"><span>▶</span><p>YouTube demo coming soon</p></div></details>
+  <p class="links"><a href="https://github.com/visageeee/apistat-music-player/releases">All releases</a> · <a href="https://github.com/visageeee/apistat-music-player/blob/master/docs/guide.md">Documentation</a> · <a href="https://github.com/visageeee/apistat-music-player">GitHub</a></p>
+  <p class="note">Windows and macOS builds are unsigned. macOS builds are experimental and not notarized.</p>
+  <footer>Apistat is an independent project and is not affiliated with Plex.</footer>
+</main>
+<script>
+(() => {
+  const repo = 'https://github.com/visageeee/apistat-music-player';
+  const buttons = {linux: /\.flatpak$/i, windows: /windows.*\.zip$/i};
+  fetch('https://api.github.com/repos/visageeee/apistat-music-player/releases/latest')
+    .then(response => { if (!response.ok) throw new Error('No release'); return response.json(); })
+    .then(release => {
+      if (!Array.isArray(release.assets)) return;
+      for (const [id, pattern] of Object.entries(buttons)) {
+        const asset = release.assets.find(item => typeof item.name === 'string' && pattern.test(item.name) &&
+          typeof item.browser_download_url === 'string' && item.browser_download_url.startsWith(repo + '/releases/download/'));
+        if (asset) document.getElementById(id).href = asset.browser_download_url;
+      }
+    }).catch(() => {});
+})();
+</script>
 </body>
 </html>
