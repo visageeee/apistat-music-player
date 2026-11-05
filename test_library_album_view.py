@@ -6,6 +6,7 @@ from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
+import cairo
 import gi
 
 gi.require_version('Gtk', '3.0')
@@ -241,30 +242,27 @@ class AlbumLibraryViewTests(unittest.TestCase):
         container.add_overlay(overlay); container.set_overlay_pass_through(overlay, True)
         window = Gtk.OffscreenWindow(); window.set_size_request(300, 200); window.add(container)
         window.show_all(); overlay.set_results(tracks)
-        def wait_for_art(thumb):
-            deadline = time.monotonic() + 2
-            while time.monotonic() < deadline:
-                while Gtk.events_pending():
-                    Gtk.main_iteration()
-                if any(request[1] == thumb for request in requests):
-                    return
-                time.sleep(.005)
-            self.fail(f'Artwork was not requested for {thumb}')
-
         try:
-            wait_for_art('/art/a')
-            # Font metrics and display scaling vary across GTK backends; the
-            # second album may start below the initial viewport on Windows.
-            view.scroll_to_cell(Gtk.TreePath.new_from_indices([2]), None, True, .5, 0)
-            wait_for_art('/art/b')
-            self.assertTrue(container.get_overlay_pass_through(overlay))
-            self.assertFalse(overlay.get_has_window())
-            self.assertEqual({request[1] for request in requests}, {'/art/a', '/art/b'})
-            self.assertTrue(all(request[3] for request in requests))
-            overlay.queue_draw()
-            while Gtk.events_pending():
-                Gtk.main_iteration()
-            self.assertEqual(len(requests), 2)
+            # Give the painter a deterministic viewport. Native row metrics and
+            # offscreen scrolling differ between GTK's Windows and Linux backends.
+            visible = (Gtk.TreePath.new_from_indices([0]), Gtk.TreePath.new_from_indices([2]))
+            def row_area(path, _column):
+                return SimpleNamespace(y=path.get_indices()[0] * 48, height=48)
+            surface = cairo.ImageSurface(cairo.FORMAT_ARGB32, 300, 200)
+            with patch.object(view, 'get_visible_range', return_value=visible), \
+                    patch.object(view, 'translate_coordinates', return_value=(0, 0)), \
+                    patch.object(view, 'convert_bin_window_to_widget_coords',
+                                 side_effect=lambda x, y: (x, y)), \
+                    patch.object(view, 'get_background_area', side_effect=row_area), \
+                    patch.object(view, 'get_allocated_width', return_value=300), \
+                    patch.object(view, 'get_allocated_height', return_value=200):
+                overlay.draw_groups(overlay, cairo.Context(surface))
+                self.assertTrue(container.get_overlay_pass_through(overlay))
+                self.assertFalse(overlay.get_has_window())
+                self.assertEqual({request[1] for request in requests}, {'/art/a', '/art/b'})
+                self.assertTrue(all(request[3] for request in requests))
+                overlay.draw_groups(overlay, cairo.Context(surface))
+                self.assertEqual(len(requests), 2)
         finally:
             window.destroy()
 
