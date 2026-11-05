@@ -193,6 +193,6 @@ The client uses Python's standard HTTP/XML libraries directly; PlexAPI is not a 
 
 ### Building with Last.fm account linking
 
-Register an Apistat application at [Last.fm](https://www.last.fm/api/account/create). For GitHub builds, set the repository Actions secrets `LASTFM_API_KEY` and `LAST_FM_API_SECRET`; the build workflows require both secrets and use them to include the application credentials. Local packagers can set those variables and run `python3 scripts/embed_lastfm_credentials.py` before packaging. The generated `lastfm_build_credentials.py` is ignored by Git. When both variables are absent the script removes any previously generated file.
+Register an Apistat application at [Last.fm](https://www.last.fm/api/account/create). For GitHub builds, set the repository Actions secrets `LAST_FM_API_KEY` and `LAST_FM_API_SECRET`; the build workflows require both secrets and use them to include the application credentials. Local packagers can set `LASTFM_API_KEY` and `LASTFM_API_SECRET` and run `python3 scripts/embed_lastfm_credentials.py` before packaging. The generated `lastfm_build_credentials.py` is ignored by Git. When both variables are absent the script removes any previously generated file.
 
 The application secret is included in distributed packages and can be extracted by their recipients. It is an application credential, not a listener's Last.fm password or session key. Builds without application credentials retain manual setup in the Advanced section.

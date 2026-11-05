@@ -39,7 +39,7 @@ jobs:
           find /ucrt64/lib/gstreamer-1.0 -iname '*whisper*' -o -iname '*transcrib*'
       - name: Configure Last.fm application credentials
         env:
-          LASTFM_API_KEY: ${{ secrets.LASTFM_API_KEY }}
+          LASTFM_API_KEY: ${{ secrets.LAST_FM_API_KEY }}
           LASTFM_API_SECRET: ${{ secrets.LAST_FM_API_SECRET }}
         run: python scripts/embed_lastfm_credentials.py --require
       - name: Build portable app
