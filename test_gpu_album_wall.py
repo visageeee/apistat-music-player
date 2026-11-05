@@ -95,6 +95,20 @@ class GPUAlbumWallTests(unittest.TestCase):
         GPUAlbumWall.draw_background(wall, None, context)
         visualizer.draw_ribbon.assert_not_called()
 
+    def test_flip_background_colors_are_cached_across_reloading_the_wall(self):
+        client = object()
+        album = SimpleNamespace(key='album', thumb='/art')
+        player = SimpleNamespace()
+        data = bytes((200, 100, 50, 255)) * 200
+        wall = SimpleNamespace(player=player, albums=[album], client=client,
+                               slots={0: 1}, slot_pixels={1: data})
+        colors = GPUAlbumWall.flip_colors(wall, 0)
+        wall.slots.clear()
+        wall.slot_pixels.clear()
+        self.assertEqual(GPUAlbumWall.flip_colors(wall, 0), colors)
+        wall.client = object()
+        self.assertEqual(GPUAlbumWall.flip_colors(wall, 0), ('#292238', '#111e2b'))
+
     def test_click_and_drag_use_the_album_under_the_pointer(self):
         album = SimpleNamespace(key='/library/metadata/1', artist='Artist')
         player = SimpleNamespace(album_art_size=100, show_album_details=False,

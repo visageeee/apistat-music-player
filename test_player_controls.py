@@ -243,6 +243,32 @@ class PlayerControlTests(unittest.TestCase):
         FlipCard.prepare(card)
         self.assertEqual(len(calls), 4)
 
+    def test_album_card_tracks_cache_and_share_pending_requests(self):
+        client, other_client = object(), object()
+        album = Item('/library/metadata/2', 'Album')
+        scheduled, received = [], []
+        player = SimpleNamespace(closed=False,
+                                 async_work=lambda work, done, valid, failed:
+                                 scheduled.append((done, failed)))
+        stale = [False]
+        request = lambda source, valid, label: Player.request_album_card_tracks(
+            player, source, album, lambda tracks: received.append((label, tracks)),
+            valid, lambda: received.append((label, 'error')))
+        request(client, lambda: stale[0], 'closed card')
+        request(client, lambda: True, 'open card')
+        self.assertEqual(len(scheduled), 1)
+        tracks = [Item('/library/metadata/3', 'Song')]
+        scheduled[0][0](tracks)
+        self.assertEqual(received, [('open card', tracks)])
+        request(client, lambda: True, 'reopened')
+        self.assertEqual(received[-1], ('reopened', tracks))
+        self.assertEqual(len(scheduled), 1)
+        request(other_client, lambda: True, 'other server')
+        self.assertEqual(len(scheduled), 2)
+        scheduled[1][1]()
+        request(other_client, lambda: True, 'retry')
+        self.assertEqual(len(scheduled), 3)
+
     def test_track_widgets_wait_until_album_flip_finishes(self):
         tracks = [Item('/library/metadata/1', 'Track')]
         callbacks = []

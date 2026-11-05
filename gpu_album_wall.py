@@ -236,9 +236,10 @@ class GPUAlbumWall(Gtk.Box, GLProgram):
                     flip.error = True
                     flip.dirty = True
                     self.queue_frame()
-                self.player.async_work(lambda: client.tracks(album), loaded,
-                                       lambda: self.flips.get(index) is flip and self.epoch == epoch and
-                                       self.client is client, failed)
+                self.player.request_album_card_tracks(
+                    client, album, loaded,
+                    lambda: self.flips.get(index) is flip and self.epoch == epoch and
+                    self.client is client, failed)
         if not self.flip_tick_id:
             self.flip_tick_id = self.area.add_tick_callback(self.animate_flip)
         self.queue_frame()
@@ -290,6 +291,13 @@ class GPUAlbumWall(Gtk.Box, GLProgram):
             self.queue_frame()
 
     def flip_colors(self, index):
+        cache = getattr(self.player, '_gpu_album_color_cache', None)
+        if cache is None:
+            cache = self.player._gpu_album_color_cache = {}
+        album = self.albums[index]
+        key = (self.client, album.key, album.thumb)
+        if key in cache:
+            return cache[key]
         data = self.slot_pixels.get(self.slots.get(index))
         if not data:
             return ('#292238', '#111e2b')
@@ -303,7 +311,9 @@ class GPUAlbumWall(Gtk.Box, GLProgram):
         avg = [sum(values) / len(values) for values in channels]
         color = lambda factor, extra: '#' + ''.join(
             f'{max(0, min(255, round(value * factor + extra))):02x}' for value in avg)
-        return color(.38, 12), color(.14, 8)
+        colors = color(.38, 12), color(.14, 8)
+        cache[key] = colors
+        return colors
 
     def fail(self):
         if not self.closed:

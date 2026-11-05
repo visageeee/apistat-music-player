@@ -6776,12 +6776,19 @@ class Player(Gtk.Window):
         self.shared_background.set_colors(colors)
 
     def cached_art_colors(self, client, item, pixbuf):
+        palettes = getattr(self, '_album_palette_cache', None)
+        if palettes is None:
+            palettes = self._album_palette_cache = {}
+        key = (client, item.thumb)
+        if key in palettes:
+            return palettes[key]
         cache = LocalCache(client)
         try:
             palette = cache.read_palette(item.thumb)
         except OSError:
             palette = None
         if palette is not None:
+            palettes[key] = palette
             return palette
         gradient, wave = gradient_colors(pixbuf), waveform_colors(pixbuf)
         if gradient:
@@ -6789,6 +6796,7 @@ class Player(Gtk.Window):
                 cache.save_palette(item.thumb, gradient, wave)
             except OSError:
                 pass
+            palettes[key] = (gradient, wave)
         return gradient, wave
 
     def update_art_gradient(self, client, item, pixbuf):
@@ -8818,6 +8826,34 @@ class Player(Gtk.Window):
             tile.pending_tracks_error = False
             self.show_card_track_error(tile)
 
+    def request_album_card_tracks(self, client, album, done, valid, failed):
+        """Share album track requests and keep successful results for this session."""
+        cache = getattr(self, '_album_card_tracks', None)
+        if cache is None:
+            cache = self._album_card_tracks = {}
+            self._album_card_pending = {}
+        key = (client, album.key)
+        if key in cache:
+            if valid():
+                done(cache[key])
+            return
+        pending = self._album_card_pending
+        if key in pending:
+            pending[key].append((done, valid, failed))
+            return
+        pending[key] = [(done, valid, failed)]
+        def loaded(tracks):
+            cache[key] = tracks
+            for callback, still_valid, _failed in pending.pop(key, []):
+                if still_valid():
+                    callback(tracks)
+        def error():
+            for _callback, still_valid, on_error in pending.pop(key, []):
+                if still_valid():
+                    on_error()
+        self.async_work(lambda: client.tracks(album), loaded,
+                        lambda: not getattr(self, 'closed', False), error)
+
     def load_card_tracks(self, card):
         if card.tracks is not None or card.tracks_loading or not self.client:
             return
@@ -8835,8 +8871,9 @@ class Player(Gtk.Window):
                 card.pending_tracks_error = True
             else:
                 self.show_card_track_error(card)
-        self.async_work(lambda: client.tracks(album), loaded,
-                        lambda: epoch == self.art_epoch and client is self.client, failed)
+        Player.request_album_card_tracks(
+            self, client, album, loaded,
+            lambda: epoch == self.art_epoch and client is self.client, failed)
 
     def show_card_tracks(self, card, tracks):
         card.tracks_loading = False
@@ -9094,7 +9131,7 @@ class Player(Gtk.Window):
                     return False
                 finally:
                     self.busy.end()
-            GLib.idle_add(deliver)
+            GLib.idle_add(deliver, priority=GLib.PRIORITY_HIGH_IDLE)
         threading.Thread(target=worker, daemon=True).start()
 
     def connect_dialog(self, *_):

@@ -22,7 +22,7 @@ class LoadingResponsivenessTests(unittest.TestCase):
                 self.target()
 
         with patch('player.threading.Thread', ImmediateThread), \
-                patch('player.GLib.idle_add', side_effect=lambda callback: callbacks.append(callback)), \
+                patch('player.GLib.idle_add', side_effect=lambda callback, **_kwargs: callbacks.append(callback)), \
                 patch('busy_indicator.GLib.timeout_add', return_value=17), \
                 patch('busy_indicator.GLib.source_remove'):
             Player.async_work(player, lambda: 'loaded', lambda _result: busy.begin())
