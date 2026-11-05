@@ -156,11 +156,18 @@ class LastFMTests(unittest.TestCase):
 
     def test_credentials_are_stored_as_keyring_secret(self):
         saved = {'api_key': 'key', 'secret': 'secret', 'session': 'token', 'username': 'user'}
-        with patch.object(lastfm.Secret, 'password_store_sync', return_value=True) as store, \
-                patch.object(lastfm.Secret, 'password_lookup_sync', return_value=json.dumps(saved)):
-            lastfm.save_session(saved)
-            self.assertEqual(lastfm.load_session(), saved)
-            self.assertIn('token', store.call_args.args[4])
+        if lastfm.Secret is None:
+            with patch.object(lastfm, 'write_secret') as store, \
+                    patch.object(lastfm, 'read_secret', return_value=json.dumps(saved)):
+                lastfm.save_session(saved)
+                self.assertEqual(lastfm.load_session(), saved)
+                self.assertIn('token', store.call_args.args[1])
+        else:
+            with patch.object(lastfm.Secret, 'password_store_sync', return_value=True) as store, \
+                    patch.object(lastfm.Secret, 'password_lookup_sync', return_value=json.dumps(saved)):
+                lastfm.save_session(saved)
+                self.assertEqual(lastfm.load_session(), saved)
+                self.assertIn('token', store.call_args.args[4])
 
 
 if __name__ == '__main__':
