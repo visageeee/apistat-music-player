@@ -1,5 +1,7 @@
 # Apistat
 
+[Website](https://visageeee.github.io/apistat-music-player/) · [Documentation](docs/guide.md)
+
 Apistat is for people who love Plexamp but wish it felt more at home on the desktop. People who appreciate its style and music discovery, but miss the depth and control of classic iTunes.
 
 It brings that inspiration to a Plex music client with smart playlists, party shuffle, and playlist management. Build playlists around precise rules, keep a party queue rolling, and organise your collection. You can also control Apistat from Plexamp on your phone.
