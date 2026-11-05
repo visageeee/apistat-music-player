@@ -43,7 +43,7 @@ jobs:
       - name: Install GTK and GStreamer with Homebrew
         if: matrix.arch == 'arm64'
         run: |
-          brew install pygobject3 gtk+3 gstreamer adwaita-icon-theme librsvg
+          brew install pygobject3 gtk+3 gstreamer glib-networking adwaita-icon-theme librsvg
           echo "$(brew --prefix python@3.14)/bin" >> "$GITHUB_PATH"
       - name: Set up MacPorts
         if: matrix.arch == 'x86_64'
@@ -53,7 +53,7 @@ jobs:
       - name: Install GTK and GStreamer with MacPorts
         if: matrix.arch == 'x86_64'
         run: |
-          sudo port -N install python314 py314-gobject3 gtk3 adwaita-icon-theme librsvg gstreamer1-gst-plugins-base gstreamer1-gst-plugins-good gstreamer1-gst-plugins-bad gstreamer1-gst-plugins-ugly
+          sudo port -N install python314 py314-gobject3 gtk3 adwaita-icon-theme librsvg glib-networking gstreamer1-gst-plugins-base gstreamer1-gst-plugins-good gstreamer1-gst-plugins-bad gstreamer1-gst-plugins-ugly
           echo /opt/local/bin >> "$GITHUB_PATH"
       - name: Install Python build dependencies
         run: |

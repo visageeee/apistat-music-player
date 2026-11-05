@@ -10384,6 +10384,9 @@ def runtime_self_test():
         from keyring.backends.macOS import Keyring
         Keyring.priority  # Check the underlying Security API, not just the module.
         if getattr(sys, 'frozen', False):
+            from gi.repository import Gio
+            if not Gio.TlsBackend.get_default().supports_tls():
+                raise RuntimeError('Missing GLib TLS backend for HTTPS streaming')
             from macos_runtime import configure_bundled_icons
             theme = Gtk.IconTheme.get_default()
             settings = Gtk.Settings.get_default()
