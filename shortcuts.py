@@ -16,7 +16,7 @@ ACTIONS = (
 CHANNEL = 'xfce4-keyboard-shortcuts'
 CUSTOM_PREFIX = '/commands/custom/'
 OTHER_PREFIXES = ('/commands/default/', '/xfwm4/custom/', '/xfwm4/default/')
-DESTINATION = 'org.mpris.MediaPlayer2.plexmusicprototype'
+DESTINATION = 'org.mpris.MediaPlayer2.apistat'
 OBJECT_PATH = '/org/mpris/MediaPlayer2'
 INTERFACE = 'org.mpris.MediaPlayer2.Player'
 

@@ -23,7 +23,7 @@ from gi.repository import GdkPixbuf, GLib, Gtk
 from local_cache import read_gradient, save_gradient
 
 
-SETTINGS_PATH = Path(GLib.get_user_config_dir()) / 'plex-music-prototype' / 'settings.json'
+SETTINGS_PATH = Path(GLib.get_user_config_dir()) / 'apistat' / 'settings.json'
 ALBUM_SIZE_RANGE = (100, 480)
 ALBUM_COLUMN_RANGE = (4, 16)
 ALBUM_WALL_MARGIN = 40

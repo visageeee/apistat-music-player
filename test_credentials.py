@@ -16,6 +16,16 @@ class CredentialTests(unittest.TestCase):
             secret.password_lookup_sync.return_value = 'test-value'
             self.assertEqual(credentials._load_value(), 'test-value')
 
+    @unittest.skipUnless(sys.platform.startswith('linux'), 'Secret Service is Linux only')
+    def test_legacy_secret_is_copied_to_new_schema(self):
+        with patch.object(credentials, 'Secret') as secret, \
+                patch.object(credentials, '_save_value') as save:
+            secret.password_lookup_sync.side_effect = [None, 'saved-login']
+            self.assertEqual(credentials._load_value(), 'saved-login')
+            self.assertEqual(secret.password_lookup_sync.call_args_list[1].args[0],
+                             credentials.LEGACY_SCHEMA)
+            save.assert_called_once_with('saved-login')
+
     def test_save_and_restore_connection(self):
         with patch.object(credentials, '_save_value') as save, \
              patch.object(credentials, '_load_value') as load:

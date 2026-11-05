@@ -15,3 +15,10 @@ def draw_allocated(widget, context):
     if isinstance(widget, Gtk.Widget):
         widget.size_allocate(widget.get_allocation())
     widget.draw(context)
+
+
+def normalize_surface_origin(surface):
+    """Remove GTK tree-row drag offsets before using a surface as an image."""
+    if surface.get_device_offset() != (0.0, 0.0):
+        surface.set_device_offset(0, 0)
+    return surface

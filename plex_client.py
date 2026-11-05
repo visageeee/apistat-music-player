@@ -50,7 +50,7 @@ class Item:
 
 
 class PlexClient:
-    def __init__(self, address, token, identifier='linux-plex-music-prototype',
+    def __init__(self, address, token, identifier='apistat-desktop',
                  device_name='Apistat', timeout=15):
         address = address.strip().rstrip('/')
         parsed = urlsplit(address)

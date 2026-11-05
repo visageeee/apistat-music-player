@@ -105,7 +105,7 @@ from lyrics import LyricsClient, lyrics_error_message
 from artist_info import file_info_lines, format_artist_description
 from next_track_preload import preload_next_art, preload_next_waveform
 from album_card import FlipCard
-from gtk_snapshot import draw_allocated
+from gtk_snapshot import draw_allocated, normalize_surface_origin
 from app_assets import app_icon, placeholder_art, SMALL_PLACEHOLDER_LOGO_RATIO
 from smooth_scroll import SmoothScroller
 from sidebar_icons import CUSTOM_SIDEBAR_ICONS, SidebarIcon
@@ -119,6 +119,7 @@ from companion_account import (PlexAccount, load_device_token, save_device_token
                                clear_device_token)
 from companion_config import load_config, save_config
 import lastfm
+from app_paths import migrate_legacy_data
 
 if sys.platform == 'darwin' and getattr(sys, 'frozen', False):
     # GStreamer's HTTP plugin loads libsoup dynamically; preload the bundled
@@ -264,9 +265,13 @@ class Player(Gtk.Window):
     def __init__(self, mpris_enabled=False):
         bundled_font_available = register_bundled_font()
         super().__init__(title='Apistat')
+        if sys.platform == 'darwin' and getattr(sys, 'frozen', False):
+            from macos_runtime import configure_bundled_icons
+            configure_bundled_icons(Gtk.Settings.get_default(), Gtk.IconTheme.get_default(), sys._MEIPASS)
         self.default_font_family = DEFAULT_FONT_FAMILY if bundled_font_available else ''
         Gtk.Window.set_default_icon(app_icon())
         self.set_icon(app_icon())
+        migrate_legacy_data()
         self.saved_session = load_session()
         self.first_run_setup = not bool(self.saved_session.get('server'))
         self.session_applied = False
@@ -367,7 +372,9 @@ class Player(Gtk.Window):
             raise RuntimeError('Install gstreamer1.0-plugins-base and gstreamer1.0-plugins-good')
         self.pipeline.set_property('flags', 2)  # Audio only
         try:
-            self.live_waveform_tap = RibbonAudioTap()
+            output = ('osxaudiosink' if sys.platform == 'darwin' and
+                      Gst.ElementFactory.find('osxaudiosink') else 'autoaudiosink')
+            self.live_waveform_tap = RibbonAudioTap(output)
             self.pipeline.set_property('audio-sink', self.live_waveform_tap.sink_bin)
         except (RuntimeError, GLib.Error):
             self.live_waveform_tap = None
@@ -5309,7 +5316,7 @@ class Player(Gtk.Window):
         surface = view.create_row_drag_icon(hit[0]) if hit else None
         if surface is not None:
             self.song_drag_ghost.hide()
-            image.set_from_surface(surface)
+            image.set_from_surface(normalize_surface_origin(surface))
             image.set_no_show_all(False)
             image.show()
 
@@ -7617,7 +7624,7 @@ class Player(Gtk.Window):
         if isinstance(view, Gtk.TreeView):
             surface = view.create_row_drag_icon(Gtk.TreePath.new_from_indices([indices[0]]))
             if surface is not None:
-                Gtk.drag_set_icon_surface(context, surface)
+                Gtk.drag_set_icon_surface(context, normalize_surface_origin(surface))
                 return
         icon = Gtk.Label(label=self.song_drag_description(tracks, indices))
         icon.set_name('song-drag-ghost')
@@ -10376,6 +10383,18 @@ def runtime_self_test():
             raise RuntimeError('Missing GStreamer macOS audio sink')
         from keyring.backends.macOS import Keyring
         Keyring.priority  # Check the underlying Security API, not just the module.
+        if getattr(sys, 'frozen', False):
+            from macos_runtime import configure_bundled_icons
+            theme = Gtk.IconTheme.get_default()
+            settings = Gtk.Settings.get_default()
+            if theme is None or settings is None or not configure_bundled_icons(settings, theme, sys._MEIPASS):
+                raise RuntimeError('Bundled Adwaita icon theme is missing')
+            for icon in ('emblem-system-symbolic', 'audio-volume-high-symbolic',
+                         'media-playback-start-symbolic', 'list-add-symbolic'):
+                if not theme.has_icon(icon):
+                    raise RuntimeError('Bundled icon not found: ' + icon)
+                if theme.load_icon(icon, 24, Gtk.IconLookupFlags.FORCE_SIZE) is None:
+                    raise RuntimeError('Bundled icon could not be loaded: ' + icon)
     if (os.name == 'nt' or sys.platform == 'darwin') and getattr(sys, 'frozen', False):
         from app_font import font_path
         from mutagen.id3 import ID3
@@ -10405,12 +10424,17 @@ if __name__ == '__main__':
     import argparse
     parser = argparse.ArgumentParser(description='Apistat music player')
     parser.add_argument('--self-test', action='store_true', help='check GTK and GStreamer dependencies')
+    parser.add_argument('--playback-test-dir', metavar='DIR',
+                        help='check local and HTTP audio decoding using test fixtures')
     parser.add_argument('--resize-log', metavar='FILE',
                         help='append opt-in window resize diagnostics as JSON lines')
     args = parser.parse_args()
     if args.self_test:
         try:
             runtime_self_test()
+            if args.playback_test_dir:
+                from playback_self_test import verify_playback
+                verify_playback(args.playback_test_dir)
         except Exception:
             if os.name == 'nt' and getattr(sys, 'frozen', False):
                 # A windowed executable has no console. Avoid a modal error

@@ -15,7 +15,7 @@ from pathlib import Path
 from gi.repository import GLib
 from plex_client import Item, ALBUM_SORT_ARTIST
 
-CONFIG = Path(GLib.get_user_config_dir()) / 'plex-music-prototype' / 'sources.json'
+CONFIG = Path(GLib.get_user_config_dir()) / 'apistat' / 'sources.json'
 LEGACY_DATA = Path(GLib.get_user_data_dir()) / 'apistat' / 'libraries'
 DATA = (Path.home() / 'Library' / 'Application Support' / 'Apistat' / 'Libraries'
         if sys.platform == 'darwin' else LEGACY_DATA)

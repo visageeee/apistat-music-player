@@ -6,7 +6,7 @@ if ! command -v xfconf-query >/dev/null || ! command -v gdbus >/dev/null; then
     exit 1
 fi
 
-destination='org.mpris.MediaPlayer2.plexmusicprototype'
+destination='org.mpris.MediaPlayer2.apistat'
 object_path='/org/mpris/MediaPlayer2'
 interface='org.mpris.MediaPlayer2.Player'
 gdbus_path="$(command -v gdbus)"

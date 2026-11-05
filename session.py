@@ -12,7 +12,7 @@ from gi.repository import GLib
 from plex_client import Item
 
 
-SESSION_PATH = Path(GLib.get_user_config_dir()) / 'plex-music-prototype' / 'session.json'
+SESSION_PATH = Path(GLib.get_user_config_dir()) / 'apistat' / 'session.json'
 PANELS = {'now', 'albums', 'library', 'styles', 'queue', 'lyrics', 'settings'}
 SORTS = {'addedAt:desc', 'titleSort', 'artist.titleSort,titleSort'}
 

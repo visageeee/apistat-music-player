@@ -56,7 +56,7 @@ def _line_levels(levels, sample_rate):
 class RibbonAudioTap:
     def __init__(self, output='autoaudiosink'):
         description = (
-            'audioconvert ! '
+            'audioconvert ! audioresample ! '
             'spectrum name=ribbon_spectrum bands=512 threshold=-80 '
             'interval=30000000 post-messages=false message-magnitude=true '
             f'message-phase=false ! {output}'
