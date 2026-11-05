@@ -241,11 +241,22 @@ class AlbumLibraryViewTests(unittest.TestCase):
         container.add_overlay(overlay); container.set_overlay_pass_through(overlay, True)
         window = Gtk.OffscreenWindow(); window.set_size_request(300, 200); window.add(container)
         window.show_all(); overlay.set_results(tracks)
-        deadline = time.monotonic() + .12
-        try:
+        def wait_for_art(thumb):
+            deadline = time.monotonic() + 2
             while time.monotonic() < deadline:
                 while Gtk.events_pending():
                     Gtk.main_iteration()
+                if any(request[1] == thumb for request in requests):
+                    return
+                time.sleep(.005)
+            self.fail(f'Artwork was not requested for {thumb}')
+
+        try:
+            wait_for_art('/art/a')
+            # Font metrics and display scaling vary across GTK backends; the
+            # second album may start below the initial viewport on Windows.
+            view.scroll_to_cell(Gtk.TreePath.new_from_indices([2]), None, True, .5, 0)
+            wait_for_art('/art/b')
             self.assertTrue(container.get_overlay_pass_through(overlay))
             self.assertFalse(overlay.get_has_window())
             self.assertEqual({request[1] for request in requests}, {'/art/a', '/art/b'})
