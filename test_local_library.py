@@ -44,7 +44,7 @@ class LocalLibraryTests(unittest.TestCase):
         self.assertEqual((albums[0].title, albums[0].artist), ('Record', 'Album artist'))
         songs = self.library.tracks(albums[0])
         self.assertEqual([song.title for song in songs], ['First', 'Second'])
-        self.assertEqual(self.library.stream(songs[0]), (self.album / 'one.wav').as_uri())
+        self.assertEqual(self.library.stream(songs[0]), (self.album / 'one.wav').resolve().as_uri())
         reopened = LocalLibrary(self.source, Path(self.tmp.name) / 'db')
         self.assertEqual(reopened.songs(self.source['id'])[1], 2)
 
