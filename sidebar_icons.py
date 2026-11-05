@@ -7,7 +7,7 @@ import gi
 gi.require_version('Gtk', '3.0')
 from gi.repository import Gtk
 
-CUSTOM_SIDEBAR_ICONS = frozenset(('now', 'albums', 'library', 'styles', 'lyrics', 'queue'))
+CUSTOM_SIDEBAR_ICONS = frozenset(('now', 'albums', 'library', 'styles', 'lyrics', 'queue', 'time'))
 
 
 def _sparkle(context, x, y, radius, waist):
@@ -58,6 +58,14 @@ def draw_sidebar_icon(context, name, width, height, color, note_fill=None, note_
         context.close_path(); context.fill()
         for y in (6, 13, 20):
             context.rectangle(14, y, 12, 2.5); context.fill()
+    elif name == 'time':
+        context.set_line_width(3)
+        context.arc(14, 14, 10, 0, 2 * math.pi)
+        context.stroke()
+        context.set_line_width(2.7)
+        context.set_line_cap(cairo.LINE_CAP_ROUND)
+        context.move_to(14, 7); context.line_to(14, 14); context.line_to(19, 17)
+        context.stroke()
     elif name == 'library':
         context.rectangle(3.5, 5, 5, 19); context.fill()
         context.rectangle(10, 5, 5, 19); context.fill()

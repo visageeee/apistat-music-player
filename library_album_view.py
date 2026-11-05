@@ -63,9 +63,11 @@ class AlbumGroupOverlay(Gtk.DrawingArea):
     ART_SIZE = 176
     CACHE_LIMIT = 256
 
-    def __init__(self, player, view, scroll):
+    def __init__(self, player, view, scroll, gutter_column=None, model_offset=0):
         super().__init__()
         self.player, self.view = player, view
+        self.gutter_column = gutter_column
+        self.model_offset = model_offset
         self.results = None
         self.ranges = []
         self.starts = []
@@ -155,19 +157,20 @@ class AlbumGroupOverlay(Gtk.DrawingArea):
         return placeholder_art(self.ART_SIZE, SMALL_PLACEHOLDER_LOGO_RATIO)
 
     def draw_groups(self, _widget, context):
-        if not self.ranges or not getattr(self.player, 'songs', None):
+        if not self.ranges or self.results is None:
             return False
         visible = self.view.get_visible_range()
         origin = self.view.translate_coordinates(self, 0, 0)
         if not visible or origin is None:
             return False
-        first, last = visible[0].get_indices()[0], visible[1].get_indices()[0]
-        count = min(len(self.player.songs), len(self.results))
+        first = max(0, visible[0].get_indices()[0] - self.model_offset)
+        last = visible[1].get_indices()[0] - self.model_offset
+        count = min(max(0, len(self.view.get_model()) - self.model_offset), len(self.results))
         header_x, header_y = self.view.convert_bin_window_to_widget_coords(0, 0)
         x = origin[0] + header_x
         top = origin[1] + header_y
         width = self.view.get_allocated_width()
-        column = getattr(self.player, 'album_gutter_column', None)
+        column = self.gutter_column or getattr(self.player, 'album_gutter_column', None)
         gutter = (column.get_width() or column.get_fixed_width()) if column is not None else self.GUTTER
         gutter = max(self.MIN_GUTTER, gutter)
         context.save()
@@ -179,8 +182,8 @@ class AlbumGroupOverlay(Gtk.DrawingArea):
             if start > last or start >= count:
                 break
             end = min(end, count - 1)
-            first_row = self.view.get_background_area(Gtk.TreePath.new_from_indices([start]), None)
-            last_row = self.view.get_background_area(Gtk.TreePath.new_from_indices([end]), None)
+            first_row = self.view.get_background_area(Gtk.TreePath.new_from_indices([start + self.model_offset]), None)
+            last_row = self.view.get_background_area(Gtk.TreePath.new_from_indices([end + self.model_offset]), None)
             y = origin[1] + self.view.convert_bin_window_to_widget_coords(0, first_row.y)[1]
             bottom = origin[1] + self.view.convert_bin_window_to_widget_coords(0, last_row.y + last_row.height)[1]
             context.set_source_rgba(*( (0.15, 0.15, 0.15, 0.24) if self.player.theme == 'light'

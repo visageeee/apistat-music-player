@@ -4,6 +4,7 @@ import json
 import os
 import tempfile
 from dataclasses import asdict
+from datetime import date
 from pathlib import Path
 
 import gi
@@ -12,8 +13,8 @@ from gi.repository import GLib
 from plex_client import Item
 
 
-SESSION_PATH = Path(GLib.get_user_config_dir()) / 'plex-music-prototype' / 'session.json'
-PANELS = {'now', 'albums', 'library', 'styles', 'queue', 'lyrics', 'settings'}
+SESSION_PATH = Path(GLib.get_user_config_dir()) / 'apistat' / 'session.json'
+PANELS = {'now', 'albums', 'library', 'styles', 'queue', 'lyrics', 'time', 'settings'}
 SORTS = {'addedAt:desc', 'titleSort', 'artist.titleSort,titleSort'}
 
 
@@ -71,6 +72,15 @@ def load_session():
     result = {'window': {'width': width, 'height': height,
                          'maximized': window.get('maximized') is True},
               'panel': panel if isinstance(panel, str) and panel in PANELS else 'albums'}
+    dates = data.get('time_machine_dates')
+    if isinstance(dates, dict):
+        try:
+            start = date.fromisoformat(dates['from'])
+            end = date.fromisoformat(dates['to'])
+            if 1970 <= start.year <= 9998 and 1970 <= end.year <= 9998:
+                result['time_machine_dates'] = {'from': start, 'to': end}
+        except (KeyError, TypeError, ValueError):
+            pass
     if data.get('settings_page') in ('main', 'shortcuts'):
         result['settings_page'] = data['settings_page']
     if type(data.get('settings_tab')) is int and 0 <= data['settings_tab'] <= 4:

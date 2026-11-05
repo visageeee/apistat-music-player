@@ -17,7 +17,7 @@ from sidebar_icons import (CUSTOM_SIDEBAR_ICONS, SidebarIcon, draw_sidebar_icon,
 class SidebarIconTests(unittest.TestCase):
     def test_custom_icons_draw_distinct_visible_shapes(self):
         images = []
-        for name in ('now', 'albums', 'library', 'styles', 'lyrics', 'queue'):
+        for name in ('now', 'albums', 'library', 'styles', 'lyrics', 'queue', 'time'):
             surface = cairo.ImageSurface(cairo.FORMAT_ARGB32, 28, 28)
             draw_sidebar_icon(cairo.Context(surface), name, 28, 28, '#eeeeee')
             surface.flush()
@@ -26,7 +26,7 @@ class SidebarIconTests(unittest.TestCase):
             images.append(data)
         self.assertEqual(len(set(images)), len(images))
         self.assertEqual(CUSTOM_SIDEBAR_ICONS,
-                         {'now', 'albums', 'library', 'styles', 'lyrics', 'queue'})
+                         {'now', 'albums', 'library', 'styles', 'lyrics', 'queue', 'time'})
 
     def test_active_icon_tracks_accent_and_inactive_icon_tracks_theme(self):
         current = ['albums']

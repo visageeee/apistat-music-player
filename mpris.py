@@ -7,7 +7,7 @@ gi.require_version('Gst', '1.0')
 from gi.repository import Gio, GLib, Gst
 
 
-NAME = 'org.mpris.MediaPlayer2.plexmusicprototype'
+NAME = 'org.mpris.MediaPlayer2.apistat'
 PATH = '/org/mpris/MediaPlayer2'
 PLAYER = 'org.mpris.MediaPlayer2.Player'
 ROOT = 'org.mpris.MediaPlayer2'
@@ -78,7 +78,7 @@ class Mpris:
 
     def track_id(self):
         if self.player.queue and 0 <= self.player.index < len(self.player.queue):
-            return f'/org/plexmusicprototype/track/{os.getpid()}_{self.player.play_generation}'
+            return f'/org/apistat/track/{os.getpid()}_{self.player.play_generation}'
         return '/org/mpris/MediaPlayer2/TrackList/NoTrack'
 
     def metadata(self):

@@ -9,6 +9,7 @@ plugins = ['app', 'audioconvert', 'audioresample', 'audioparsers', 'autodetect',
 a = Analysis(
     [str(root / 'player.py')], pathex=[str(root)], binaries=[],
     datas=[(str(root / 'apistat.png'), '.'),
+           (str(root / 'assets' / 'time-machine'), 'assets/time-machine'),
            (str(root / 'fonts' / 'Nunito-wght.ttf'), 'fonts'),
            (str(root / 'fonts' / 'OFL.txt'), 'fonts')],
     hiddenimports=['keyring.backends.macOS', 'gi.repository.Soup'], hookspath=[],
@@ -26,6 +27,7 @@ app = BUNDLE(
     bundle_identifier='org.apistat.Apistat',
     info_plist={'CFBundleName': 'Apistat', 'CFBundleDisplayName': 'Apistat',
                 'CFBundleShortVersionString': '0.1.0',
+                'LSMinimumSystemVersion': '15.0',
                 'NSHighResolutionCapable': True,
                 'NSLocalNetworkUsageDescription':
                     'Apistat connects to your Plex server and accepts optional Plexamp controls on your local network.'},

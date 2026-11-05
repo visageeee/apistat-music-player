@@ -105,11 +105,12 @@ from lyrics import LyricsClient, lyrics_error_message
 from artist_info import file_info_lines, format_artist_description
 from next_track_preload import preload_next_art, preload_next_waveform
 from album_card import FlipCard
-from gtk_snapshot import draw_allocated
+from gtk_snapshot import draw_allocated, normalize_surface_origin
 from app_assets import app_icon, placeholder_art, SMALL_PLACEHOLDER_LOGO_RATIO
 from smooth_scroll import SmoothScroller
 from sidebar_icons import CUSTOM_SIDEBAR_ICONS, SidebarIcon
 from library_album_view import AlbumGroupOverlay, album_group_row_height, group_songs_by_album
+from time_machine_view import TimeMachineView
 from background_drag_scroll import attach_background_drag
 from busy_indicator import BusyIndicator
 from session import load_session, save_session, item_to_data
@@ -119,6 +120,7 @@ from companion_account import (PlexAccount, load_device_token, save_device_token
                                clear_device_token)
 from companion_config import load_config, save_config
 import lastfm
+from app_paths import migrate_legacy_data
 
 if sys.platform == 'darwin' and getattr(sys, 'frozen', False):
     # GStreamer's HTTP plugin loads libsoup dynamically; preload the bundled
@@ -264,9 +266,13 @@ class Player(Gtk.Window):
     def __init__(self, mpris_enabled=False):
         bundled_font_available = register_bundled_font()
         super().__init__(title='Apistat')
+        if sys.platform == 'darwin' and getattr(sys, 'frozen', False):
+            from macos_runtime import configure_bundled_icons
+            configure_bundled_icons(Gtk.Settings.get_default(), Gtk.IconTheme.get_default(), sys._MEIPASS)
         self.default_font_family = DEFAULT_FONT_FAMILY if bundled_font_available else ''
         Gtk.Window.set_default_icon(app_icon())
         self.set_icon(app_icon())
+        migrate_legacy_data()
         self.saved_session = load_session()
         self.first_run_setup = not bool(self.saved_session.get('server'))
         self.session_applied = False
@@ -367,7 +373,9 @@ class Player(Gtk.Window):
             raise RuntimeError('Install gstreamer1.0-plugins-base and gstreamer1.0-plugins-good')
         self.pipeline.set_property('flags', 2)  # Audio only
         try:
-            self.live_waveform_tap = RibbonAudioTap()
+            output = ('osxaudiosink' if sys.platform == 'darwin' and
+                      Gst.ElementFactory.find('osxaudiosink') else 'autoaudiosink')
+            self.live_waveform_tap = RibbonAudioTap(output)
             self.pipeline.set_property('audio-sink', self.live_waveform_tap.sink_bin)
         except (RuntimeError, GLib.Error):
             self.live_waveform_tap = None
@@ -502,6 +510,11 @@ class Player(Gtk.Window):
             #player-bar #transport-play { min-width: 52px; min-height: 52px; padding: 0; }
             #side-nav #sidebar-icon-label { font-size: 10px; }
             #side-nav.show-labels button { padding: 5px 3px; }
+            #time-machine-subtitle { font-size: 10px; letter-spacing: 2px; opacity: .72; }
+            #time-machine-panel, #time-machine-view { background: transparent; color: #eee; }
+            #time-machine-album, #time-machine-album:hover { border: 0; box-shadow: none;
+                background: transparent; padding: 0; }
+            #time-machine-album:hover { background: rgba(128, 128, 128, .18); }
             #album-track-number { font-weight: bold; }
             #full-library-button { background: transparent;
                 border: 0; box-shadow: none; border-radius: 0; padding: 6px 8px; }
@@ -768,6 +781,7 @@ class Player(Gtk.Window):
                      'styles': ('Styles and moods', 'emblem-music-symbolic'),
                      'queue': ('Play queue', 'view-list-symbolic'),
                      'lyrics': ('Lyrics', 'accessories-text-editor-symbolic'),
+                     'time': ('Time machine', 'appointment-soon-symbolic'),
                      'settings': ('Settings', 'emblem-system-symbolic')}
         for view in self.sidebar_order:
             label, icon = nav_items[view]
@@ -1060,6 +1074,8 @@ class Player(Gtk.Window):
         self.build_now_view()
         self.build_library_view()
         self.build_styles_view()
+        self.time_machine = TimeMachineView(self)
+        self.content_views.add_named(self.time_machine.widget, 'time')
         self.build_queue_view()
         self.build_lyrics_view()
         self.build_settings_view()
@@ -1440,6 +1456,13 @@ class Player(Gtk.Window):
                 border-bottom-color: {color}; }}
             #playlist-header-underline {{ background: {faded_accent}; min-height: 2px; border: 0; }}
             #side-nav button.active #sidebar-icon-label {{ color: {color}; }}
+            #time-track-sort-button.active {{ background: {wash}; color: {color}; }}
+            #time-action-button, #time-action-button:hover, #time-action-button:active,
+            #time-action-button:checked {{ border-bottom-color: {color}; }}
+            #time-machine-subtitle {{ color: {faded_accent}; }}
+            #time-machine-engage, #time-machine-engage:hover,
+            #time-machine-engage:active {{ border-bottom-color: {color}; }}
+            #time-machine-rule {{ background: {wash}; min-height: 1px; border: 0; }}
             #style-mode-button.active {{ background: {wash};
                 border-bottom: 2px solid {color}; }}
             #style-result-mode.active {{ background: {wash};
@@ -1466,6 +1489,8 @@ class Player(Gtk.Window):
             self.background_visualizer.set_colors(*wave_colors)
         if hasattr(self, 'lyrics_highlight'):
             self.lyrics_highlight.set_property('foreground', color)
+        if hasattr(self, 'time_machine'):
+            self.time_machine.refresh_selection_style()
         if hasattr(self, 'top_frosted_style'):
             self.update_frosted_top_style()
         if hasattr(self, 'sidebar_volume_indicator') and self.sidebar_volume_visible:
@@ -1503,6 +1528,7 @@ class Player(Gtk.Window):
                 #smart-playlist-list row:selected { background: #303030; color: #fff; }
                 #playlist-list row:selected, #full-library-button.active {
                     background: #303030; color: #fff; }
+                #time-machine-view { background: #000; color: #eee; }
                 #style-facet-card { background: #000; border-color: #444; }
                 #style-song-view.view:selected { background: #303030; color: #fff; }
                 #lyrics-panel, #lyrics-scroll, #lyrics-scroll viewport,
@@ -1540,6 +1566,7 @@ class Player(Gtk.Window):
                 #queue-scroll, #queue-scroll viewport, #queue-view {
                     background: #fff; color: #202326; }
                 #queue-panel { background: transparent; }
+                #time-machine-view { background: transparent; color: #202326; }
                 #lyrics-panel, #lyrics-scroll, #lyrics-scroll viewport,
                 #lyrics-view, #lyrics-view text { background: transparent; color: #202326; }
                 #info-panel { background: #f2f2ef; color: #202326; border-left-color: #c5c5bf; }
@@ -1608,6 +1635,40 @@ class Player(Gtk.Window):
                     background: transparent; background-image: none;
                 }
             '''
+        banner_color = '#eeeeec' if self.theme == 'light' else ('#000000' if self.theme == 'black' else '#242426')
+        banner_text = '#222222' if self.theme == 'light' else '#eeeeee'
+        css += f'''
+            #time-action-banner {{ background: {banner_color}; background-image: none; }}
+            #time-action-button, #time-action-button:hover, #time-action-button:active,
+            #time-action-button:checked {{ color: {banner_text}; background: transparent;
+                background-image: none; border-style: solid; border-width: 0 0 2px;
+                border-radius: 0; box-shadow: none; padding: 8px 10px; }}
+        '''
+        css += '''
+            #time-dial-panel { background: transparent; background-image: none;
+                border: 0; padding: 8px; }
+            #time-dial { background: transparent; border: 0;
+                border-radius: 4px; padding: 10px 16px; }
+            #time-dial-title { color: #e2ddd0; font-size: 14px; font-weight: bold;
+                letter-spacing: 2px; }
+            #time-dial-label { color: #c2bdb0; font-size: 12px; font-weight: bold; }
+            #time-dial-value { font-family: monospace; font-size: 34px; font-weight: bold;
+                color: transparent; background: #080b09; background-image: none;
+                border: 1px solid #46483f; border-radius: 2px; padding: 2px 4px; }
+            #time-dial-value selection { color: transparent; background: transparent; }
+            #time-dial-value:focus { color: transparent; caret-color: transparent;
+                border-color: rgba(230, 230, 220, 0.65); }
+            #time-dial-step { padding: 0 7px; min-height: 0; font-size: 10px; }
+            #time-machine-engage, #time-machine-engage:hover, #time-machine-engage:active {
+                padding: 10px 22px; background: transparent; background-image: none;
+                border-style: solid; border-width: 0 0 3px; border-radius: 0;
+                box-shadow: none; font-weight: bold; letter-spacing: 1px; }
+            #time-column-grip { background: rgba(150, 150, 150, 0.14); }
+            #time-track-sort-button { border: 0; border-radius: 0;
+                background: rgba(100, 100, 100, 0.20); background-image: none; }
+            #time-machine-search-effect { color: #f9be67; font-family: monospace;
+                font-size: 15px; font-weight: bold; letter-spacing: 1px; }
+        '''
         css += '''
             #album-sort-bar #album-actions button,
             #album-sort-bar #album-actions button:hover,
@@ -1750,7 +1811,7 @@ class Player(Gtk.Window):
                     upper = self.seek.get_adjustment().get_upper()
                     self.seek_to(self.seek, None, max(0, min(upper, self.seek.get_value() + delta)))
                 return True
-        if not modified and not editing and Gdk.KEY_1 <= event.keyval <= Gdk.KEY_7:
+        if not modified and not editing and Gdk.KEY_1 <= event.keyval <= Gdk.KEY_8:
             visible = getattr(self, 'sidebar_visible', self.sidebar_order)
             visible_order = [name for name in self.sidebar_order if name in visible]
             number = event.keyval - Gdk.KEY_1
@@ -1876,6 +1937,8 @@ class Player(Gtk.Window):
             self.enable_gpu_wall()
         else:
             self.disable_gpu_wall()
+        if hasattr(self, 'time_machine'):
+            self.time_machine.render_albums()
 
     def enable_gpu_wall(self):
         if not self.gpu_wall_enabled or self.closed:
@@ -1992,6 +2055,9 @@ class Player(Gtk.Window):
 
     def apply_album_grid_layout(self):
         gpu = getattr(self, 'gpu_wall', None)
+        time_wall = getattr(getattr(self, 'time_machine', None), 'gpu_wall', None)
+        if time_wall is not None and time_wall.area.get_mapped():
+            gpu = time_wall
         width = (gpu.area.get_allocated_width() if getattr(self, 'gpu_wall_enabled', False) and gpu
                  else self.wall_scroll.get_allocated_width())
         size = album_cover_size(width, self.album_columns,
@@ -2000,6 +2066,8 @@ class Player(Gtk.Window):
             self.apply_album_grid_columns()
             if hasattr(self, 'style_album_grid'):
                 self.apply_style_album_columns()
+            if hasattr(self, 'time_machine'):
+                self.time_machine.update_grid_settings()
             return False
         self.album_art_size = size
         if gpu and getattr(self, 'gpu_wall_enabled', False):
@@ -2019,6 +2087,8 @@ class Player(Gtk.Window):
         self.apply_album_grid_columns()
         if hasattr(self, 'style_album_grid'):
             self.apply_style_album_columns()
+        if hasattr(self, 'time_machine'):
+            self.time_machine.update_grid_settings()
         return False
 
     def window_allocated(self, _window, allocation):
@@ -3015,6 +3085,8 @@ class Player(Gtk.Window):
             self.load_songs()
         elif view == 'styles':
             self.load_styles_browser()
+        elif view == 'time':
+            self.time_machine.on_show()
         elif view == 'queue':
             self.refresh_queue_view()
         elif view == 'lyrics':
@@ -3076,7 +3148,7 @@ class Player(Gtk.Window):
         self.show_context_menu(event, tile)
         return True
 
-    def show_context_menu(self, event, tile=None, gpu_album=None):
+    def show_context_menu(self, event, tile=None, gpu_album=None, gpu_wall=None):
         menu = Gtk.Menu()
         menu.set_name('apistat-context-menu')
         menu.attach_to_widget(self, None)
@@ -3087,10 +3159,11 @@ class Player(Gtk.Window):
         def separator():
             menu.append(Gtk.SeparatorMenuItem())
         if gpu_album is not None:
-            flip = self.gpu_wall.flip
+            wall = gpu_wall or self.gpu_wall
+            flip = wall.flip
             flipped = bool(flip and flip.album is gpu_album and flip.target)
             item('Show cover' if flipped else 'Flip album',
-                 lambda: self.gpu_wall.toggle_album(gpu_album))
+                 lambda: wall.toggle_album(gpu_album))
             item('Open album', lambda: self.select_album(gpu_album))
             item('Show Artist Albums', lambda: self.show_artist_albums(gpu_album.artist))
             item('Show in library', lambda: self.show_in_library(gpu_album))
@@ -5309,7 +5382,7 @@ class Player(Gtk.Window):
         surface = view.create_row_drag_icon(hit[0]) if hit else None
         if surface is not None:
             self.song_drag_ghost.hide()
-            image.set_from_surface(surface)
+            image.set_from_surface(normalize_surface_origin(surface))
             image.set_no_show_all(False)
             image.show()
 
@@ -5504,6 +5577,8 @@ class Player(Gtk.Window):
         generation = self.lastfm_generation
         def loaded(session):
             self.lastfm_session = session
+            if getattr(self, 'time_machine', None):
+                self.time_machine.on_show()
             self.lastfm_unlink_button.set_sensitive(bool(session))
             self.lastfm_status.set_text(f'Linked to Last.fm as {session["username"]}'
                                         if session else 'Last.fm is not linked.')
@@ -5551,6 +5626,8 @@ class Player(Gtk.Window):
             return session
         def linked(session):
             self.lastfm_session = session
+            if getattr(self, 'time_machine', None):
+                self.time_machine.on_show()
             self.lastfm_auth = None
             self.lastfm_key.set_text('')
             self.lastfm_secret.set_text('')
@@ -5563,6 +5640,8 @@ class Player(Gtk.Window):
         self.lastfm_generation += 1
         generation = self.lastfm_generation
         self.lastfm_session = None
+        if getattr(self, 'time_machine', None):
+            self.time_machine.on_show()
         self.lastfm_auth = None
         self.lastfm_finish_button.set_sensitive(False)
         self.lastfm_unlink_button.set_sensitive(False)
@@ -5954,7 +6033,8 @@ class Player(Gtk.Window):
         sidebar_page.pack_start(note_toggle, False, False, 0)
         for view, label in (('now', 'Now playing'), ('albums', 'Albums'),
                             ('library', 'Library'), ('styles', 'Styles and moods'),
-                            ('queue', 'Play queue'), ('lyrics', 'Lyrics')):
+                            ('queue', 'Play queue'), ('lyrics', 'Lyrics'),
+                            ('time', 'Time machine')):
             toggle = Gtk.CheckButton(label=label)
             toggle.set_active(view in self.sidebar_visible)
             toggle.connect('toggled', self.sidebar_visibility_changed, view)
@@ -6235,6 +6315,8 @@ class Player(Gtk.Window):
         self.theme = theme
         self.apply_theme()
         self.update_frosted_top_style()
+        if hasattr(self, 'time_machine'):
+            self.time_machine.refresh_selection_style()
         self.prefetch_next_track()
         try:
             save_theme(theme)
@@ -6429,6 +6511,12 @@ class Player(Gtk.Window):
 
     def single_flip_changed(self, button):
         self.single_flip_enabled = button.get_active()
+        time_wall = getattr(getattr(self, 'time_machine', None), 'gpu_wall', None)
+        if time_wall is not None:
+            if self.single_flip_enabled:
+                time_wall.enforce_single_flip()
+            else:
+                time_wall.pending_exclusive_flip = None
         if self.single_flip_enabled and getattr(self, 'gpu_wall', None):
             self.gpu_wall.enforce_single_flip()
         elif getattr(self, 'gpu_wall', None):
@@ -6601,13 +6689,18 @@ class Player(Gtk.Window):
 
     @staticmethod
     def gpu_wall_is_mapped(player):
-        wall = getattr(player, 'gpu_wall', None)
-        return bool(wall is not None and wall.area.get_mapped())
+        walls = (getattr(player, 'gpu_wall', None),
+                 getattr(getattr(player, 'time_machine', None), 'gpu_wall', None))
+        return any(wall is not None and wall.area.get_mapped() for wall in walls)
 
     @staticmethod
     def gpu_glass_surface(player, bar):
-        wall = getattr(player, 'gpu_wall', None)
-        return wall.glass_surfaces.get(id(bar)) if wall is not None and wall.area.get_mapped() else None
+        walls = (getattr(player, 'gpu_wall', None),
+                 getattr(getattr(player, 'time_machine', None), 'gpu_wall', None))
+        for wall in walls:
+            if wall is not None and wall.area.get_mapped():
+                return wall.glass_surfaces.get(id(bar))
+        return None
 
     def set_album_frosted_source(self, source):
         for widget, effect in getattr(self, 'top_frosted_bars', ()):
@@ -6816,6 +6909,7 @@ class Player(Gtk.Window):
         self.info_generation = 0
         self.info_target = None
         self.info_pending_update = None
+        self.info_mode = 'track'
         self.info_revealer = Gtk.Revealer()
         self.info_revealer.set_transition_type(Gtk.RevealerTransitionType.SLIDE_LEFT)
         self.info_revealer.set_transition_duration(220)
@@ -6850,6 +6944,11 @@ class Player(Gtk.Window):
         close.set_valign(Gtk.Align.CENTER)
         header.add_overlay(close)
         panel.pack_start(header, False, False, 0)
+        self.info_content_stack = Gtk.Stack()
+        self.info_content_stack.set_vexpand(True)
+        panel.pack_start(self.info_content_stack, True, True, 0)
+        details_panel = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+        self.info_content_stack.add_named(details_panel, 'track')
         content = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
         self.info_biography = Gtk.Label(label='Play a song to see artist information.', xalign=0)
         self.info_biography.set_line_wrap(True)
@@ -6865,14 +6964,14 @@ class Player(Gtk.Window):
         self.info_artist_scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
         self.info_artist_scroll.set_vexpand(True)
         self.info_artist_scroll.add(content)
-        panel.pack_start(self.info_artist_scroll, True, True, 0)
-        panel.pack_start(Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL), False, False, 0)
+        details_panel.pack_start(self.info_artist_scroll, True, True, 0)
+        details_panel.pack_start(Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL), False, False, 0)
         file_header = Gtk.Label(label='Track information', xalign=0)
         file_header.set_name('info-section-title')
-        panel.pack_start(file_header, False, False, 0)
+        details_panel.pack_start(file_header, False, False, 0)
         self.info_track_title = Gtk.Label(label='Nothing playing', xalign=0)
         self.info_track_title.set_ellipsize(Pango.EllipsizeMode.END)
-        panel.pack_start(self.info_track_title, False, False, 0)
+        details_panel.pack_start(self.info_track_title, False, False, 0)
         track_content = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
         self.info_file = Gtk.Label(label='Play a song to see file information.', xalign=0)
         self.info_file.set_line_wrap(True)
@@ -6885,7 +6984,27 @@ class Player(Gtk.Window):
         self.info_track_scroll.set_max_content_height(260)
         self.info_track_scroll.set_propagate_natural_height(True)
         self.info_track_scroll.add(track_content)
-        panel.pack_start(self.info_track_scroll, False, True, 0)
+        details_panel.pack_start(self.info_track_scroll, False, True, 0)
+        lost_panel = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        self.info_lost_count = Gtk.Label(xalign=0)
+        self.info_lost_count.set_line_wrap(True)
+        lost_panel.pack_start(self.info_lost_count, False, False, 0)
+        self.info_lost_store = Gtk.ListStore(str, str, str, str)
+        self.info_lost_view = Gtk.TreeView(model=self.info_lost_store)
+        self.info_lost_view.set_name('song-view')
+        for index, title in enumerate(('Song', 'Artist', 'Album', 'Listened')):
+            cell = Gtk.CellRendererText()
+            cell.set_property('ellipsize', Pango.EllipsizeMode.END)
+            column = Gtk.TreeViewColumn(title, cell, text=index)
+            column.set_resizable(True)
+            column.set_min_width(80)
+            self.info_lost_view.append_column(column)
+        lost_scroll = Gtk.ScrolledWindow()
+        lost_scroll.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
+        lost_scroll.add(self.info_lost_view)
+        lost_panel.pack_start(lost_scroll, True, True, 0)
+        self.info_content_stack.add_named(lost_panel, 'lost')
+        self.info_content_stack.set_visible_child_name('track')
         self.info_revealer.add(self.info_panel)
         self.content_overlay.add_overlay(self.info_revealer)
 
@@ -6961,8 +7080,11 @@ class Player(Gtk.Window):
     def info_toggled(self, button):
         visible = button.get_active()
         if visible:
-            self.load_current_info()
+            if getattr(self, 'info_mode', 'track') != 'lost':
+                self.info_content_stack.set_visible_child_name('track')
+                self.load_current_info()
         else:
+            self.info_mode = 'track'
             self.info_target = None
             self.info_pending_update = None
             self.info_generation += 1
@@ -6971,6 +7093,9 @@ class Player(Gtk.Window):
     def show_track_info(self, track):
         if self.client is None:
             return
+        self.info_mode = 'track'
+        if hasattr(self, 'info_content_stack'):
+            self.info_content_stack.set_visible_child_name('track')
         self.info_target = (self.client, track)
         if self.info_button.get_active():
             self.load_current_info()
@@ -6978,11 +7103,49 @@ class Player(Gtk.Window):
             self.info_button.set_active(True)
 
     def show_playing_info(self):
+        self.info_mode = 'track'
+        if hasattr(self, 'info_content_stack'):
+            self.info_content_stack.set_visible_child_name('track')
         self.info_target = None
         if self.info_button.get_active():
             self.load_current_info()
         else:
             self.info_button.set_active(True)
+
+    def show_lost_time_info(self, listens):
+        """Open a snapshot of unmatched Last.fm listens without changing playback."""
+        self.info_generation += 1
+        generation = self.info_generation
+        self.info_pending_update = None
+        self.info_target = None
+        self.info_mode = 'lost'
+        self.info_artist_name.set_text('Lost to time')
+        self.info_lost_count.set_text(
+            f'{len(listens):,} listens could not be matched to this library.' if listens else
+            'Every listen was matched to this library.')
+        self.info_lost_store.clear()
+        self.info_content_stack.set_visible_child_name('lost')
+        if not self.info_button.get_active():
+            self.info_button.set_active(True)
+        snapshot = tuple(listens)
+        offset = 0
+        def append():
+            nonlocal offset
+            if (self.closed or generation != self.info_generation or
+                    getattr(self, 'info_mode', None) != 'lost'):
+                return False
+            for listen in snapshot[offset:offset + 150]:
+                timestamp = listen.get('timestamp')
+                try:
+                    played = time.strftime('%Y-%m-%d %H:%M', time.localtime(timestamp)) if timestamp else ''
+                except (ValueError, TypeError, OverflowError, OSError):
+                    played = ''
+                self.info_lost_store.append([listen.get('title', ''), listen.get('artist', ''),
+                                             listen.get('album', ''), played])
+            offset += 150
+            return offset < len(snapshot)
+        if snapshot:
+            GLib.idle_add(append)
 
     def info_reveal_finished(self, revealer, _property):
         pending = self.info_pending_update
@@ -7617,7 +7780,7 @@ class Player(Gtk.Window):
         if isinstance(view, Gtk.TreeView):
             surface = view.create_row_drag_icon(Gtk.TreePath.new_from_indices([indices[0]]))
             if surface is not None:
-                Gtk.drag_set_icon_surface(context, surface)
+                Gtk.drag_set_icon_surface(context, normalize_surface_origin(surface))
                 return
         icon = Gtk.Label(label=self.song_drag_description(tracks, indices))
         icon.set_name('song-drag-ghost')
@@ -7836,7 +7999,7 @@ class Player(Gtk.Window):
         found = {}
         client = getattr(self, 'client', None)
         collections = [getattr(self, f'{source}_drag_tracks', None)
-                       for source in ('song', 'album', 'style')
+                       for source in ('song', 'album', 'style', 'time')
                        if getattr(self, f'{source}_drag_client', None) is client]
         collections.extend(getattr(self, name, None) for name in
                            ('songs', 'song_catalog', 'tracks'))
@@ -8945,6 +9108,9 @@ class Player(Gtk.Window):
         self.start_track()
 
     def refresh_playing_highlight(self):
+        time_wall = getattr(getattr(self, 'time_machine', None), 'gpu_wall', None)
+        if time_wall is not None:
+            time_wall.refresh_flip()
         if getattr(self, 'gpu_wall_enabled', False) and getattr(self, 'gpu_wall', None):
             self.gpu_wall.refresh_flip()
         for grid in (self.grid, getattr(self, 'style_album_grid', None)):
@@ -9813,7 +9979,8 @@ class Player(Gtk.Window):
         self.hero_artist.set_text(track.artist)
         self.hero_album.set_text(self.queue_album.title if self.queue_album else track.album)
         if (hasattr(self, 'info_revealer') and self.info_revealer.get_reveal_child() and
-                getattr(self, 'info_target', None) is None):
+                getattr(self, 'info_target', None) is None and
+                getattr(self, 'info_mode', 'track') == 'track'):
             self.load_current_info()
         if hasattr(self, 'lyrics_text'):
             self.lyrics_generation += 1
@@ -10251,6 +10418,15 @@ class Player(Gtk.Window):
                               else 'main'),
             'settings_tab': self.settings_tabs.get_current_page(),
         }
+        machine = getattr(self, 'time_machine', None)
+        if machine:
+            try:
+                start, end = machine.selected_dates()
+                data['time_machine_dates'] = {'from': start.isoformat(), 'to': end.isoformat()}
+            except (ValueError, OverflowError):
+                previous = self.saved_session.get('time_machine_dates')
+                if previous:
+                    data['time_machine_dates'] = {key: value.isoformat() for key, value in previous.items()}
         if self.client:
             data['server'] = self.client.address
             data['history'] = [item_to_data(track)
@@ -10376,6 +10552,21 @@ def runtime_self_test():
             raise RuntimeError('Missing GStreamer macOS audio sink')
         from keyring.backends.macOS import Keyring
         Keyring.priority  # Check the underlying Security API, not just the module.
+        if getattr(sys, 'frozen', False):
+            from gi.repository import Gio
+            if not Gio.TlsBackend.get_default().supports_tls():
+                raise RuntimeError('Missing GLib TLS backend for HTTPS streaming')
+            from macos_runtime import configure_bundled_icons
+            theme = Gtk.IconTheme.get_default()
+            settings = Gtk.Settings.get_default()
+            if theme is None or settings is None or not configure_bundled_icons(settings, theme, sys._MEIPASS):
+                raise RuntimeError('Bundled Adwaita icon theme is missing')
+            for icon in ('emblem-system-symbolic', 'audio-volume-high-symbolic',
+                         'media-playback-start-symbolic', 'list-add-symbolic'):
+                if not theme.has_icon(icon):
+                    raise RuntimeError('Bundled icon not found: ' + icon)
+                if theme.load_icon(icon, 24, Gtk.IconLookupFlags.FORCE_SIZE) is None:
+                    raise RuntimeError('Bundled icon could not be loaded: ' + icon)
     if (os.name == 'nt' or sys.platform == 'darwin') and getattr(sys, 'frozen', False):
         from app_font import font_path
         from mutagen.id3 import ID3
@@ -10405,12 +10596,17 @@ if __name__ == '__main__':
     import argparse
     parser = argparse.ArgumentParser(description='Apistat music player')
     parser.add_argument('--self-test', action='store_true', help='check GTK and GStreamer dependencies')
+    parser.add_argument('--playback-test-dir', metavar='DIR',
+                        help='check local and HTTP audio decoding using test fixtures')
     parser.add_argument('--resize-log', metavar='FILE',
                         help='append opt-in window resize diagnostics as JSON lines')
     args = parser.parse_args()
     if args.self_test:
         try:
             runtime_self_test()
+            if args.playback_test_dir:
+                from playback_self_test import verify_playback
+                verify_playback(args.playback_test_dir)
         except Exception:
             if os.name == 'nt' and getattr(sys, 'frozen', False):
                 # A windowed executable has no console. Avoid a modal error

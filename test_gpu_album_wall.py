@@ -74,6 +74,19 @@ class GPUAlbumWallTests(unittest.TestCase):
             appearance.save_gpu_album_wall_enabled(False)
             self.assertFalse(appearance.load_gpu_album_wall_enabled())
 
+    def test_time_machine_glass_does_not_depend_on_player_bar_setting(self):
+        bar = SimpleNamespace(get_mapped=lambda: True)
+        effect = SimpleNamespace(bar=bar, enabled=True, PAD=56)
+        player = SimpleNamespace(frosted_player_bar=False, time_machine=None)
+        wall = SimpleNamespace(player=player, area=object(), visible_in_rect=lambda _rect: [])
+        player.time_machine = SimpleNamespace(gpu_wall=wall, header_frost=effect)
+        with patch('gpu_album_wall.glass_rect', return_value=(0, 0, 500, 200)):
+            targets = GPUAlbumWall.glass_targets(wall)
+        self.assertEqual(targets, [(effect, (0, 0, 500, 200), [])])
+        effect.enabled = False
+        with patch('gpu_album_wall.glass_rect', return_value=(0, 0, 500, 200)):
+            self.assertEqual(GPUAlbumWall.glass_targets(wall), [])
+
     def test_gpu_wall_redraws_and_composites_background_visualizer(self):
         background = Mock()
         visualizer = Mock()

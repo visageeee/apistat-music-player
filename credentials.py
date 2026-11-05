@@ -17,18 +17,32 @@ else:
     from gi.repository import Secret
 
 
-SCHEMA = (Secret.Schema.new('org.plexmusicprototype.connection',
+SCHEMA = (Secret.Schema.new('org.apistat.connection',
                             Secret.SchemaFlags.NONE,
                             {'application': Secret.SchemaAttributeType.STRING})
           if Secret is not None else None)
-ATTRIBUTES = {'application': 'plex-music-prototype'}
+LEGACY_SCHEMA = (Secret.Schema.new('org.plexmusicprototype.connection',
+                                   Secret.SchemaFlags.NONE,
+                                   {'application': Secret.SchemaAttributeType.STRING})
+                 if Secret is not None else None)
+ATTRIBUTES = {'application': 'apistat'}
+LEGACY_ATTRIBUTES = {'application': 'plex-music-prototype'}
 WINDOWS_TARGET = 'Apistat/PlexServer'
 
 
 def _load_value():
     if os.name == 'nt' or sys.platform == 'darwin':
         return read_secret(WINDOWS_TARGET)
-    return Secret.password_lookup_sync(SCHEMA, ATTRIBUTES, None)
+    value = Secret.password_lookup_sync(SCHEMA, ATTRIBUTES, None)
+    if value:
+        return value
+    value = Secret.password_lookup_sync(LEGACY_SCHEMA, LEGACY_ATTRIBUTES, None)
+    if value:
+        try:
+            _save_value(value)
+        except Exception:
+            pass  # Continue using the old entry if the keyring cannot copy it yet.
+    return value
 
 
 def _save_value(value):

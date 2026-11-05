@@ -99,10 +99,10 @@ class AppearanceTests(unittest.TestCase):
                 appearance._write_settings({
                     'sidebar_order': ['now', 'albums', 'library', 'queue', 'settings']})
                 self.assertEqual(appearance.load_sidebar_order(),
-                                 ['now', 'albums', 'library', 'queue', 'styles', 'lyrics', 'settings'])
+                                 ['now', 'albums', 'library', 'queue', 'styles', 'lyrics', 'time', 'settings'])
                 appearance._write_settings({'sidebar_visible': ['albums']})
                 self.assertEqual(appearance.load_sidebar_visible(),
-                                 {'albums', 'lyrics', 'settings'})
+                                 {'albums', 'lyrics', 'time', 'settings'})
                 appearance.save_sidebar_visible({'albums', 'styles', 'settings'})
                 self.assertEqual(appearance.load_sidebar_visible(),
                                  {'albums', 'styles', 'settings'})

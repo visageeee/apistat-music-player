@@ -573,7 +573,7 @@ class PlayerControlTests(unittest.TestCase):
         from pathlib import Path
         with tempfile.TemporaryDirectory() as directory, \
                 patch.object(appearance, 'SETTINGS_PATH', Path(directory) / 'settings.json'):
-            order = ['queue', 'now', 'albums', 'styles', 'lyrics', 'settings', 'library']
+            order = ['queue', 'now', 'albums', 'styles', 'lyrics', 'time', 'settings', 'library']
             appearance.save_sidebar_order(order)
             self.assertEqual(appearance.load_sidebar_order(), order)
             with self.assertRaises(ValueError):

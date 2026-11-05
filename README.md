@@ -23,7 +23,7 @@ Download a package for Linux, Windows or macOS from [Releases](https://github.co
 
 - **Linux:** Install the Flatpak bundle with `flatpak install --user ./Apistat.flatpak`, then run `flatpak run org.apistat.Apistat`. The GNOME runtime is available from [Flathub](https://flathub.org/setup).
 - **Windows:** Extract the ZIP and run `Apistat.exe` from the extracted folder.
-- **macOS:** Extract the ZIP for your Mac’s architecture and open the app. The macOS build is experimental.
+- **macOS:** Extract the ZIP for your Mac’s architecture and open the app. The macOS build is experimental and currently requires macOS 15 or newer.
 
 On first launch, link your Plex account and select a server and music library. Apistat requires a reachable Plex Media Server and a working system credential store.
 

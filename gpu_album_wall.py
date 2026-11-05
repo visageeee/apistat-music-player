@@ -47,10 +47,12 @@ def atlas_cell_size(display_pixels, atlas_size, visible_count):
 
 class GPUAlbumWall(Gtk.Box, GLProgram):
     """Draw only visible covers, keeping artwork in a bounded GPU atlas."""
-    def __init__(self, player, failed):
+    def __init__(self, player, failed, *, album_pressed=None, load_more=True):
         Gtk.Box.__init__(self, orientation=Gtk.Orientation.HORIZONTAL)
         self.player = player
         self.failed_callback = failed
+        self.album_pressed_handler = album_pressed
+        self.load_more_enabled = load_more
         self.gl = load_gl()
         self.texture, self.vao, self.buffer = ctypes.c_uint(), ctypes.c_uint(), ctypes.c_uint()
         self.program = 0
@@ -58,6 +60,7 @@ class GPUAlbumWall(Gtk.Box, GLProgram):
         self.offscreen = None
         self.frame_surface = None
         self.scene_dirty = True
+        self.content_top_inset = 0
         self.closed = False
         self.frame_source = 0
         self.epoch = 0
@@ -192,6 +195,12 @@ class GPUAlbumWall(Gtk.Box, GLProgram):
         if self.render_surface.get_margin_bottom() != inset:
             self.render_surface.set_margin_bottom(inset)
             self.scrollbar.set_margin_bottom(inset)
+
+    def set_content_top_inset(self, inset):
+        inset = max(0, int(inset))
+        if inset != self.content_top_inset:
+            self.content_top_inset = inset
+            self.layout_changed()
 
     def clear_card(self):
         for flip in self.flips.values():
@@ -472,9 +481,10 @@ class GPUAlbumWall(Gtk.Box, GLProgram):
         columns = max(1, min(16, (max(0, width - 2 * margin) + gap) // (size + gap)))
         extra = (3 * (self.player.text_size + 4) + 6) if self.player.show_album_details else 0
         row_height = size + gap + extra
-        total = math.ceil(len(self.albums) / columns) * row_height + margin
+        top = margin + getattr(self, 'content_top_inset', 0)
+        total = math.ceil(len(self.albums) / columns) * row_height + top
         x0 = max(margin, (width - (columns * size + (columns - 1) * gap)) // 2)
-        return width, size, gap, margin, columns, row_height, total, x0
+        return width, size, gap, top, columns, row_height, total, x0
 
     def layout_changed(self):
         for flip in self.flips.values():
@@ -519,7 +529,8 @@ class GPUAlbumWall(Gtk.Box, GLProgram):
     def changed(self, *_):
         self.queue_frame()
         self.labels.queue_draw()
-        if (self.adjustment.get_value() + self.adjustment.get_page_size() >=
+        if (getattr(self, 'load_more_enabled', True) and
+                self.adjustment.get_value() + self.adjustment.get_page_size() >=
                 self.adjustment.get_upper() - 160):
             GLib.idle_add(self.player.gpu_load_more_albums)
 
@@ -572,12 +583,17 @@ class GPUAlbumWall(Gtk.Box, GLProgram):
             yield index, x0 + (index % columns) * (size + gap), top + (index // columns) * row_height - offset
 
     def glass_targets(self):
-        if not getattr(self.player, 'frosted_player_bar', False):
-            return []
-        effects = [getattr(self.player, 'frosted_bar', None)]
-        effects.extend(effect for widget, effect in getattr(self.player, 'top_frosted_bars', ())
-                       if widget is getattr(self.player, 'album_sort_bar', None) or
-                       widget is getattr(self.player, 'album_toolbar', None))
+        # The Time Machine header is always glass, independently of the
+        # optional translucent player and album bars.
+        effects = []
+        machine = getattr(self.player, 'time_machine', None)
+        if machine is not None and getattr(machine, 'gpu_wall', None) is self:
+            effects.append(getattr(machine, 'header_frost', None))
+        if getattr(self.player, 'frosted_player_bar', False):
+            effects.append(getattr(self.player, 'frosted_bar', None))
+            effects.extend(effect for widget, effect in getattr(self.player, 'top_frosted_bars', ())
+                           if widget is getattr(self.player, 'album_sort_bar', None) or
+                           widget is getattr(self.player, 'album_toolbar', None))
         result = []
         for effect in effects:
             if effect and effect.enabled and effect.bar.get_mapped():
@@ -732,6 +748,9 @@ class GPUAlbumWall(Gtk.Box, GLProgram):
                     id(effect.bar), width, height, self.vao, self.buffer,
                     lambda rect=rect, items=items: self.draw_glass_scene(rect, items))
                 self.glass_surfaces[id(effect.bar)] = surface
+                changed = getattr(effect, 'backdrop_changed', None)
+                if changed is not None:
+                    changed()
                 effect.bar.queue_draw()
         except (RuntimeError, ValueError, AttributeError, GLib.Error):
             self.glass_failed = True
@@ -874,7 +893,7 @@ class GPUAlbumWall(Gtk.Box, GLProgram):
                             self.player.show_song_context_menu(
                                 event, song, hit[1], lambda: self.play_flip_track(hit[1]))
                             return True
-                        self.player.gpu_album_pressed(self.albums[index], event, x, y)
+                        GPUAlbumWall.album_pressed(self, self.albums[index], event, x, y)
                         return True
                     self.drag_album = (self.albums[index], x, y)
                     self.pressed_hit = hit
@@ -934,9 +953,16 @@ class GPUAlbumWall(Gtk.Box, GLProgram):
             elif hit[0] == 'close':
                 self.toggle_album(album)
             else:
-                self.player.gpu_album_pressed(album, event, x, y)
+                GPUAlbumWall.album_pressed(self, album, event, x, y)
             return True
         return False
+
+    def album_pressed(self, album, event, x, y):
+        handler = getattr(self, 'album_pressed_handler', None)
+        if handler is not None:
+            handler(album, event, x, y)
+        else:
+            self.player.gpu_album_pressed(album, event, x, y)
 
     def play_flip_track(self, index):
         flip = self.flip

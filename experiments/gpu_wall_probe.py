@@ -306,7 +306,7 @@ void main() { color = texture(image, uv); }
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--self-test', action='store_true')
-    parser.add_argument('--cache', default=str(Path(GLib.get_user_cache_dir()) / 'plex-music-prototype'))
+    parser.add_argument('--cache', default=str(Path(GLib.get_user_cache_dir()) / 'apistat'))
     args = parser.parse_args()
     paths = glob.glob(str(Path(args.cache) / '*' / 'art' / '*.img'))[:256]
     if not paths:

@@ -17,7 +17,8 @@ class FrostedBar:
 
     def __init__(self, bar, content, background, theme, timeline=lambda: None,
                  edge='bottom', window_capture=False, capture_allowed=lambda: True,
-                 capture_content=lambda: True, gpu_surface=lambda: None):
+                 capture_content=lambda: True, gpu_surface=lambda: None,
+                 retain_missing_gpu=lambda: False, cache_frames=False):
         self.bar = bar
         self.content = content
         self.background = background
@@ -28,6 +29,9 @@ class FrostedBar:
         self.capture_allowed = capture_allowed
         self.capture_content = capture_content
         self.gpu_surface = gpu_surface
+        self.retain_missing_gpu = retain_missing_gpu
+        self.cache_frames = bool(cache_frames)
+        self._backdrop_dirty = True
         self.surface = None
         self.enabled = False
         self._top_idle = 0
@@ -37,11 +41,20 @@ class FrostedBar:
         self._ignore_source_draw = False
         self._ready = {id(content): False, id(background): False}
         self._allocations = {}
+        self._bar_geometry = None
         self._observed = {id(content), id(background)}
         for widget in (content, background):
             widget.connect('size-allocate', self.invalidate)
             widget.connect_after('draw', self.drawn)
         bar.connect('draw', self.draw)
+        if self.cache_frames:
+            bar.connect('size-allocate', self.bar_allocated)
+
+    def bar_allocated(self, _widget, allocation):
+        geometry = (allocation.x, allocation.y, allocation.width, allocation.height)
+        if geometry != self._bar_geometry:
+            self._bar_geometry = geometry
+            self._backdrop_dirty = True
 
     def invalidate(self, widget, _allocation):
         if widget is not self.content and widget is not self.background:
@@ -52,6 +65,7 @@ class FrostedBar:
                 return
             self._allocations[id(widget)] = geometry
         self._ready[id(widget)] = False
+        self._backdrop_dirty = True
         self._last_layout = time.monotonic()
         self._needs_resize_check = True
 
@@ -59,7 +73,13 @@ class FrostedBar:
         if widget is not self.content and widget is not self.background:
             return False
         self._ready[id(widget)] = True
-        if (self.edge == 'top' and widget is self.content and self.enabled and
+        if (not FrostedBar._capture_depth and
+                (widget is self.background or self.capture_content())):
+            self._backdrop_dirty = True
+        should_refresh = (widget is self.content and
+                          (not self.cache_frames or self.capture_content()))
+        should_refresh = should_refresh or (self.cache_frames and widget is self.background)
+        if (self.edge == 'top' and should_refresh and self.enabled and
                 not FrostedBar._capture_depth and not self._ignore_source_draw and
                 self.bar.get_mapped() and not self._top_idle):
             self._top_idle = GLib.idle_add(self._refresh_top,
@@ -72,6 +92,7 @@ class FrostedBar:
         self._ready.pop(id(self.content), None)
         self._allocations.pop(id(self.content), None)
         self.content = content
+        self._backdrop_dirty = True
         self._ready[id(content)] = False
         self._last_layout = time.monotonic()
         self._needs_resize_check = True
@@ -90,6 +111,10 @@ class FrostedBar:
             self.bar.queue_draw()
         return False
 
+    def backdrop_changed(self):
+        """Mark a freshly rendered external backdrop for compositing."""
+        self._backdrop_dirty = True
+
     def set_enabled(self, enabled):
         self.enabled = bool(enabled)
         if not self.enabled:
@@ -105,6 +130,7 @@ class FrostedBar:
             self._settle_timer = 0
         self._ignore_source_draw = False
         self.surface = None
+        self._backdrop_dirty = True
 
     def refresh(self):
         if not self.enabled:
@@ -131,6 +157,13 @@ class FrostedBar:
             return True
         scale = self.SCALE
         size = math.ceil(width / scale), math.ceil((height + self.PAD) / scale)
+        capture_content = self.capture_content()
+        gpu = None if capture_content else self.gpu_surface()
+        # A GPU frame can arrive after a GTK resize or redraw. Keep the last
+        # complete backdrop instead of clearing it to the background alone.
+        if (not capture_content and self.retain_missing_gpu() and self.surface is not None and
+                (gpu is None or (gpu.get_width(), gpu.get_height()) != size)):
+            return True
         if self.surface is None or (self.surface.get_width(), self.surface.get_height()) != size:
             self.surface = cairo.ImageSurface(cairo.FORMAT_ARGB32, *size)
         context = cairo.Context(self.surface)
@@ -172,10 +205,10 @@ class FrostedBar:
                     context.restore()
             else:
                 draw_allocated(self.background, context)
-            if self.capture_content():
+            if capture_content:
                 draw_allocated(self.content, context)
             else:
-                surface = self.gpu_surface()
+                surface = gpu
                 if (surface is not None and surface.get_width() == size[0] and
                         surface.get_height() == size[1]):
                     context.save()
@@ -185,6 +218,7 @@ class FrostedBar:
                     context.restore()
         finally:
             FrostedBar._capture_depth -= 1
+        self._backdrop_dirty = False
         return True
 
     def _after_layout(self):
@@ -200,7 +234,7 @@ class FrostedBar:
     def draw(self, _bar, context):
         if not self.enabled:
             return False
-        if not self.window_capture:
+        if not self.window_capture and (not self.cache_frames or self._backdrop_dirty):
             self.refresh()
         width = self.bar.get_allocated_width()
         height = self.bar.get_allocated_height()

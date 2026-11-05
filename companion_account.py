@@ -32,9 +32,13 @@ from plex_resources import parse_resources
 
 PLEX_TV = 'https://plex.tv'
 PLEX_CLIENTS = 'https://clients.plex.tv'
-SCHEMA = (Secret.Schema.new('org.plexmusicprototype.companion', Secret.SchemaFlags.NONE,
+SCHEMA = (Secret.Schema.new('org.apistat.companion', Secret.SchemaFlags.NONE,
                             {'identifier': Secret.SchemaAttributeType.STRING})
           if Secret is not None else None)
+
+LEGACY_SCHEMA = (Secret.Schema.new('org.plexmusicprototype.companion', Secret.SchemaFlags.NONE,
+                                   {'identifier': Secret.SchemaAttributeType.STRING})
+                 if Secret is not None else None)
 
 
 def _windows_target(identifier):
@@ -128,7 +132,17 @@ class PlexAccount:
 def load_device_token(identifier):
     if os.name == 'nt' or sys.platform == 'darwin':
         return read_secret(_windows_target(identifier))
-    return Secret.password_lookup_sync(SCHEMA, {'identifier': identifier}, None)
+    attributes = {'identifier': identifier}
+    token = Secret.password_lookup_sync(SCHEMA, attributes, None)
+    if token:
+        return token
+    token = Secret.password_lookup_sync(LEGACY_SCHEMA, attributes, None)
+    if token:
+        try:
+            save_device_token(identifier, token)
+        except Exception:
+            pass  # Keep the existing account link usable if migration fails.
+    return token
 
 
 def save_device_token(identifier, token):
@@ -146,3 +160,4 @@ def clear_device_token(identifier):
         delete_secret(_windows_target(identifier))
         return
     Secret.password_clear_sync(SCHEMA, {'identifier': identifier}, None)
+    Secret.password_clear_sync(LEGACY_SCHEMA, {'identifier': identifier}, None)

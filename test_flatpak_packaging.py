@@ -17,7 +17,7 @@ class FlatpakPackagingTests(unittest.TestCase):
         permissions = set(manifest['finish-args'])
         self.assertTrue({'--share=network', '--socket=pulseaudio',
                          '--talk-name=org.freedesktop.secrets',
-                         '--own-name=org.mpris.MediaPlayer2.plexmusicprototype'} <= permissions)
+                         '--own-name=org.mpris.MediaPlayer2.apistat'} <= permissions)
         self.assertFalse(any(flag.startswith('--filesystem=host') or flag == '--filesystem=home'
                              for flag in permissions))
         modules = {module['name']: module for module in manifest['modules']}

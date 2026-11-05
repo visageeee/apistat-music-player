@@ -23,7 +23,7 @@ from gi.repository import GdkPixbuf, GLib, Gtk
 from local_cache import read_gradient, save_gradient
 
 
-SETTINGS_PATH = Path(GLib.get_user_config_dir()) / 'plex-music-prototype' / 'settings.json'
+SETTINGS_PATH = Path(GLib.get_user_config_dir()) / 'apistat' / 'settings.json'
 ALBUM_SIZE_RANGE = (100, 480)
 ALBUM_COLUMN_RANGE = (4, 16)
 ALBUM_WALL_MARGIN = 40
@@ -35,7 +35,7 @@ DEFAULT_ALBUM_SIZE = 160
 DEFAULT_NOW_SIZE = 360
 DEFAULT_ACCENT_COLOR = '#e7a641'
 THEMES = ('dark', 'black', 'light')
-DEFAULT_SIDEBAR_ORDER = ('now', 'albums', 'library', 'styles', 'queue', 'lyrics', 'settings')
+DEFAULT_SIDEBAR_ORDER = ('now', 'albums', 'library', 'styles', 'queue', 'lyrics', 'time', 'settings')
 COLOR_PATTERN = re.compile(r'^#[0-9a-fA-F]{6}$')
 _gradient_executor = ThreadPoolExecutor(max_workers=1)
 _gradient_memory = OrderedDict()
@@ -381,16 +381,14 @@ def load_sidebar_order():
     if isinstance(order, list) and all(isinstance(item, str) for item in order):
         if len(order) == len(DEFAULT_SIDEBAR_ORDER) and set(order) == set(DEFAULT_SIDEBAR_ORDER):
             return list(order)
-        old = set(DEFAULT_SIDEBAR_ORDER) - {'styles', 'lyrics'}
-        if len(order) == len(old) and set(order) == old:
+        allowed_missing = {'styles', 'lyrics', 'time'}
+        missing = set(DEFAULT_SIDEBAR_ORDER) - set(order)
+        if (missing <= allowed_missing and len(order) == len(set(order)) and
+                set(order) <= set(DEFAULT_SIDEBAR_ORDER) and 'settings' in order):
             result = list(order)
-            result.insert(result.index('settings'), 'styles')
-            result.insert(result.index('settings'), 'lyrics')
-            return result
-        old = set(DEFAULT_SIDEBAR_ORDER) - {'lyrics'}
-        if len(order) == len(old) and set(order) == old:
-            result = list(order)
-            result.insert(result.index('settings'), 'lyrics')
+            for name in DEFAULT_SIDEBAR_ORDER:
+                if name in missing:
+                    result.insert(result.index('settings'), name)
             return result
     return list(DEFAULT_SIDEBAR_ORDER)
 
@@ -457,8 +455,10 @@ def load_sidebar_visible():
             all(isinstance(name, str) and name in optional for name in names) and
             len(names) == len(set(names))):
         result = set(names) | {'settings'}
-        if settings.get('sidebar_visibility_version') != 2:
+        if settings.get('sidebar_visibility_version') not in (2, 3):
             result.add('lyrics')
+        if settings.get('sidebar_visibility_version') != 3:
+            result.add('time')
         return result
     return set(DEFAULT_SIDEBAR_ORDER)
 
@@ -470,7 +470,7 @@ def save_sidebar_visible(names):
     settings = _read_settings()
     settings['sidebar_visible'] = [name for name in DEFAULT_SIDEBAR_ORDER
                                    if name in names and name != 'settings']
-    settings['sidebar_visibility_version'] = 2
+    settings['sidebar_visibility_version'] = 3
     _write_settings(settings)
 
 

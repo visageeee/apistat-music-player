@@ -8,7 +8,7 @@ from gi.repository import GLib, Gtk
 
 from album_card import FlipCard
 from frosted_bar import FrostedBar
-from gtk_snapshot import draw_allocated
+from gtk_snapshot import draw_allocated, normalize_surface_origin
 from player import Player
 
 
@@ -49,6 +49,25 @@ class GtkSnapshotTests(unittest.TestCase):
             draw_allocated(label, cairo.Context(surface))
             self.assertEqual(len(allocations), 1)
             self.assert_no_draw_critical()
+        finally:
+            window.destroy()
+
+    def test_tree_row_drag_surface_has_zero_origin_for_gtk_image(self):
+        model = Gtk.ListStore(str)
+        model.append(['Track'])
+        view = Gtk.TreeView(model=model)
+        view.append_column(Gtk.TreeViewColumn('Title', Gtk.CellRendererText(), text=0))
+        window = self.show(view)
+        try:
+            surface = view.create_row_drag_icon(Gtk.TreePath.new_from_indices([0]))
+            self.assertIsNotNone(surface)
+            normalized = normalize_surface_origin(surface)
+            self.assertIs(normalized, surface)
+            self.assertEqual(surface.get_device_offset(), (0.0, 0.0))
+            self.assertEqual(cairo.Context(surface).clip_extents()[:2], (0.0, 0.0))
+            image = Gtk.Image.new_from_surface(surface)
+            image.get_preferred_width()
+            image.destroy()
         finally:
             window.destroy()
 

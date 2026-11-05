@@ -43,7 +43,7 @@ jobs:
       - name: Install GTK and GStreamer with Homebrew
         if: matrix.arch == 'arm64'
         run: |
-          brew install pygobject3 gtk+3 gstreamer
+          brew install pygobject3 gtk+3 gstreamer glib-networking adwaita-icon-theme librsvg
           echo "$(brew --prefix python@3.14)/bin" >> "$GITHUB_PATH"
       - name: Set up MacPorts
         if: matrix.arch == 'x86_64'
@@ -53,7 +53,7 @@ jobs:
       - name: Install GTK and GStreamer with MacPorts
         if: matrix.arch == 'x86_64'
         run: |
-          sudo port -N install python314 py314-gobject3 gtk3 gstreamer1-gst-plugins-base gstreamer1-gst-plugins-good gstreamer1-gst-plugins-bad gstreamer1-gst-plugins-ugly
+          sudo port -N install python314 py314-gobject3 gtk3 adwaita-icon-theme librsvg glib-networking gstreamer1-gst-plugins-base gstreamer1-gst-plugins-good gstreamer1-gst-plugins-bad gstreamer1-gst-plugins-ugly
           echo /opt/local/bin >> "$GITHUB_PATH"
       - name: Install Python build dependencies
         run: |
@@ -85,10 +85,11 @@ jobs:
           .venv/bin/pyinstaller --noconfirm --clean macos/Apistat.spec
           test -f dist/Apistat.app/Contents/MacOS/Apistat
           lipo dist/Apistat.app/Contents/MacOS/Apistat -verify_arch '${{ matrix.arch }}'
+          test "$(/usr/libexec/PlistBuddy -c 'Print :LSMinimumSystemVersion' dist/Apistat.app/Contents/Info.plist)" = '15.0'
           find dist/Apistat.app -iname '*soup*' -print
           codesign --verify --deep --strict --verbose=4 dist/Apistat.app
           find dist/Apistat.app -type f -exec shasum -a 256 {} + | sort > "$RUNNER_TEMP/apistat-before.txt"
-          APISTAT_REQUIRE_LASTFM_BUILD=1 GST_DEBUG=2 dist/Apistat.app/Contents/MacOS/Apistat --self-test
+          APISTAT_REQUIRE_LASTFM_BUILD=1 GST_DEBUG=2 dist/Apistat.app/Contents/MacOS/Apistat --self-test --playback-test-dir test_fixtures/audio
           find dist/Apistat.app -type f -exec shasum -a 256 {} + | sort > "$RUNNER_TEMP/apistat-after.txt"
           if ! codesign --verify --deep --strict --verbose=4 dist/Apistat.app; then
             diff -u "$RUNNER_TEMP/apistat-before.txt" "$RUNNER_TEMP/apistat-after.txt" || true

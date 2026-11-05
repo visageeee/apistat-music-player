@@ -17,7 +17,7 @@ from plex_client import Item, ALBUM_SORT_ARTIST
 from music_facets import MusicFacet
 
 
-CACHE_ROOT = Path(GLib.get_user_cache_dir()) / 'plex-music-prototype'
+CACHE_ROOT = Path(GLib.get_user_cache_dir()) / 'apistat'
 COLOR_RE = re.compile(r'^#[0-9a-fA-F]{6}$')
 
 

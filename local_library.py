@@ -15,7 +15,7 @@ from pathlib import Path
 from gi.repository import GLib
 from plex_client import Item, ALBUM_SORT_ARTIST
 
-CONFIG = Path(GLib.get_user_config_dir()) / 'plex-music-prototype' / 'sources.json'
+CONFIG = Path(GLib.get_user_config_dir()) / 'apistat' / 'sources.json'
 LEGACY_DATA = Path(GLib.get_user_data_dir()) / 'apistat' / 'libraries'
 DATA = (Path.home() / 'Library' / 'Application Support' / 'Apistat' / 'Libraries'
         if sys.platform == 'darwin' else LEGACY_DATA)
@@ -129,6 +129,10 @@ class LocalLibrary:
                 CREATE INDEX IF NOT EXISTS track_album ON tracks(album_key);
                 CREATE TABLE IF NOT EXISTS albums (key TEXT PRIMARY KEY, data TEXT NOT NULL,
                     art BLOB);
+                CREATE TABLE IF NOT EXISTS playlists (key TEXT PRIMARY KEY, title TEXT NOT NULL);
+                CREATE TABLE IF NOT EXISTS playlist_tracks (id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    playlist_key TEXT NOT NULL, track_key TEXT NOT NULL, position INTEGER NOT NULL);
+                CREATE INDEX IF NOT EXISTS playlist_order ON playlist_tracks(playlist_key, position);
                 CREATE TABLE IF NOT EXISTS artist_info (name TEXT PRIMARY KEY, summary TEXT NOT NULL,
                     url TEXT NOT NULL, expires INTEGER NOT NULL);
             ''')
@@ -383,7 +387,74 @@ class LocalLibrary:
         return bytes(row[1])
 
     def playlists(self):
-        return []
+        with self.connect() as db:
+            return [Item(key, title) for key, title in db.execute(
+                'SELECT key, title FROM playlists ORDER BY rowid')]
+
+    def create_playlist_with_tracks(self, title, tracks):
+        title = title.strip()
+        if not title or not tracks:
+            raise ValueError('A playlist needs a name and at least one track')
+        key = '/local/playlist/' + uuid.uuid4().hex
+        with self.connect() as db:
+            for track in tracks:
+                if not db.execute('SELECT 1 FROM tracks WHERE key=?', (track.key,)).fetchone():
+                    raise ValueError('A track is no longer in the local library')
+            db.execute('INSERT INTO playlists VALUES (?, ?)', (key, title))
+            db.executemany('INSERT INTO playlist_tracks (playlist_key, track_key, position) VALUES (?, ?, ?)',
+                           ((key, track.key, i) for i, track in enumerate(tracks)))
+        return Item(key, title)
+
+    def create_playlist(self, title, first_track):
+        return self.create_playlist_with_tracks(title, [first_track])
+
+    def add_playlist_item(self, playlist, track):
+        with self.connect() as db:
+            if not db.execute('SELECT 1 FROM playlists WHERE key=?', (playlist.key,)).fetchone():
+                raise ValueError('Playlist not found')
+            if not db.execute('SELECT 1 FROM tracks WHERE key=?', (track.key,)).fetchone():
+                raise ValueError('Track not found')
+            db.execute('INSERT INTO playlist_tracks (playlist_key, track_key, position) '
+                       'SELECT ?, ?, COALESCE(MAX(position), -1) + 1 FROM playlist_tracks WHERE playlist_key=?',
+                       (playlist.key, track.key, playlist.key))
+
+    def playlist_items(self, playlist, start=0):
+        with self.connect() as db:
+            rows = db.execute('SELECT tracks.data, playlist_tracks.id FROM playlist_tracks '
+                              'JOIN tracks ON tracks.key=playlist_tracks.track_key '
+                              'WHERE playlist_tracks.playlist_key=? ORDER BY playlist_tracks.position, playlist_tracks.id',
+                              (playlist.key,)).fetchall()
+        items = []
+        for data, item_id in rows[start:start + 100]:
+            item = Item(**json.loads(data))
+            item.playlist_item_id = item_id
+            items.append(item)
+        return items, len(rows)
+
+    def rename_playlist(self, playlist, title):
+        if not title.strip():
+            raise ValueError('Enter a playlist name')
+        with self.connect() as db:
+            if not db.execute('UPDATE playlists SET title=? WHERE key=?', (title.strip(), playlist.key)).rowcount:
+                raise ValueError('Playlist not found')
+
+    def delete_playlist(self, playlist):
+        with self.connect() as db:
+            db.execute('DELETE FROM playlist_tracks WHERE playlist_key=?', (playlist.key,))
+            db.execute('DELETE FROM playlists WHERE key=?', (playlist.key,))
+
+    def move_playlist_item(self, playlist, item_id, after_id=None):
+        with self.connect() as db:
+            ids = [row[0] for row in db.execute(
+                'SELECT id FROM playlist_tracks WHERE playlist_key=? ORDER BY position, id', (playlist.key,))]
+            if item_id not in ids or (after_id is not None and after_id not in ids):
+                raise ValueError('Playlist item not found')
+            if item_id == after_id:
+                return
+            ids.remove(item_id)
+            ids.insert(ids.index(after_id) + 1 if after_id is not None else 0, item_id)
+            db.executemany('UPDATE playlist_tracks SET position=? WHERE id=?',
+                           ((position, item) for position, item in enumerate(ids)))
 
     def music_facets(self, section):
         return ()

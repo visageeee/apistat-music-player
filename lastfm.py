@@ -132,6 +132,70 @@ class LastFM:
         return {'api_key': self.api_key, 'secret': self.secret,
                 'session': result['key'], 'username': result['name']}
 
+    def listening_history_count(self, username, start, end, session=None):
+        """Ask Last.fm for the total without downloading all history pages."""
+        if not username or type(start) is not int or type(end) is not int or end <= start:
+            raise ValueError('Invalid listening-history range.')
+        params = {'user': username, 'from': start - 1, 'to': end, 'limit': 1, 'page': 1}
+        if session:
+            params['sk'] = session
+        result = self.request('user.getRecentTracks', params).get('recenttracks')
+        try:
+            total = int(result['@attr']['total'])
+        except (TypeError, KeyError, ValueError):
+            raise LastFMError('Last.fm did not provide a listening-history count.') from None
+        if total < 0:
+            raise LastFMError('Last.fm returned an invalid listening-history count.')
+        return total
+
+    def listening_history(self, username, start, end, session=None, valid=lambda: True, progress=None):
+        """Fetch every completed scrobble in [start, end), newest first."""
+        if not username or type(start) is not int or type(end) is not int or end <= start:
+            raise ValueError('Invalid listening-history range.')
+        history, page = [], 1
+        while valid():
+            params = {'user': username, 'from': start - 1, 'to': end,
+                      'limit': 200, 'page': page}
+            if session:
+                params['sk'] = session
+            result = self.request('user.getRecentTracks', params).get('recenttracks')
+            if not isinstance(result, dict):
+                raise LastFMError('Last.fm returned invalid listening history.')
+            records = result.get('track', [])
+            if isinstance(records, dict):
+                records = [records]
+            if not isinstance(records, list):
+                raise LastFMError('Last.fm returned invalid listening history.')
+            for record in records:
+                if not isinstance(record, dict):
+                    continue
+                stamp = record.get('date', {})
+                stamp = stamp.get('uts') if isinstance(stamp, dict) else None
+                try:
+                    timestamp = int(stamp)
+                except (TypeError, ValueError):
+                    continue  # Includes Last.fm's undated now-playing entry.
+                if not start <= timestamp < end:
+                    continue
+                def text_value(value):
+                    return value.get('#text', '') if isinstance(value, dict) else value
+                artist = text_value(record.get('artist'))
+                album = text_value(record.get('album', '')) or ''
+                title = record.get('name')
+                if all(isinstance(value, str) for value in (artist, album, title)) and artist and title:
+                    history.append({'artist': artist, 'album': album, 'title': title, 'timestamp': timestamp})
+            attrs = result.get('@attr', {})
+            try:
+                pages = int(attrs.get('totalPages', 1))
+            except (AttributeError, TypeError, ValueError):
+                raise LastFMError('Last.fm returned invalid history pagination.') from None
+            if progress:
+                progress(page, max(1, pages), len(history))
+            if not records or page >= pages:
+                return history
+            page += 1
+        return None
+
     def now_playing(self, session, track):
         self.request('track.updateNowPlaying', {'sk': session, **track}, post=True)
 

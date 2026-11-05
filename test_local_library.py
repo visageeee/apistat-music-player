@@ -44,9 +44,26 @@ class LocalLibraryTests(unittest.TestCase):
         self.assertEqual((albums[0].title, albums[0].artist), ('Record', 'Album artist'))
         songs = self.library.tracks(albums[0])
         self.assertEqual([song.title for song in songs], ['First', 'Second'])
-        self.assertEqual(self.library.stream(songs[0]), (self.album / 'one.wav').as_uri())
+        self.assertEqual(self.library.stream(songs[0]), (self.album / 'one.wav').resolve().as_uri())
         reopened = LocalLibrary(self.source, Path(self.tmp.name) / 'db')
         self.assertEqual(reopened.songs(self.source['id'])[1], 2)
+
+    def test_saved_playlist_preserves_order_duplicates_and_survives_restart(self):
+        self.library.scan()
+        songs = self.library.songs(self.source['id'])[0]
+        playlist = self.library.create_playlist_with_tracks('History', [songs[0], songs[1], songs[0]])
+        reopened = LocalLibrary(self.source, Path(self.tmp.name) / 'db')
+        self.assertEqual([item.title for item in reopened.playlists()], ['History'])
+        items, total = reopened.playlist_items(playlist)
+        self.assertEqual(total, 3)
+        self.assertEqual([item.key for item in items], [songs[0].key, songs[1].key, songs[0].key])
+        reopened.move_playlist_item(playlist, items[2].playlist_item_id, None)
+        self.assertEqual(reopened.playlist_items(playlist)[0][0].playlist_item_id,
+                         items[2].playlist_item_id)
+        reopened.rename_playlist(playlist, 'Memories')
+        self.assertEqual(reopened.playlists()[0].title, 'Memories')
+        reopened.delete_playlist(playlist)
+        self.assertEqual(reopened.playlists(), [])
 
     def test_unchanged_files_use_cached_metadata_and_forced_scan_reloads(self):
         self.library.scan()

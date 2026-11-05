@@ -12,7 +12,7 @@
     "--socket=pulseaudio",
     "--device=dri",
     "--talk-name=org.freedesktop.secrets",
-    "--own-name=org.mpris.MediaPlayer2.plexmusicprototype"
+    "--own-name=org.mpris.MediaPlayer2.apistat"
   ],
   "modules": [
     {
@@ -36,6 +36,7 @@
         "for file in *.py; do case \"$file\" in test_*) continue ;; esac; install -Dm644 \"$file\" \"/app/share/apistat/$file\"; done",
         "install -Dm755 flatpak/apistat /app/bin/apistat",
         "install -Dm644 apistat.png /app/share/apistat/apistat.png",
+        "install -Dm644 assets/time-machine/lcd.png /app/share/apistat/assets/time-machine/lcd.png",
         "install -Dm644 fonts/Nunito-wght.ttf /app/share/apistat/fonts/Nunito-wght.ttf",
         "install -Dm644 fonts/OFL.txt /app/share/apistat/fonts/OFL.txt",
         "install -Dm644 flatpak/org.apistat.Apistat.desktop /app/share/applications/org.apistat.Apistat.desktop",

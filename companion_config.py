@@ -9,7 +9,7 @@ from pathlib import Path
 from gi.repository import GLib
 
 
-CONFIG_PATH = Path(GLib.get_user_config_dir()) / 'plex-music-prototype' / 'companion.json'
+CONFIG_PATH = Path(GLib.get_user_config_dir()) / 'apistat' / 'companion.json'
 
 
 def load_config(path=CONFIG_PATH):

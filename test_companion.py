@@ -1,5 +1,6 @@
 import tempfile
 import os
+import sys
 import threading
 import unittest
 import xml.etree.ElementTree as ET
@@ -12,6 +13,7 @@ from urllib.request import Request, urlopen
 
 from companion import (CompanionReceiver, GDM, ProtocolError, load_media, parse_command,
                        same_lan_peer, local_ip, timeline_xml)
+import companion_account
 from companion_account import PlexAccount
 from companion_config import load_config, save_config
 from plex_client import PlexClient
@@ -277,6 +279,18 @@ class CompanionTests(unittest.TestCase):
 
 
 class AccountTests(unittest.TestCase):
+    @unittest.skipUnless(sys.platform.startswith('linux'), 'Secret Service is Linux only')
+    def test_legacy_device_token_is_migrated_and_unlink_clears_both(self):
+        with patch.object(companion_account, 'Secret') as secret, \
+                patch.object(companion_account, 'save_device_token') as save:
+            secret.password_lookup_sync.side_effect = [None, 'linked-token']
+            self.assertEqual(companion_account.load_device_token('id'), 'linked-token')
+            save.assert_called_once_with('id', 'linked-token')
+            companion_account.clear_device_token('id')
+            self.assertEqual([call.args[0] for call in secret.password_clear_sync.call_args_list],
+                             [companion_account.SCHEMA, companion_account.LEGACY_SCHEMA])
+
+
     def test_pin_and_connection_publication(self):
         class Response:
             def __init__(self, data):

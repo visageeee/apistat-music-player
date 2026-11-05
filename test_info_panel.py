@@ -4,7 +4,7 @@ from unittest.mock import Mock, patch
 
 import gi
 gi.require_version('Gtk', '3.0')
-from gi.repository import Gtk
+from gi.repository import Gtk, GLib
 
 from player import Player
 from plex_client import Item
@@ -25,6 +25,52 @@ class InfoPanelTests(unittest.TestCase):
         self.assertEqual(player.info_artist_name.get_xalign(), 0.5)
         self.assertEqual(player.info_artist_name.get_name(), 'info-artist-name')
         overlay.destroy()
+
+    def test_lost_list_uses_info_panel_and_stops_when_closed(self):
+        overlay = Gtk.Overlay()
+        player = SimpleNamespace(content_overlay=overlay, info_button=Gtk.ToggleButton(),
+                                 icon_button=lambda *_args: Gtk.Button(),
+                                 info_reveal_finished=Mock(),
+                                 info_resize_handle=lambda _edge: Gtk.Box(), closed=False,
+                                 load_current_info=Mock())
+        with patch('player.load_info_panel_width', return_value=360):
+            Player.build_info_panel(player)
+        overlay.show_all()
+        player.info_button.connect('toggled', lambda button: Player.info_toggled(player, button))
+        records = [{'title': f'Song {index}', 'artist': 'Artist', 'album': 'Album', 'timestamp': 10}
+                   for index in range(200)]
+        Player.show_lost_time_info(player, records)
+        self.assertEqual(player.info_mode, 'lost')
+        self.assertEqual(player.info_content_stack.get_visible_child_name(), 'lost')
+        self.assertTrue(player.info_revealer.get_reveal_child())
+        player.load_current_info.assert_not_called()
+        while GLib.MainContext.default().pending():
+            GLib.MainContext.default().iteration(False)
+        self.assertEqual(len(player.info_lost_store), 200)
+        self.assertEqual(player.info_lost_store[0][0:3], ['Song 0', 'Artist', 'Album'])
+        player.info_button.set_active(False)
+        self.assertEqual(player.info_mode, 'track')
+        player.info_button.set_active(True)
+        self.assertEqual(player.info_content_stack.get_visible_child_name(), 'track')
+        player.load_current_info.assert_called_once_with()
+        overlay.destroy()
+
+    def test_loading_lost_list_stops_after_panel_changes(self):
+        store = Gtk.ListStore(str, str, str, str)
+        player = SimpleNamespace(info_generation=0, info_pending_update=None, info_target=None,
+                                 info_artist_name=Mock(), info_lost_count=Mock(),
+                                 info_lost_store=store, info_content_stack=Mock(),
+                                 info_button=Mock(), closed=False)
+        player.info_button.get_active.return_value = True
+        records = [{'title': 'Song', 'artist': 'Artist'} for _ in range(200)]
+        with patch('player.GLib.idle_add') as idle:
+            Player.show_lost_time_info(player, records)
+        append = idle.call_args.args[0]
+        self.assertTrue(append())
+        self.assertEqual(len(store), 150)
+        player.info_mode = 'track'
+        self.assertFalse(append())
+        self.assertEqual(len(store), 150)
 
     def test_track_details_are_loaded_and_older_requests_are_invalidated(self):
         track = Item('/library/metadata/1', 'Song', artist='Artist', codec='flac')

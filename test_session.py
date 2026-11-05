@@ -1,4 +1,5 @@
 import tempfile
+from datetime import date
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -25,6 +26,17 @@ class Control:
 
 
 class SessionTests(unittest.TestCase):
+    def test_time_machine_dates_are_saved_and_validated(self):
+        data = {'version': 1, 'time_machine_dates': {'from': '2005-03-02', 'to': '2012-10-20'}}
+        with tempfile.TemporaryDirectory() as directory:
+            with patch.object(session, 'SESSION_PATH', Path(directory) / 'session.json'):
+                session.save_session(data)
+                self.assertEqual(session.load_session()['time_machine_dates'],
+                                 {'from': date(2005, 3, 2), 'to': date(2012, 10, 20)})
+                data['time_machine_dates']['to'] = '2012-02-30'
+                session.save_session(data)
+                self.assertNotIn('time_machine_dates', session.load_session())
+
     def test_round_trip_keeps_window_panel_queue_and_position(self):
         track = Item('/library/metadata/12', 'Song', artist='Artist', duration=180000)
         album = Item('/library/metadata/10', 'Album', artist='Artist', added_at=1700000000)

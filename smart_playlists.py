@@ -10,7 +10,7 @@ from pathlib import Path
 from gi.repository import GLib
 
 
-PATH = Path(GLib.get_user_config_dir()) / 'plex-music-prototype' / 'smart-playlists.json'
+PATH = Path(GLib.get_user_config_dir()) / 'apistat' / 'smart-playlists.json'
 FIELDS = {
     'genre': 'text', 'artist': 'text', 'album': 'text', 'title': 'text',
     'mood': 'text', 'year': 'number', 'user_rating': 'number',
