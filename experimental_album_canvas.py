@@ -296,10 +296,17 @@ class ExperimentalAlbumCanvas(GPUAlbumWall):
         self.grid_items, self.album_slots, self.year_markers = grid_slots(self.albums, self.sort_order, self.columns)
         if reset:
             self.refresh_indices.clear()
+            if self.thumbnail_atlas is not None:
+                self.thumbnail_atlas.close()
             self.thumbnail_atlas = ThumbnailAtlas(client, self.albums) if client and self.albums else None
             if self.thumbnail_atlas:
                 self.prewarm_thumbnails(client, tuple(self.albums), self.thumbnail_atlas, self.epoch)
         self.layout_changed()
+
+    def shutdown(self):
+        super().shutdown()
+        if self.thumbnail_atlas is not None:
+            self.thumbnail_atlas.close()
 
     @staticmethod
     def decode_art(data, size):

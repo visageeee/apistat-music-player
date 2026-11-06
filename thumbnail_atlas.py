@@ -23,6 +23,7 @@ class ThumbnailAtlas:
         self.legacy_root = cache.root / 'canvas-atlas-v1'
         self.lock = threading.Lock()
         self.connection = None
+        self.closed = False
         self.entries = {}
         self.thumbs = {album.thumb for album in albums if album.thumb}
         self.legacy_entries = {}
@@ -39,8 +40,12 @@ class ThumbnailAtlas:
             _private_dir(self.root)
             connection = sqlite3.connect(str(self.root / 'index.sqlite3'), timeout=5,
                                          check_same_thread=False)
-            connection.execute('CREATE TABLE IF NOT EXISTS thumbs (identity TEXT UNIQUE NOT NULL)')
-            connection.commit()
+            try:
+                connection.execute('CREATE TABLE IF NOT EXISTS thumbs (identity TEXT UNIQUE NOT NULL)')
+                connection.commit()
+            except Exception:
+                connection.close()
+                raise
             self.connection = connection
         return self.connection
 
@@ -81,6 +86,8 @@ class ThumbnailAtlas:
     def read(self, thumb):
         try:
             with self.lock:
+                if self.closed:
+                    return None
                 pixels = self._read_cell(self._entry(thumb, False))
                 if pixels is not None:
                     return pixels
@@ -96,6 +103,8 @@ class ThumbnailAtlas:
             return
         try:
             with self.lock:
+                if self.closed:
+                    return
                 entry = self._entry(thumb, True)
                 if entry is None:
                     return
@@ -109,3 +118,16 @@ class ThumbnailAtlas:
                     file.write(b'\1')
         except (OSError, sqlite3.Error):
             pass
+
+    def close(self):
+        with self.lock:
+            self.closed = True
+            if self.connection is not None:
+                self.connection.close()
+                self.connection = None
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args):
+        self.close()

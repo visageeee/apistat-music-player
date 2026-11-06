@@ -1,5 +1,6 @@
 import unittest
 import tempfile
+from contextlib import ExitStack
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
@@ -303,15 +304,35 @@ class CanvasTests(unittest.TestCase):
         second = SimpleNamespace(address='local:two', token='')
         pixels = bytes([7]) * CELL_BYTES
         with tempfile.TemporaryDirectory() as directory, patch.object(local_cache, 'CACHE_ROOT', Path(directory)):
-            atlas = ThumbnailAtlas(first, albums)
+            with ExitStack() as stack:
+                atlas = stack.enter_context(ThumbnailAtlas(first, albums))
+                self.assertIsNone(atlas.read('/art/a'))
+                atlas.write('/art/a', pixels)
+                reopened = stack.enter_context(ThumbnailAtlas(first, list(reversed(albums))))
+                self.assertEqual(reopened.read('/art/a'), pixels)
+                self.assertIsNone(reopened.read('/art/b'))
+                other = stack.enter_context(ThumbnailAtlas(second, albums))
+                self.assertIsNone(other.read('/art/a'))
+                changed = [albums[0], Item('/b', 'B', thumb='/art/new')]
+                updated = stack.enter_context(ThumbnailAtlas(first, changed))
+                self.assertEqual(updated.read('/art/a'), pixels)
+                self.assertIsNone(updated.read('/art/new'))
+
+    def test_thumbnail_atlas_close_releases_database_and_stays_closed(self):
+        albums = [Item('/a', 'A', thumb='/art/a')]
+        client = SimpleNamespace(address='local:close', token='')
+        pixels = bytes([9]) * CELL_BYTES
+        with tempfile.TemporaryDirectory() as directory, patch.object(local_cache, 'CACHE_ROOT', Path(directory)):
+            atlas = ThumbnailAtlas(client, albums)
+            atlas.write('/art/a', pixels)
+            connection = atlas.connection
+            atlas.close()
+            with self.assertRaises(Exception):
+                connection.execute('SELECT 1')
             self.assertIsNone(atlas.read('/art/a'))
             atlas.write('/art/a', pixels)
-            self.assertEqual(ThumbnailAtlas(first, list(reversed(albums))).read('/art/a'), pixels)
-            self.assertIsNone(ThumbnailAtlas(first, albums).read('/art/b'))
-            self.assertIsNone(ThumbnailAtlas(second, albums).read('/art/a'))
-            changed = [albums[0], Item('/b', 'B', thumb='/art/new')]
-            self.assertEqual(ThumbnailAtlas(first, changed).read('/art/a'), pixels)
-            self.assertIsNone(ThumbnailAtlas(first, changed).read('/art/new'))
+            self.assertIsNone(atlas.connection)
+            atlas.close()
 
     def test_short_year_rows_and_larger_labels_preserve_zoom_anchor(self):
         self.assertGreaterEqual(year_font_size(.1), 18)
@@ -334,15 +355,16 @@ class CanvasTests(unittest.TestCase):
         client = SimpleNamespace(address='local:legacy', token='')
         pixels = bytes([17]) * CELL_BYTES
         with tempfile.TemporaryDirectory() as directory, patch.object(local_cache, 'CACHE_ROOT', Path(directory)):
-            atlas = ThumbnailAtlas(client, albums)
-            path, cell = atlas.legacy_entries['/art/a']
-            path.parent.mkdir(parents=True)
-            with path.open('wb') as file:
-                file.write(bytes([1]) + bytes(63))
-                file.write(pixels)
-            self.assertEqual(atlas.read('/art/a'), pixels)
-            path.unlink()
-            self.assertEqual(ThumbnailAtlas(client, albums).read('/art/a'), pixels)
+            with ThumbnailAtlas(client, albums) as atlas:
+                path, cell = atlas.legacy_entries['/art/a']
+                path.parent.mkdir(parents=True)
+                with path.open('wb') as file:
+                    file.write(bytes([1]) + bytes(63))
+                    file.write(pixels)
+                self.assertEqual(atlas.read('/art/a'), pixels)
+                path.unlink()
+            with ThumbnailAtlas(client, albums) as reopened:
+                self.assertEqual(reopened.read('/art/a'), pixels)
 
 
 if __name__ == '__main__':

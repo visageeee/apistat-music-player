@@ -69,7 +69,7 @@ class TagEditTests(unittest.TestCase):
             with self.assertRaises(Exception):
                 write_tags(path, {'title': 'New'})
             self.assertEqual(path.read_bytes(), b'not an audio file')
-            self.assertEqual(list(Path(directory).iterdir()), [path])
+            self.assertEqual([item.name for item in Path(directory).iterdir()], ['bad.mp3'])
         for changes in ({'year': '-2'}, {'unknown': 'value'}, {'disc': '0'}):
             with self.assertRaises(ValueError):
                 validate_changes(changes)
