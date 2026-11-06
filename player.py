@@ -2138,7 +2138,10 @@ class Player(Gtk.Window):
             self.album_canvas.reorder(sort, albums=albums)
             self.albums, self.total = list(albums), len(albums)
             self.loading_albums = False
-            message = f'{len(albums)} albums • Scroll to zoom • Ctrl+scroll changes columns'
+            controls = ('Scroll to pan • Pinch to zoom • Ctrl+wheel changes columns'
+                        if sys.platform == 'win32' else
+                        'Scroll to zoom • Ctrl+scroll changes columns')
+            message = f'{len(albums)} albums • {controls}'
             warning = getattr(self, 'credential_warning', '')
             self.status.set_text(f'{warning} • {message}' if warning else message)
             self.finish_startup_loading()

@@ -136,6 +136,7 @@ class CanvasTests(unittest.TestCase):
         proxy.dragged_album = 'album'
         self.assertEqual(original.dragged_album, 'album')
 
+    @patch('experimental_album_canvas.sys.platform', 'linux')
     def test_scroll_targets_pointer_and_is_bounded(self):
         wall = SimpleNamespace(target_zoom=2.4, anchor=None, start_animation=Mock(),
                                scroll_flipped_tracklist=Mock(return_value=False),
@@ -146,6 +147,7 @@ class CanvasTests(unittest.TestCase):
         self.assertEqual(wall.target_zoom, 2.5)
         wall.start_animation.assert_called_once()
 
+    @patch('experimental_album_canvas.sys.platform', 'linux')
     def test_zoom_can_go_below_fit_width(self):
         wall = SimpleNamespace(target_zoom=800 / WORLD_WIDTH, anchor=None, start_animation=Mock(),
                                unflip_for_zoom_out=Mock(),
@@ -156,6 +158,7 @@ class CanvasTests(unittest.TestCase):
                 SimpleNamespace(direction=Gdk.ScrollDirection.DOWN, x=400, y=300))
         self.assertLess(wall.target_zoom, 800 / WORLD_WIDTH)
 
+    @patch('experimental_album_canvas.sys.platform', 'linux')
     def test_control_scroll_changes_column_count_without_zoom_or_unflip(self):
         wall = SimpleNamespace(target_zoom=.5, anchor=None, start_animation=Mock(),
                                unflip_for_zoom_out=Mock(), ctrl_scroll_remainder=0.,
@@ -210,6 +213,42 @@ class CanvasTests(unittest.TestCase):
         ExperimentalAlbumCanvas.scroll(wall, None, event)
         horizontal.set_value.assert_called_once_with(-80.)
         wall.adjustment.set_value.assert_not_called()
+
+    def test_windows_touchpad_pans_and_pinch_zooms_while_control_wheel_changes_columns(self):
+        horizontal = SimpleNamespace(get_value=lambda: 100., set_value=Mock())
+        vertical = SimpleNamespace(get_value=lambda: 250., set_value=Mock())
+        wall = SimpleNamespace(canvas_player=SimpleNamespace(zoom=.5), target_zoom=.5,
+                               x_adjustment=horizontal, adjustment=vertical,
+                               scroll_flipped_tracklist=Mock(return_value=False),
+                               start_animation=Mock(), unflip_for_zoom_out=Mock(),
+                               change_columns=Mock(), ctrl_scroll_remainder=0.)
+        # GDK Win32 assigns a mouse source even to precision-touchpad events.
+        event = SimpleNamespace(direction=Gdk.ScrollDirection.SMOOTH, x=100, y=200, state=0,
+                                get_scroll_deltas=lambda: (True, .25, -.5),
+                                get_source_device=lambda: SimpleNamespace(get_source=lambda: Gdk.InputSource.MOUSE))
+        with patch('experimental_album_canvas.sys.platform', 'win32'):
+            self.assertTrue(ExperimentalAlbumCanvas.scroll(wall, None, event))
+            horizontal.set_value.assert_called_once_with(122.5)
+            vertical.set_value.assert_called_once_with(205.)
+            self.assertEqual(wall.target_zoom, .5)
+            event.state = Gdk.ModifierType.CONTROL_MASK
+            self.assertTrue(ExperimentalAlbumCanvas.scroll(wall, None, event))
+            self.assertGreater(wall.target_zoom, .5)
+            self.assertEqual(wall.anchor, (100, 200))
+            wall.change_columns.assert_not_called()
+            event.get_scroll_deltas = lambda: (True, 0, 1.)
+            self.assertTrue(ExperimentalAlbumCanvas.scroll(wall, None, event))
+        wall.change_columns.assert_called_once_with(1)
+        self.assertEqual(wall.target_zoom, .5)
+
+    def test_windows_ignores_emulated_discrete_copy_of_smooth_scroll(self):
+        wall = SimpleNamespace(scroll_flipped_tracklist=Mock(), start_animation=Mock())
+        event = SimpleNamespace(direction=Gdk.ScrollDirection.DOWN,
+                                get_pointer_emulated=lambda: True)
+        with patch('experimental_album_canvas.sys.platform', 'win32'):
+            self.assertTrue(ExperimentalAlbumCanvas.scroll(wall, None, event))
+        wall.scroll_flipped_tracklist.assert_not_called()
+        wall.start_animation.assert_not_called()
 
     def test_scroll_over_overflowing_flipped_album_changes_track_offset(self):
         flip = SimpleNamespace(back_visible=True, tracks=list(range(40)), offset=0, layout=None, dirty=False)

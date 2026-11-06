@@ -1,5 +1,6 @@
 """An opt-in, zoomable GPU album canvas independent of the regular wall."""
 import math
+import sys
 import time
 from bisect import bisect_right
 from datetime import datetime
@@ -665,6 +666,13 @@ class ExperimentalAlbumCanvas(GPUAlbumWall):
             self.reorder(self.sort_order, albums=self.albums, columns=columns)
 
     def scroll(self, _area, event):
+        windows = sys.platform == 'win32'
+        # GDK's Win32 backend emits a smooth event followed by a synthetic
+        # discrete copy for each native wheel message. Handle it only once.
+        emulated = getattr(event, 'get_pointer_emulated', None)
+        if (windows and event.direction != Gdk.ScrollDirection.SMOOTH and
+                emulated and emulated()):
+            return True
         dx = 0.
         if event.direction == Gdk.ScrollDirection.SMOOTH:
             valid, dx, dy = event.get_scroll_deltas()
@@ -675,13 +683,16 @@ class ExperimentalAlbumCanvas(GPUAlbumWall):
             step = -1
         elif event.direction == Gdk.ScrollDirection.DOWN:
             step = 1
+        elif windows and event.direction in (Gdk.ScrollDirection.LEFT, Gdk.ScrollDirection.RIGHT):
+            dx = -1 if event.direction == Gdk.ScrollDirection.LEFT else 1
+            step = 0
         else:
             return False
         touchpad = is_touchpad_scroll(event)
         control = bool(getattr(event, 'state', 0) & Gdk.ModifierType.CONTROL_MASK)
         if step and self.scroll_flipped_tracklist(event, step):
             return True
-        if touchpad and not control:
+        if (touchpad or windows) and not control:
             # Two-finger touchpad scrolling moves the canvas in both axes;
             # pinch and Ctrl-modified touchpad events continue to zoom.
             self.target_zoom = self.canvas_player.zoom
@@ -692,7 +703,11 @@ class ExperimentalAlbumCanvas(GPUAlbumWall):
             return True
         if step:
             self.anchor = (event.x, event.y)
-            if control and not touchpad:
+            # Win32 reports touchpad pinch and mouse-wheel input as the same
+            # device. Precision pinch normally arrives in sub-notch deltas;
+            # preserve Ctrl + a standard mouse-wheel notch for column sizing.
+            windows_pinch = windows and abs(step) < 1.
+            if control and not touchpad and not windows_pinch:
                 # Stop any in-flight wheel zoom before changing the layout.
                 self.target_zoom = self.canvas_player.zoom
                 self.ctrl_scroll_remainder += step
