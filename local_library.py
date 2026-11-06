@@ -81,6 +81,31 @@ def number(value):
 
 
 def _cover(directory, audio):
+    # Embedded front covers take precedence over shared folder artwork.
+    try:
+        pictures = getattr(audio, 'pictures', ())
+        if pictures:
+            front = next((item for item in pictures if item.type == 3), None)
+            if front:
+                return front.data
+        tags = getattr(audio, 'tags', None)
+        if tags is not None:
+            if tags.get('metadata_block_picture'):
+                import base64
+                from mutagen.flac import Picture
+                decoded = [Picture(base64.b64decode(value)) for value in tags['metadata_block_picture']]
+                front = next((item for item in decoded if item.type == 3), None)
+                if front:
+                    return front.data
+            pictures = tags.getall('APIC') if hasattr(tags, 'getall') else tags.get('covr', ())
+            if pictures:
+                front = next((item for item in pictures if getattr(item, 'type', None) == 3), None)
+                if front is None and not hasattr(tags, 'getall'):
+                    front = pictures[0]  # MP4 covers have no picture type.
+                if front is not None:
+                    return getattr(front, 'data', front)
+    except (AttributeError, TypeError, ValueError):
+        pass
     for name in ('cover.jpg', 'cover.png', 'folder.jpg', 'folder.png', 'front.jpg', 'front.png'):
         try:
             path = directory / name
@@ -88,17 +113,6 @@ def _cover(directory, audio):
                 return path.read_bytes()
         except OSError:
             pass
-    try:
-        pictures = getattr(audio, 'pictures', ())
-        if pictures:
-            return pictures[0].data
-        tags = getattr(audio, 'tags', None)
-        if tags is not None:
-            pictures = tags.getall('APIC') if hasattr(tags, 'getall') else tags.get('covr', ())
-            if pictures:
-                return getattr(pictures[0], 'data', pictures[0])
-    except (AttributeError, TypeError, ValueError):
-        pass
     return None
 
 
@@ -372,6 +386,59 @@ class LocalLibrary:
         if not path.is_file():
             raise OSError('The local music file is unavailable')
         return path.as_uri()
+
+    def edit_tracks(self, tracks, changes, artwork=None, section=None):
+        """Save selected local files independently, then update the library index."""
+        from urllib.parse import unquote, urlsplit
+        from tag_edit import image_type, validate_changes, write_tags
+        changes = validate_changes(changes)
+        if artwork is not None and artwork is not False:
+            image_type(artwork)
+        unique = {track.key: track for track in tracks}
+        saved, failures = [], []
+        for track in unique.values():
+            try:
+                path = Path(unquote(urlsplit(self.stream(track)).path))
+                if os.name == 'nt' and re.match(r'^/[A-Za-z]:', str(path)):
+                    path = Path(str(path)[1:])
+                write_tags(path, changes, artwork)
+                saved.append(track.key)
+            except Exception as error:
+                failures.append((track.title, str(error)))
+        if saved:
+            try:
+                # Re-evaluate album artwork from all tracks after removal; an
+                # unchanged track may otherwise retain the old cached cover.
+                result = self.scan(force=artwork is False)
+                if result is None or result[1]:
+                    failures.append(('Library index', 'Some files could not be refreshed.'))
+            except Exception:
+                failures.append(('Library index', 'Changes were saved, but the library could not be refreshed.'))
+            if artwork is not None and artwork is not False:
+                # Prefer the explicitly chosen cover for all affected album cards,
+                # even when only some of the album's tracks were selected.
+                try:
+                    with self.connect() as db:
+                        keys = set()
+                        for key in saved:
+                            row = db.execute('SELECT album_key FROM tracks WHERE key=?', (key,)).fetchone()
+                            if row:
+                                keys.add(row[0])
+                        for key in keys:
+                            row = db.execute('SELECT data FROM albums WHERE key=?', (key,)).fetchone()
+                            if not row:
+                                continue
+                            thumb = '/local/art/' + key.rsplit('/', 1)[-1] + '/' + hashlib.sha256(artwork).hexdigest()[:16]
+                            album = json.loads(row[0]); album['thumb'] = thumb
+                            db.execute('UPDATE albums SET data=?,art=? WHERE key=?',
+                                       (json.dumps(album, ensure_ascii=False), artwork, key))
+                            for track_key, data in db.execute('SELECT key,data FROM tracks WHERE album_key=?', (key,)).fetchall():
+                                item = json.loads(data); item['thumb'] = item['album_thumb'] = thumb
+                                db.execute('UPDATE tracks SET data=? WHERE key=?',
+                                           (json.dumps(item, ensure_ascii=False), track_key))
+                except Exception:
+                    failures.append(('Album artwork', 'Files were saved, but the library artwork could not be updated.'))
+        return len(saved), failures
 
     def get(self, path, **params):
         if path != '/photo/:/transcode':

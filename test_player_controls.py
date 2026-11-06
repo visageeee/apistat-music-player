@@ -778,6 +778,19 @@ class PlayerControlTests(unittest.TestCase):
             player, None, SimpleNamespace(keyval=Gdk.KEY_f, state=Gdk.ModifierType.CONTROL_MASK)))
         self.assertEqual(player.toggle_album_search.call_count, 2)
 
+    def test_tab_in_tag_editor_takes_precedence_over_search_shortcut(self):
+        from tag_editor import TagEditor
+        editor = TagEditor(SimpleNamespace(info_button=Mock()))
+        player = SimpleNamespace(startup_loading=False, search_shortcut='Tab',
+                                 info_tag_editor=editor, get_focus=lambda: editor.checks['title'],
+                                 toggle_album_search=Mock())
+        for key, state in ((Gdk.KEY_Tab, 0),
+                           (Gdk.KEY_ISO_Left_Tab, Gdk.ModifierType.SHIFT_MASK)):
+            self.assertFalse(Player.global_key_pressed(player, None,
+                                                       SimpleNamespace(keyval=key, state=state)))
+        player.toggle_album_search.assert_not_called()
+        editor.destroy()
+
     def test_search_shortcut_persists_and_recovers_from_invalid_settings(self):
         import tempfile
         from pathlib import Path

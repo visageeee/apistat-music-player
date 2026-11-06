@@ -22,8 +22,26 @@ class InfoPanelTests(unittest.TestCase):
         self.assertFalse(player.info_revealer.get_reveal_child())
         self.assertEqual(player.info_revealer.get_transition_type(),
                          Gtk.RevealerTransitionType.SLIDE_LEFT)
+        self.assertFalse(player.info_content_stack.get_hhomogeneous())
         self.assertEqual(player.info_artist_name.get_xalign(), 0.5)
         self.assertEqual(player.info_artist_name.get_name(), 'info-artist-name')
+        overlay.destroy()
+
+    def test_editor_panel_reports_requested_width_in_both_modes(self):
+        overlay = Gtk.Overlay()
+        player = SimpleNamespace(content_overlay=overlay, info_button=Gtk.ToggleButton(),
+                                 icon_button=lambda *_args: Gtk.Button(), info_reveal_finished=Mock(),
+                                 info_resize_handle=lambda _edge: Gtk.EventBox(width_request=10), closed=False)
+        with patch('player.load_info_panel_width', return_value=300):
+            Player.build_info_panel(player)
+        overlay.show_all()
+        player.info_content_stack.set_visible_child_name('edit')
+        for local in (True, False):
+            player.info_tag_editor.load(SimpleNamespace(is_local=local), 'library',
+                                        [Item('/track', 'Song')])
+            player.info_panel.set_size_request(240, -1)
+            minimum, natural = player.info_panel.get_preferred_width_for_height(700)
+            self.assertEqual((minimum, natural), (240, 240))
         overlay.destroy()
 
     def test_lost_list_uses_info_panel_and_stops_when_closed(self):
@@ -132,6 +150,23 @@ class InfoPanelTests(unittest.TestCase):
         player.info_biography.set_text.assert_called_with('A biography.')
         player.info_source_label.set_text.assert_called_with('Wikipedia · https://en.wikipedia.org/wiki/Artist')
 
+    def test_overlay_player_bar_does_not_cover_info_panel_actions(self):
+        info = Gtk.Revealer()
+        bar = Mock()
+        bar.get_allocated_height.return_value = 96
+        bar.get_visible.return_value = True
+        player = SimpleNamespace(player_bar=bar, frosted_player_bar=True, info_revealer=info)
+        Player.update_queue_bottom_inset(player)
+        self.assertEqual(info.get_margin_bottom(), 96)
+        player.frosted_player_bar = False
+        Player.update_queue_bottom_inset(player)
+        self.assertEqual(info.get_margin_bottom(), 0)
+        player.frosted_player_bar = True
+        bar.get_visible.return_value = False
+        Player.update_queue_bottom_inset(player)
+        self.assertEqual(info.get_margin_bottom(), 0)
+        info.destroy()
+
     def test_resize_from_both_edges_clamps_and_saves_width(self):
         from gi.repository import Gdk
         player = SimpleNamespace(info_panel_resize=None, info_panel_width=360,
@@ -153,6 +188,22 @@ class InfoPanelTests(unittest.TestCase):
             x_root=-1000, state=Gdk.ModifierType.BUTTON1_MASK))
         self.assertEqual(player.info_panel_width, 776)
 
+    def test_resize_grabs_pointer_until_release(self):
+        from gi.repository import Gdk
+        handle = Mock()
+        player = SimpleNamespace(info_panel_resize=None, info_panel_width=300,
+                                 info_panel=Mock(), info_source_label=Mock(),
+                                 content_overlay=SimpleNamespace(get_allocated_width=lambda: 800))
+        self.assertTrue(Player.info_resize_pressed(player, handle, SimpleNamespace(button=1, x_root=500), 'left'))
+        handle.grab_add.assert_called_once_with()
+        self.assertTrue(Player.info_resize_motion(player, handle,
+                         SimpleNamespace(x_root=450, state=Gdk.ModifierType.BUTTON1_MASK)))
+        self.assertEqual(player.info_panel_width, 350)
+        with patch('player.save_info_panel_width') as save:
+            self.assertTrue(Player.info_resize_released(player, handle, SimpleNamespace(button=1)))
+        handle.grab_remove.assert_called_once_with()
+        save.assert_called_once_with(350)
+
     def test_requested_track_opens_panel_without_changing_playback(self):
         track = Item('/library/metadata/7', 'Selected', artist='Artist')
         client = object()
@@ -166,6 +217,28 @@ class InfoPanelTests(unittest.TestCase):
         button.get_active.return_value = True
         Player.show_track_info(player, track)
         player.load_current_info.assert_called_once_with()
+
+    def test_library_edit_button_uses_entire_selection(self):
+        songs = [Item('/library/metadata/1', 'One'), Item('/library/metadata/2', 'Two')]
+        player = SimpleNamespace(songs=songs, selected_song_indices=lambda: [0, 1],
+                                 show_tag_editor=Mock())
+        Player.edit_selected_library_tracks(player)
+        player.show_tag_editor.assert_called_once_with(songs)
+
+    def test_edit_selected_tracks_opens_editor_in_info_panel(self):
+        song = Item('/library/metadata/7', 'Selected')
+        client = object()
+        button = Mock()
+        button.get_active.return_value = False
+        player = SimpleNamespace(client=client, library=SimpleNamespace(get_active_id=lambda: '2'),
+                                 info_generation=3, info_pending_update=None, info_target=None,
+                                 info_button=button, info_artist_name=Mock(),
+                                 info_tag_editor=Mock(), info_content_stack=Mock())
+        Player.show_tag_editor(player, [song])
+        self.assertEqual(player.info_mode, 'edit')
+        player.info_tag_editor.load.assert_called_once_with(client, '2', [song])
+        player.info_content_stack.set_visible_child_name.assert_called_once_with('edit')
+        button.set_active.assert_called_once_with(True)
 
     def test_expensive_results_wait_until_slide_finishes(self):
         revealer = SimpleNamespace(get_child_revealed=lambda: False,

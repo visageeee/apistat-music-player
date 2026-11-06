@@ -65,6 +65,28 @@ class LocalLibraryTests(unittest.TestCase):
         reopened.delete_playlist(playlist)
         self.assertEqual(reopened.playlists(), [])
 
+    def test_edit_selected_tracks_updates_files_and_album_index(self):
+        from mutagen.id3 import ID3
+        from test_tag_edit import PNG
+        self.library.scan()
+        album = self.library.albums(self.source['id'])[0][0]
+        songs = self.library.tracks(album)
+        saved, failures = self.library.edit_tracks(
+            [songs[0]], {'title': 'Renamed', 'genre': 'Jazz'}, PNG, section=self.source['id'])
+        self.assertEqual((saved, failures), (1, []))
+        refreshed = self.library.tracks(self.library.albums(self.source['id'])[0][0])
+        self.assertEqual([song.title for song in refreshed], ['Renamed', 'Second'])
+        self.assertEqual(refreshed[0].genre, 'Jazz')
+        self.assertEqual(refreshed[1].title, 'Second')
+        self.assertTrue(refreshed[0].album_thumb.startswith('/local/art/'))
+        self.assertEqual(refreshed[0].album_thumb, refreshed[1].album_thumb)
+        self.assertEqual(self.library.get('/photo/:/transcode', url=refreshed[0].album_thumb), PNG)
+        audio = __import__('mutagen').File(self.album / 'one.wav')
+        self.assertEqual(audio.tags.getall('TIT2')[0].text, ['Renamed'])
+        self.assertEqual(audio.tags.getall('APIC')[0].data, PNG)
+        other = __import__('mutagen').File(self.album / 'two.wav')
+        self.assertFalse(other.tags.getall('APIC'))
+
     def test_unchanged_files_use_cached_metadata_and_forced_scan_reloads(self):
         self.library.scan()
         with patch('mutagen.File', side_effect=AssertionError('unexpected file re-read')):

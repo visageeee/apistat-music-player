@@ -647,6 +647,12 @@ class GPUAlbumWall(Gtk.Box, GLProgram):
             GLib.idle_add(deliver, priority=GLib.PRIORITY_HIGH_IDLE)
         self.art_workers.submit(work).add_done_callback(done)
 
+    def art_needs_refresh(self, index):
+        return index not in self.slots
+
+    def art_uploaded(self, _index):
+        pass
+
     def upload(self, slot, pixels):
         if len(pixels) != self.cell_size * self.cell_size * 4:
             raise ValueError('Invalid album artwork buffer size')
@@ -788,10 +794,12 @@ class GPUAlbumWall(Gtk.Box, GLProgram):
         self.needed_indices = set(ordered)
         priority = {index: rank for rank, index in enumerate(ordered)}
         for index, data in sorted(self.uploads, key=lambda entry: priority.get(entry[0], self.capacity)):
-            if index in self.slots or index not in self.needed_indices:
+            if index not in self.needed_indices or not self.art_needs_refresh(index):
                 continue
-            free = next((i for i in range(1, self.capacity)
-                         if self.slot_keys[i] is None or self.slot_keys[i] not in self.needed_indices), None)
+            free = self.slots.get(index)
+            if free is None:
+                free = next((i for i in range(1, self.capacity)
+                             if self.slot_keys[i] is None or self.slot_keys[i] not in self.needed_indices), None)
             if free is None:
                 continue
             old = self.slot_keys[free]
@@ -801,11 +809,12 @@ class GPUAlbumWall(Gtk.Box, GLProgram):
             self.slots[index] = free
             self.slot_pixels[free] = data
             self.upload(free, data)
+            self.art_uploaded(index)
             if index in self.flips:
                 self.flips[index].dirty = True
         self.uploads.clear()
         for index in ordered:
-            if index not in self.slots:
+            if self.art_needs_refresh(index):
                 self.request_art(index)
         vertices = []
         back_vertices = {}
@@ -859,7 +868,7 @@ class GPUAlbumWall(Gtk.Box, GLProgram):
             album = self.albums[index]
             for line, value in enumerate((album.title, album.artist, added_age_label(album.added_at))):
                 layout = self.labels.create_pango_layout(value or '')
-                layout.set_width(size * Pango.SCALE)
+                layout.set_width(int(size * Pango.SCALE))
                 layout.set_alignment(Pango.Alignment.CENTER)
                 layout.set_ellipsize(Pango.EllipsizeMode.END)
                 context.set_source_rgba(*color, 1 if line == 0 else .72)

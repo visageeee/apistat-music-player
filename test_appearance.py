@@ -16,7 +16,7 @@ class AppearanceTests(unittest.TestCase):
     def test_info_panel_width_is_saved_and_validated(self):
         with tempfile.TemporaryDirectory() as directory, \
                 patch.object(appearance, 'SETTINGS_PATH', Path(directory) / 'settings.json'):
-            self.assertEqual(appearance.load_info_panel_width(), 360)
+            self.assertEqual(appearance.load_info_panel_width(), 300)
             appearance.save_info_panel_width(520)
             self.assertEqual(appearance.load_info_panel_width(), 520)
             with self.assertRaises(ValueError):

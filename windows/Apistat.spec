@@ -20,7 +20,8 @@ a = Analysis(
            (str(root / 'fonts' / 'Nunito-wght.ttf'), 'fonts'),
            (str(root / 'fonts' / 'OFL.txt'), 'fonts'),
            (str(root / 'windows' / 'fonts.conf'), 'windows')],
-    hiddenimports=['gi.repository.PangoFc', 'gpu_album_wall', 'gpu_wgl'],
+    hiddenimports=['gi.repository.PangoFc', 'gpu_album_wall', 'gpu_wgl',
+                   'experimental_album_canvas', 'thumbnail_atlas'],
     hookspath=[],
     hooksconfig={
         'gi': {

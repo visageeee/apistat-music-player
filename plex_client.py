@@ -482,6 +482,56 @@ class PlexClient:
             raise ValueError('Plex did not provide a server identifier.')
         return f'server://{machine}/com.plexapp.plugins.library{track.key}'
 
+    def edit_tracks(self, tracks, changes, artwork=None, section=None):
+        """Edit supported Plex metadata and album posters, not source-file tags."""
+        from tag_edit import image_type, validate_changes
+        changes = validate_changes(changes)
+        if set(changes) - {'title'}:
+            raise ValueError('Plex can only edit track titles in this editor.')
+        if 'title' in changes and not changes['title']:
+            raise ValueError('Plex track titles cannot be empty.')
+        if not isinstance(section, str) or not re.fullmatch(r'\d+', section):
+            raise ValueError('Invalid music library.')
+        mime = image_type(artwork) if artwork is not None and artwork is not False else None
+        unique = {track.key: track for track in tracks}
+        for track in unique.values():
+            if not re.fullmatch(r'/library/metadata/\d+', track.key):
+                raise ValueError('Invalid track path.')
+            if artwork is not None and not re.fullmatch(r'/library/metadata/\d+', track.album_key or ''):
+                raise ValueError('A selected track has no valid Plex album.')
+        saved, failures = [], []
+        for track in unique.values():
+            try:
+                if 'title' in changes:
+                    self.request('PUT', f'/library/sections/{section}/all', type=10,
+                                 id=track.key.rsplit('/', 1)[-1],
+                                 **{'title.value': changes['title'], 'title.locked': 1})
+                saved.append(track.key)
+            except Exception:
+                failures.append((track.title, 'Plex rejected the metadata change.'))
+        if artwork is not None:
+            albums = {track.album_key for track in unique.values() if track.key in saved}
+            failed_albums = set()
+            for album in albums:
+                try:
+                    if artwork is False:
+                        self.request('DELETE', album + '/thumb')
+                    else:
+                        request = Request(self.url(album + '/poster'), data=artwork,
+                                          headers={'X-Plex-Token': self.token, 'X-Plex-Product': 'Apistat',
+                                                   'X-Plex-Client-Identifier': self.identifier,
+                                                   'X-Plex-Device-Name': self.device_name,
+                                                   'Content-Type': mime}, method='POST')
+                        with self.opener.open(request, timeout=self.timeout) as response:
+                            response.read()
+                except Exception:
+                    failed_albums.add(album)
+                    action = 'removal' if artwork is False else 'upload'
+                    failures.append(('Album artwork', f'Plex rejected the artwork {action}.'))
+            if not changes:
+                saved = [key for key in saved if unique[key].album_key not in failed_albums]
+        return len(saved), failures
+
     def create_playlist(self, title, first_track):
         title = title.strip()
         if not title:

@@ -331,9 +331,19 @@ def save_gpu_album_wall_enabled(enabled):
     _write_settings(settings)
 
 
+def load_classic_album_wall_enabled():
+    return _read_settings().get('classic_album_wall', False) is True
+
+
+def save_classic_album_wall_enabled(enabled):
+    settings = _read_settings()
+    settings['classic_album_wall'] = bool(enabled)
+    _write_settings(settings)
+
+
 def load_info_panel_width():
-    width = _read_settings().get('info_panel_width', 360)
-    return width if type(width) is int and 240 <= width <= 1000 else 360
+    width = _read_settings().get('info_panel_width', 300)
+    return width if type(width) is int and 240 <= width <= 1000 else 300
 
 
 def save_info_panel_width(width):
