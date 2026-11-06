@@ -142,6 +142,34 @@ def is_touchpad_scroll(event):
     return device is not None and device.get_source() == Gdk.InputSource.TOUCHPAD
 
 
+class WindowsWheelGesture:
+    """Use modifier timing when Win32 sends pinch as Ctrl+wheel.
+
+    A pinch may also synthesize a Ctrl key press, so latch the decision for
+    the entire press instead of reclassifying its later wheel events.
+    """
+    CONTROL_HOLD_SECONDS = .15
+
+    def __init__(self):
+        self.control_since = None
+        self.mode = None
+
+    def control_pressed(self, now):
+        if self.control_since is None:
+            self.control_since = now
+            self.mode = None
+
+    def control_released(self):
+        self.control_since = None
+        self.mode = None
+
+    def columns_for_scroll(self, now):
+        if self.mode is None:
+            self.mode = ('columns' if self.control_since is not None and
+                         now - self.control_since >= self.CONTROL_HOLD_SECONDS else 'zoom')
+        return self.mode == 'columns'
+
+
 def sort_progress(start, now):
     fraction = min(1., max(0., (now - start) / SORT_SECONDS))
     return fraction * fraction * (3 - 2 * fraction)
@@ -245,6 +273,7 @@ class ExperimentalAlbumCanvas(GPUAlbumWall):
         self.animation_tick = 0
         self.columns = COLUMNS
         self.ctrl_scroll_remainder = 0.
+        self.windows_wheel_gesture = WindowsWheelGesture()
         self.sort_order = 'year:desc'
         self.grid_items, self.album_slots, self.year_markers = [], [], []
         self._fit_pending = True
@@ -703,11 +732,9 @@ class ExperimentalAlbumCanvas(GPUAlbumWall):
             return True
         if step:
             self.anchor = (event.x, event.y)
-            # Win32 reports touchpad pinch and mouse-wheel input as the same
-            # device. Precision pinch normally arrives in sub-notch deltas;
-            # preserve Ctrl + a standard mouse-wheel notch for column sizing.
-            windows_pinch = windows and abs(step) < 1.
-            if control and not touchpad and not windows_pinch:
+            gesture = getattr(self, 'windows_wheel_gesture', None)
+            windows_columns = bool(gesture and gesture.columns_for_scroll(time.monotonic())) if windows else True
+            if control and not touchpad and windows_columns:
                 # Stop any in-flight wheel zoom before changing the layout.
                 self.target_zoom = self.canvas_player.zoom
                 self.ctrl_scroll_remainder += step

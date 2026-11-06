@@ -12,7 +12,8 @@ from gi.repository import Gdk
 from experimental_album_canvas import (ExperimentalAlbumCanvas, CanvasPlayer, COLUMNS, WORLD_WIDTH,
                                        zoom_anchor, zoom_row_anchor, sort_progress, grid_slots,
                                        row_offsets, year_font_size, artist_font_size, search_catalog,
-                                       heading_accent_range, pan_bounds, is_touchpad_scroll)
+                                       heading_accent_range, pan_bounds, is_touchpad_scroll,
+                                       WindowsWheelGesture)
 from plex_client import Item, ALBUM_SORT_ARTIST
 from thumbnail_atlas import ThumbnailAtlas, CELL_BYTES
 from gpu_album_wall import GPUAlbumWall
@@ -221,12 +222,14 @@ class CanvasTests(unittest.TestCase):
                                x_adjustment=horizontal, adjustment=vertical,
                                scroll_flipped_tracklist=Mock(return_value=False),
                                start_animation=Mock(), unflip_for_zoom_out=Mock(),
-                               change_columns=Mock(), ctrl_scroll_remainder=0.)
+                               change_columns=Mock(), ctrl_scroll_remainder=0.,
+                               windows_wheel_gesture=WindowsWheelGesture())
         # GDK Win32 assigns a mouse source even to precision-touchpad events.
         event = SimpleNamespace(direction=Gdk.ScrollDirection.SMOOTH, x=100, y=200, state=0,
                                 get_scroll_deltas=lambda: (True, .25, -.5),
                                 get_source_device=lambda: SimpleNamespace(get_source=lambda: Gdk.InputSource.MOUSE))
-        with patch('experimental_album_canvas.sys.platform', 'win32'):
+        with patch('experimental_album_canvas.sys.platform', 'win32'), \
+                patch('experimental_album_canvas.time.monotonic', return_value=10.):
             self.assertTrue(ExperimentalAlbumCanvas.scroll(wall, None, event))
             horizontal.set_value.assert_called_once_with(122.5)
             vertical.set_value.assert_called_once_with(205.)
@@ -236,10 +239,27 @@ class CanvasTests(unittest.TestCase):
             self.assertGreater(wall.target_zoom, .5)
             self.assertEqual(wall.anchor, (100, 200))
             wall.change_columns.assert_not_called()
+            # Some Windows touchpads report a full wheel notch even for pinch.
+            event.get_scroll_deltas = lambda: (True, 0, -1.)
+            self.assertTrue(ExperimentalAlbumCanvas.scroll(wall, None, event))
+            wall.change_columns.assert_not_called()
+            wall.windows_wheel_gesture.control_released()
+            wall.windows_wheel_gesture.control_pressed(9.)
             event.get_scroll_deltas = lambda: (True, 0, 1.)
             self.assertTrue(ExperimentalAlbumCanvas.scroll(wall, None, event))
         wall.change_columns.assert_called_once_with(1)
         self.assertEqual(wall.target_zoom, .5)
+
+    def test_windows_synthetic_control_is_latched_for_entire_pinch(self):
+        gesture = WindowsWheelGesture()
+        gesture.control_pressed(10.)
+        self.assertFalse(gesture.columns_for_scroll(10.01))
+        self.assertFalse(gesture.columns_for_scroll(11.))
+        gesture.control_released()
+        gesture.control_pressed(12.)
+        self.assertTrue(gesture.columns_for_scroll(12.2))
+        gesture.control_released()
+        self.assertFalse(gesture.columns_for_scroll(13.))
 
     def test_windows_ignores_emulated_discrete_copy_of_smooth_scroll(self):
         wall = SimpleNamespace(scroll_flipped_tracklist=Mock(), start_animation=Mock())

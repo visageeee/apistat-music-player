@@ -1821,6 +1821,10 @@ class Player(Gtk.Window):
         return True
 
     def global_key_pressed(self, _window, event):
+        canvas = getattr(self, 'album_canvas', None)
+        if (sys.platform == 'win32' and canvas is not None and
+                event.keyval in (Gdk.KEY_Control_L, Gdk.KEY_Control_R)):
+            canvas.windows_wheel_gesture.control_pressed(time.monotonic())
         if getattr(self, 'startup_loading', False):
             return True
         if event.keyval == Gdk.KEY_Escape and self.escape_search():
@@ -1910,6 +1914,10 @@ class Player(Gtk.Window):
         return event.keyval == Gdk.KEY_Escape and self.escape_search()
 
     def global_key_released(self, _window, event):
+        canvas = getattr(self, 'album_canvas', None)
+        if (sys.platform == 'win32' and canvas is not None and
+                event.keyval in (Gdk.KEY_Control_L, Gdk.KEY_Control_R)):
+            canvas.windows_wheel_gesture.control_released()
         if getattr(self, 'startup_loading', False):
             return True
         if event.keyval == Gdk.KEY_space:
@@ -1918,6 +1926,9 @@ class Player(Gtk.Window):
         return False
 
     def window_focus_out(self, *_):
+        canvas = getattr(self, 'album_canvas', None)
+        if canvas is not None and hasattr(canvas, 'windows_wheel_gesture'):
+            canvas.windows_wheel_gesture.control_released()
         self.space_held = False
         self.queue_pointer_drag = None
         self.song_pointer_drag = None
