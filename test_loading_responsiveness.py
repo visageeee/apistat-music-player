@@ -1,4 +1,6 @@
+import threading
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
@@ -8,6 +10,66 @@ from busy_indicator import BusyIndicator
 
 
 class LoadingResponsivenessTests(unittest.TestCase):
+    def test_artwork_decoding_runs_before_the_gtk_callback(self):
+        callbacks, decode_threads = [], []
+        pixbuf = object()
+        class Loader:
+            def set_size(self, *_args):
+                pass
+            def write(self, _data):
+                decode_threads.append(threading.get_ident())
+            def close(self):
+                pass
+            def get_pixbuf(self):
+                return pixbuf
+        client = SimpleNamespace(address='http://plex', token='token', get=Mock(return_value=b'art'))
+        cache = SimpleNamespace(read_art=Mock(return_value=None), save_art=Mock())
+        image = SimpleNamespace(set_from_pixbuf=Mock())
+        with ThreadPoolExecutor(max_workers=1) as workers:
+            player = SimpleNamespace(closed=False, busy=SimpleNamespace(begin=Mock(), end=Mock()),
+                                     art_workers=workers)
+            with patch('player.LocalCache', return_value=cache), \
+                    patch('player.GdkPixbuf.PixbufLoader', Loader), \
+                    patch('player.GLib.idle_add', side_effect=lambda callback: callbacks.append(callback)):
+                Player.load_art(player, client, Item('/1', 'Album', thumb='/art'), image, 80, lambda: True)
+                workers.submit(lambda: None).result(timeout=2)
+                self.assertNotEqual(decode_threads, [threading.get_ident()])
+                self.assertEqual(len(decode_threads), 1)
+                image.set_from_pixbuf.assert_not_called()
+                for callback in callbacks:
+                    callback()
+        image.set_from_pixbuf.assert_called_once_with(pixbuf)
+
+    def test_large_queue_render_is_chunked_and_cancelled_on_refresh(self):
+        callbacks = []
+        rows = []
+        busy = SimpleNamespace(begin=Mock(), end=Mock())
+        class Store:
+            def clear(self):
+                rows.clear()
+            def append(self, row):
+                rows.append(row)
+        player = SimpleNamespace(queue_store=Store(), play_history=[],
+                                 queue=[Item(f'/track/{i}', f'Track {i}') for i in range(500)],
+                                 index=0, theme='dark', playing=True, stream_open=True,
+                                 remote_opening=False, closed=False, busy=busy,
+                                 content_views=SimpleNamespace(get_visible_child_name=lambda: 'queue'),
+                                 queue_count=SimpleNamespace(set_text=Mock()))
+        with patch('player.GLib.idle_add', side_effect=lambda callback: callbacks.append(callback) or 42), \
+                patch('player.GLib.source_remove') as remove:
+            Player.refresh_queue_view(player)
+            self.assertLess(len(rows), 500)
+            self.assertEqual(player.queue_render_source, 42)
+            busy.begin.assert_called_once()
+            Player.refresh_queue_view(player)
+            remove.assert_called_once_with(42)
+            self.assertEqual(busy.end.call_count, 1)
+            self.assertFalse(callbacks[0]())
+            while callbacks[1]():
+                pass
+            self.assertEqual(len(rows), 500)
+            self.assertEqual(busy.end.call_count, 2)
+
     def test_chained_background_work_keeps_the_spinner_visible(self):
         callbacks = []
         spinner = Mock()

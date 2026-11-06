@@ -7,7 +7,7 @@ root = Path.cwd()
 gst_plugins = [
     'app', 'audioconvert', 'audioresample', 'audioparsers', 'autodetect',
     'coreelements', 'directsound', 'faad', 'flac', 'id3demux', 'mpg123',
-    'ogg', 'playback', 'soup', 'spectrum', 'typefindfunctions', 'volume',
+    'level', 'ogg', 'playback', 'soup', 'spectrum', 'typefindfunctions', 'volume',
     'vorbis', 'wasapi', 'wasapi2', 'wavparse',
 ]
 

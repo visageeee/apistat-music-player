@@ -7,7 +7,7 @@ from gi.repository import GdkPixbuf
 from appearance import (cached_gradient, gradient_colors, theme_gradient_colors,
                         waveform_colors)
 from local_cache import LocalCache
-from track_waveform import analyze_track_waveform, analyze_audio_uri
+from track_waveform import analyze_track_waveform, analyze_audio_uri, server_waveform
 
 
 def preload_next_art(client, thumb, theme, gradient_enabled, background_size,
@@ -55,6 +55,11 @@ def preload_next_waveform(client, track, cancelled=lambda: False):
     if cache.read_waveform(track.key, track.duration) is not None:
         return
     try:
+        peaks = (None if getattr(client, 'is_local', False) else
+                 server_waveform(client, track, cancelled))
+        if peaks is not None and not cancelled():
+            cache.save_waveform(track.key, track.duration, peaks)
+            return
         uri = client.stream(track)
         if cancelled():
             return

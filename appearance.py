@@ -40,6 +40,8 @@ COLOR_PATTERN = re.compile(r'^#[0-9a-fA-F]{6}$')
 _gradient_executor = ThreadPoolExecutor(max_workers=1)
 _gradient_memory = OrderedDict()
 _gradient_memory_lock = threading.Lock()
+_gradient_noise_lock = threading.Lock()
+_gradient_noise = None
 
 
 def preloaded_gradient(width, height, colors):
@@ -51,32 +53,45 @@ def preloaded_gradient(width, height, colors):
         return result
 
 
+def _gradient_noise_tile():
+    """A reusable, low-opacity noise texture; the expensive work is done once."""
+    global _gradient_noise
+    with _gradient_noise_lock:
+        if _gradient_noise is not None:
+            return _gradient_noise
+        size = 256
+        pixels = array('I')
+        randomizer = random.Random(5182)
+        for _ in range(size * size):
+            alpha = randomizer.randrange(1, 6)
+            # ARGB32 stores premultiplied channels. Random black and white
+            # pixels introduce a few levels of noise without tinting the art.
+            channel = alpha if randomizer.getrandbits(1) else 0
+            pixels.append(alpha << 24 | channel << 16 | channel << 8 | channel)
+        surface = cairo.ImageSurface.create_for_data(
+            pixels, cairo.FORMAT_ARGB32, size, size, size * 4)
+        _gradient_noise = surface, pixels
+        return _gradient_noise
+
+
 def render_dithered_gradient(width, height, colors):
-    """Render a diagonal gradient with stable per-pixel dithering."""
-    first, second = (tuple(int(color[index:index + 2], 16) for index in (1, 3, 5))
-                     for color in colors)
-    delta = tuple(end - start for start, end in zip(first, second))
+    """Render a diagonal gradient and subtle noise using Cairo's native paths."""
     pixels = array('I', [0]) * (width * height)
-    randomizer = random.Random(5182)
-    dx, dy = max(1, width - 1), max(1, height - 1)
-    denominator = dx * dx + dy * dy
-    x_red = [delta[0] * x * dx / denominator for x in range(width)]
-    x_green = [delta[1] * x * dx / denominator for x in range(width)]
-    x_blue = [delta[2] * x * dx / denominator for x in range(width)]
-    random_value = randomizer.random
-    for y in range(height):
-        row_offset = y * width
-        red_row = first[0] + delta[0] * y * dy / denominator
-        green_row = first[1] + delta[1] * y * dy / denominator
-        blue_row = first[2] + delta[2] * y * dy / denominator
-        for x in range(width):
-            noise = (random_value() - 0.5) * 3.0 + 0.5
-            red = max(0, min(255, int(red_row + x_red[x] + noise)))
-            green = max(0, min(255, int(green_row + x_green[x] + noise)))
-            blue = max(0, min(255, int(blue_row + x_blue[x] + noise)))
-            pixels[row_offset + x] = 0xff000000 | red << 16 | green << 8 | blue
     surface = cairo.ImageSurface.create_for_data(
         pixels, cairo.FORMAT_ARGB32, width, height, width * 4)
+    context = cairo.Context(surface)
+    gradient = cairo.LinearGradient(0, 0, max(1, width - 1), max(1, height - 1))
+    for offset, color in enumerate(colors):
+        gradient.add_color_stop_rgb(offset, *(int(color[index:index + 2], 16) / 255
+                                              for index in (1, 3, 5)))
+    context.set_source(gradient)
+    context.paint()
+    noise, _noise_pixels = _gradient_noise_tile()
+    pattern = cairo.SurfacePattern(noise)
+    pattern.set_extend(cairo.EXTEND_REPEAT)
+    context.set_source(pattern)
+    context.paint()
+    surface.flush()
     return surface, pixels
 
 

@@ -61,6 +61,7 @@ class PlexClient:
         self.identifier = identifier
         self.device_name = device_name
         self.timeout = timeout
+        self._audio_stream_ids = {}
         if not self.token:
             raise ValueError('Enter a Plex token.')
         self.opener = build_opener(NoRedirect())
@@ -600,4 +601,36 @@ class PlexClient:
         part = self.xml(track.key).find('.//Media/Part')
         if part is None or not part.get('key'):
             raise ValueError('This track has no playable file.')
+        stream_id = self._audio_stream_id(part)
+        if stream_id:
+            self._audio_stream_ids[track.key] = stream_id
         return self.url(part.attrib['key'])
+
+    @staticmethod
+    def _audio_stream_id(part):
+        streams = [item for item in part.findall('Stream') if item.get('streamType') == '2' and
+                   re.fullmatch(r'\d+', item.get('id', ''))]
+        selected = next((item for item in streams if item.get('selected') == '1'),
+                        streams[0] if streams else None)
+        return selected.get('id') if selected is not None else None
+
+    def loudness_waveform(self, track):
+        """Return Plex's existing loudness analysis when the server has it."""
+        from track_waveform import PEAK_COUNT, waveform_from_loudness
+        if not re.fullmatch(r'/library/metadata/\d+', track.key):
+            raise ValueError('Invalid track path.')
+        stream_id = self._audio_stream_ids.get(track.key)
+        if stream_id is None:
+            part = self.xml(track.key).find('.//Media/Part')
+            stream_id = self._audio_stream_id(part) if part is not None else None
+            if stream_id:
+                self._audio_stream_ids[track.key] = stream_id
+        if stream_id is None:
+            return None
+        try:
+            data = self.get(f'/library/streams/{stream_id}/loudness', subsample=PEAK_COUNT)
+        except HTTPError as error:
+            if error.code in (400, 403, 404, 405, 501):
+                return None
+            raise
+        return waveform_from_loudness(data)

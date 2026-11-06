@@ -98,7 +98,8 @@ from drag_payload import encode_track_keys, decode_track_keys
 from ratings import filled_stars, star_text, stars_from_click
 from window_shape import rounded_region
 import windows_window
-from track_waveform import TrackWaveform, analyze_track_waveform, analyze_audio_uri
+from track_waveform import TrackWaveform, analyze_track_waveform, analyze_audio_uri, server_waveform
+from playback_pipeline import PlaybackPipeline
 from ribbon_audio import RibbonAudioTap
 from ribbon_visualizer import RibbonVisualizer
 from frosted_bar import FrostedBar
@@ -108,6 +109,7 @@ from next_track_preload import preload_next_art, preload_next_waveform
 from album_card import FlipCard
 from gtk_snapshot import draw_allocated, normalize_surface_origin
 from app_assets import app_icon, placeholder_art, SMALL_PLACEHOLDER_LOGO_RATIO
+from album_zoom_icon import AlbumZoomIcon
 from smooth_scroll import SmoothScroller
 from sidebar_icons import CUSTOM_SIDEBAR_ICONS, SidebarIcon
 from library_album_view import AlbumGroupOverlay, album_group_row_height, group_songs_by_album
@@ -115,7 +117,7 @@ from time_machine_view import TimeMachineView
 from tag_editor import TagEditor
 from background_drag_scroll import attach_background_drag
 from busy_indicator import BusyIndicator
-from session import load_session, save_session, item_to_data
+from session import load_session, save_session, item_to_data, serialize_snapshot
 import shortcuts
 from companion import CompanionReceiver, local_ip
 from companion_account import (PlexAccount, load_device_token, save_device_token,
@@ -385,6 +387,10 @@ class Player(Gtk.Window):
         if not self.pipeline:
             raise RuntimeError('Install gstreamer1.0-plugins-base and gstreamer1.0-plugins-good')
         self.pipeline.set_property('flags', 2)  # Audio only
+        self.playback_controller = PlaybackPipeline(
+            self.pipeline, lambda: GLib.idle_add(self.playback_transition_failed))
+        self.playback_poll_workers = ThreadPoolExecutor(max_workers=1, thread_name_prefix='playback-poll')
+        self.playback_poll_future = None
         try:
             output = ('osxaudiosink' if sys.platform == 'darwin' and
                       Gst.ElementFactory.find('osxaudiosink') else 'autoaudiosink')
@@ -409,6 +415,8 @@ class Player(Gtk.Window):
         self.window_drag_start = None
         self.space_held = False
         self.last_session_save = 0.0
+        self.session_save_workers = ThreadPoolExecutor(max_workers=1, thread_name_prefix='session-save')
+        self.session_save_future = None
         self.art_workers = ThreadPoolExecutor(max_workers=4)
         self.style_tile_art_workers = ThreadPoolExecutor(max_workers=2)
         self.rating_executor = ThreadPoolExecutor(max_workers=1)
@@ -948,8 +956,10 @@ class Player(Gtk.Window):
         self.search.connect('key-press-event', self.search_escape_pressed)
         self.search.connect('activate', self.search_album_titles)
         self.search.connect('search-changed', self.canvas_search_changed)
-        self.search.set_width_chars(36)
-        toolbar_controls.pack_start(self.search, True, True, 0)
+        self.search.set_width_chars(14)
+        self.search.set_max_width_chars(22)
+        self.search.set_valign(Gtk.Align.CENTER)
+        self.search.set_margin_start(6)
         self.album_search_revealer = Gtk.Revealer()
         self.album_search_revealer.set_transition_type(Gtk.RevealerTransitionType.SLIDE_DOWN)
         self.album_search_revealer.set_transition_duration(180)
@@ -977,10 +987,7 @@ class Player(Gtk.Window):
             button.connect('clicked', self.change_album_sort, sort)
             sort_buttons.pack_start(button, False, False, 0)
             self.album_sort_buttons[sort] = button
-        self.search_button = self.icon_button('system-search-symbolic', 'Search albums',
-                                              self.toggle_album_search)
-        self.search_button.set_name('album-search-button')
-        sort_buttons.pack_start(self.search_button, False, False, 0)
+        sort_buttons.pack_start(self.search, False, False, 0)
         sort_bar.set_center_widget(sort_buttons)
         album_actions = Gtk.Box(spacing=0)
         album_actions.set_name('album-actions')
@@ -991,7 +998,17 @@ class Player(Gtk.Window):
                                                      lambda *_: self.change_album_zoom(1))
         self.album_zoom_out_button = self.icon_button('zoom-out-symbolic', 'Zoom out',
                                                       lambda *_: self.change_album_zoom(-1))
+        self.album_zoom_in_button.set_image(AlbumZoomIcon(True))
+        self.album_zoom_out_button.set_image(AlbumZoomIcon(False))
+        self.album_fewer_columns_button = self.icon_button('list-remove-symbolic', 'Fewer album columns',
+                                                           lambda *_: self.change_canvas_columns(-1))
+        self.album_more_columns_button = self.icon_button('list-add-symbolic', 'More album columns',
+                                                          lambda *_: self.change_canvas_columns(1))
+        for button in (self.album_fewer_columns_button, self.album_more_columns_button):
+            button.set_no_show_all(True)
+            button.set_visible(self.canvas_enabled)
         for button in (self.album_zoom_out_button, self.album_zoom_in_button,
+                       self.album_fewer_columns_button, self.album_more_columns_button,
                        self.album_reload_button):
             album_actions.pack_start(button, False, False, 0)
         sort_bar.pack_end(album_actions, False, False, 0)
@@ -1968,6 +1985,8 @@ class Player(Gtk.Window):
         except OSError:
             self.status.set_text('Could not save album wall setting.')
         self.canvas_enabled = not classic and (sys.platform.startswith('linux') or sys.platform == 'win32')
+        for control in (self.album_fewer_columns_button, self.album_more_columns_button):
+            control.set_visible(self.canvas_enabled)
         self.search.set_placeholder_text('Search albums and artists' if self.canvas_enabled else
                                          'Search albums and artists; press Enter')
         self.gpu_wall_toggle.set_sensitive(classic and (sys.platform.startswith('linux') or sys.platform == 'win32'))
@@ -2026,7 +2045,13 @@ class Player(Gtk.Window):
         return False
 
     def update_canvas_hscroll(self, adjustment):
-        needed = adjustment.get_upper() - adjustment.get_lower() > adjustment.get_page_size() + .5
+        canvas = getattr(self, 'album_canvas', None)
+        if canvas is not None:
+            _width, size, gap, margin, columns, _row, _total, _x = canvas.geometry()
+            content_width = 2 * margin + columns * size + (columns - 1) * gap
+            needed = content_width > adjustment.get_page_size() + .5
+        else:
+            needed = adjustment.get_upper() - adjustment.get_lower() > adjustment.get_page_size() + .5
         self.canvas_hscroll.set_visible(needed)
 
     def album_canvas_failed(self):
@@ -3304,12 +3329,7 @@ class Player(Gtk.Window):
     def toggle_album_search(self, *_):
         if self.content_views.get_visible_child_name() != 'albums':
             self.show_view('albums')
-        elif self.album_search_revealer.get_reveal_child():
-            self.album_search_revealer.set_reveal_child(False)
-            self.search_button.grab_focus()
-            return
         self.views.set_visible_child_name('wall')
-        self.album_search_revealer.set_reveal_child(True)
         self.search.grab_focus()
 
     def album_top_allocated(self, *_):
@@ -4065,6 +4085,11 @@ class Player(Gtk.Window):
             save_album_columns(columns)
         except OSError:
             self.status.set_text('Could not save album grid zoom.')
+
+    def change_canvas_columns(self, delta):
+        canvas = getattr(self, 'album_canvas', None)
+        if getattr(self, 'canvas_enabled', False) and canvas is not None:
+            canvas.change_columns(delta)
 
     def reload_albums(self, *_):
         if not self.client:
@@ -5457,11 +5482,23 @@ class Player(Gtk.Window):
         except OSError:
             self.status.set_text('Could not save the queue option')
 
+    @staticmethod
+    def cancel_queue_render(player):
+        source = getattr(player, 'queue_render_source', 0)
+        if source:
+            GLib.source_remove(source)
+            player.queue_render_source = 0
+        if getattr(player, 'queue_render_busy', False):
+            player.queue_render_busy = False
+            player.busy.end()
+        player.queue_render_generation = getattr(player, 'queue_render_generation', 0) + 1
+
     def refresh_queue_view(self):
         Player.update_skip_buttons(self)
         prefetch = getattr(self, 'prefetch_next_track', None)
         if prefetch is not None:
             prefetch()
+        Player.cancel_queue_render(self)
         if (not hasattr(self, 'queue_store') or
                 self.content_views.get_visible_child_name() != 'queue'):
             return
@@ -5471,30 +5508,65 @@ class Player(Gtk.Window):
         normal_color = '#202326' if self.theme == 'light' else '#eeeeee'
         history = list(self.play_history)
         visible = getattr(self, 'queue_history_visible', 5)
-        for history_index in range(max(0, len(history) - visible), len(history)):
-            track = history[history_index]
-            added = time.strftime('%Y-%m-%d', time.localtime(track.added_at)) if track.added_at else ''
-            self.queue_store.append([-history_index - 1, '↶', track.title, track.artist,
-                                     track.album, clock(track.duration / 1000) if track.duration else '',
-                                     str(track.year), track.genre, added, True, history_color,
-                                     star_text(track.user_rating)])
+        queue = tuple(self.queue)
         first = max(0, self.index)
-        for index in range(first, len(self.queue)):
-            track = self.queue[index]
-            marker = (Player.current_track_marker(self, track.key)
-                      if index == self.index else '') or str(index - first + 1)
-            added = time.strftime('%Y-%m-%d', time.localtime(track.added_at)) if track.added_at else ''
-            self.queue_store.append([index, marker, track.title, track.artist,
-                                     track.album, clock(track.duration / 1000) if track.duration else '',
-                                     str(track.year), track.genre, added, False, normal_color,
-                                     star_text(track.user_rating)])
-        remaining = max(0, len(self.queue) - max(0, self.index + 1))
+        current_index = self.index
+        history_start = max(0, len(history) - visible)
+        total_rows = len(history) - history_start + max(0, len(queue) - first)
+        generation = self.queue_render_generation
+        def rows():
+            for history_index in range(history_start, len(history)):
+                track = history[history_index]
+                added = time.strftime('%Y-%m-%d', time.localtime(track.added_at)) if track.added_at else ''
+                yield [-history_index - 1, '↶', track.title, track.artist,
+                       track.album, clock(track.duration / 1000) if track.duration else '',
+                       str(track.year), track.genre, added, True, history_color,
+                       star_text(track.user_rating)]
+            for index in range(first, len(queue)):
+                track = queue[index]
+                marker = (Player.current_track_marker(self, track.key)
+                          if index == current_index else '') or str(index - first + 1)
+                added = time.strftime('%Y-%m-%d', time.localtime(track.added_at)) if track.added_at else ''
+                yield [index, marker, track.title, track.artist,
+                       track.album, clock(track.duration / 1000) if track.duration else '',
+                       str(track.year), track.genre, added, False, normal_color,
+                       star_text(track.user_rating)]
+        pending = iter(rows())
+        def append_batch():
+            if (getattr(self, 'closed', False) or generation != self.queue_render_generation or
+                    self.content_views.get_visible_child_name() != 'queue'):
+                if generation == self.queue_render_generation:
+                    self.queue_render_source = 0
+                    if getattr(self, 'queue_render_busy', False):
+                        self.queue_render_busy = False
+                        self.busy.end()
+                return False
+            deadline = time.monotonic() + .006
+            for count in range(128 if total_rows <= 128 else 96):
+                try:
+                    self.queue_store.append(next(pending))
+                except StopIteration:
+                    self.queue_render_source = 0
+                    if getattr(self, 'queue_render_busy', False):
+                        self.queue_render_busy = False
+                        self.busy.end()
+                    return False
+                if total_rows > 128 and time.monotonic() >= deadline:
+                    break
+            return True
+        remaining = max(0, len(queue) - max(0, self.index + 1))
         self.queue_count.set_text(
             f'{len(self.play_history)} previously played · {remaining} upcoming · Drag tracks to rearrange'
-            if self.queue or self.play_history else 'No tracks queued')
+            if queue or history else 'No tracks queued')
         button = getattr(self, 'queue_history_button', None)
         if button is not None:
             button.set_visible(len(history) > visible)
+        if append_batch():
+            busy = getattr(self, 'busy', None)
+            if busy is not None:
+                busy.begin()
+                self.queue_render_busy = True
+            self.queue_render_source = GLib.idle_add(append_batch)
 
     def show_more_previous_tracks(self, _button):
         self.queue_history_visible = min(len(self.play_history),
@@ -5774,10 +5846,7 @@ class Player(Gtk.Window):
         Player.clear_remote_queue(self)
         if not self.queue:
             self.stop()
-            try:
-                save_session(self.session_snapshot())
-            except OSError:
-                pass
+            Player.queue_session_save(self)
         elif removed_current and was_open:
             self.start_track(resume_paused=resume_paused)
         else:
@@ -6572,7 +6641,7 @@ class Player(Gtk.Window):
         except OSError:
             self.status.set_text('Could not save the waveform timeline setting.')
 
-    def prepare_track_waveform(self, client, track, uri, play_generation):
+    def prepare_track_waveform(self, client, track, uri, play_generation, delay_ms=0):
         self.waveform_generation += 1
         waveform_generation = self.waveform_generation
         cache = LocalCache(client)
@@ -6580,18 +6649,24 @@ class Player(Gtk.Window):
         self.wave_timeline.set_peaks(cached)
         if cached is not None or track.duration <= 0:
             return
-        self.busy.begin()
+        valid = lambda: (not self.closed and self.timeline_waveform_enabled and
+                         waveform_generation == self.waveform_generation and
+                         play_generation == self.play_generation)
         def work():
-            valid = lambda: (not self.closed and self.timeline_waveform_enabled and
-                             waveform_generation == self.waveform_generation and
-                             play_generation == self.play_generation)
+            def progress(peaks):
+                def deliver_progress():
+                    if valid():
+                        self.wave_timeline.set_peaks(peaks)
+                    return False
+                GLib.idle_add(deliver_progress)
             try:
                 if valid() and getattr(client, 'is_local', False) and client.stream(track) == uri:
-                    peaks = analyze_audio_uri(uri, '', track.duration, lambda: not valid())
+                    peaks = analyze_audio_uri(uri, '', track.duration, lambda: not valid(), progress)
                 else:
-                    peaks = (analyze_track_waveform(uri, client.address, client.token,
-                                                   track.duration, lambda: not valid())
-                             if valid() else None)
+                    peaks = server_waveform(client, track, lambda: not valid()) if valid() else None
+                    if peaks is None and valid():
+                        peaks = analyze_track_waveform(uri, client.address, client.token,
+                                                       track.duration, lambda: not valid(), progress)
                 if peaks is not None and valid():
                     try:
                         cache.save_waveform(track.key, track.duration, peaks)
@@ -6605,7 +6680,18 @@ class Player(Gtk.Window):
                     self.wave_timeline.set_peaks(peaks)
                 return False
             GLib.idle_add(deliver)
-        self.waveform_workers.submit(work)
+        def start_work():
+            if valid():
+                self.busy.begin()
+                try:
+                    self.waveform_workers.submit(work)
+                except RuntimeError:
+                    self.busy.end()
+            return False
+        if delay_ms:
+            GLib.timeout_add(delay_ms, start_work)
+        else:
+            start_work()
 
     def prefetch_next_track(self):
         if (not self.stream_open or not self.queue_client or
@@ -6882,7 +6968,7 @@ class Player(Gtk.Window):
 
     def frosted_top_controls(self):
         return (self.search, self.style_search,
-                *self.album_sort_buttons.values(), self.search_button,
+                *self.album_sort_buttons.values(),
                 *self.style_mode_buttons.values(), *self.settings_tab_buttons)
 
     def update_frosted_top_style(self):
@@ -9080,30 +9166,33 @@ class Player(Gtk.Window):
                         pass
             except Exception:
                 return  # Missing artwork retains the placeholder.
+            try:
+                # Decoding large or compressed artwork can take noticeable time.
+                # Pixbufs are data objects; only the widget update belongs on GTK.
+                loader = GdkPixbuf.PixbufLoader()
+                loader.set_size(size, size)
+                loader.write(data)
+                loader.close()
+                pixbuf = loader.get_pixbuf()
+            except GLib.Error:
+                if from_cache:
+                    try:
+                        cache.art_path(album.thumb, cached_size).unlink(missing_ok=True)
+                    except OSError:
+                        pass
+                    fetch(True)
+                return
             def show():
                 if self.closed or not valid():
                     return False
-                try:
-                    loader = GdkPixbuf.PixbufLoader()
-                    loader.set_size(size, size)
-                    loader.write(data)
-                    loader.close()
-                    pixbuf = loader.get_pixbuf()
-                    image.art_source = pixbuf
-                    image.placeholder_art = False
-                    if hasattr(image, 'art_display_size'):
-                        self.set_art_size(image, image.art_display_size)
-                    else:
-                        image.set_from_pixbuf(pixbuf)
-                    if on_pixbuf:
-                        on_pixbuf(pixbuf)
-                except GLib.Error:
-                    if from_cache:
-                        try:
-                            cache.art_path(album.thumb, cached_size).unlink(missing_ok=True)
-                        except OSError:
-                            pass
-                        submit_fetch(True)
+                image.art_source = pixbuf
+                image.placeholder_art = False
+                if hasattr(image, 'art_display_size'):
+                    self.set_art_size(image, image.art_display_size)
+                else:
+                    image.set_from_pixbuf(pixbuf)
+                if on_pixbuf:
+                    on_pixbuf(pixbuf)
                 return False
             GLib.idle_add(show)
         def submit_fetch(force_remote=False):
@@ -10186,6 +10275,27 @@ class Player(Gtk.Window):
         if source.find_property('timeout'):
             source.set_property('timeout', 15)
 
+    def playback_transition_failed(self):
+        if not self.closed:
+            self.status.set_text('Playback failed. Check server access and installed GStreamer codecs.')
+        return False
+
+    @staticmethod
+    def pipeline_transitioning(player):
+        controller = getattr(player, 'playback_controller', None)
+        return bool(controller and controller.busy())
+
+    @staticmethod
+    def set_pipeline_state(player, state):
+        controller = getattr(player, 'playback_controller', None)
+        if controller is None:
+            player.pipeline.set_state(state)
+        elif state == Gst.State.NULL:
+            controller.set_state(state)
+        else:
+            generation = player.play_generation
+            controller.set_state(state, lambda: not player.closed and player.play_generation == generation)
+
     def stop(self, remember=True):
         self.lastfm_tracker = None
         self.style_autoplay_generation += 1
@@ -10215,7 +10325,7 @@ class Player(Gtk.Window):
             self.timeline_seek_source = 0
         self.pending_timeline_seek = None
         self.remote_opening = False
-        self.pipeline.set_state(Gst.State.NULL)
+        Player.set_pipeline_state(self, Gst.State.NULL)
         self.playing = False
         self.stream_open = False
         self.refresh_live_waveform()
@@ -10300,10 +10410,7 @@ class Player(Gtk.Window):
         self.status.set_text('Opening stream…')
         self.mpris.changed()
         def ready(uri):
-            self.pipeline.set_property('uri', uri)
             self.current_stream_uri = uri
-            if self.timeline_waveform_enabled:
-                self.prepare_track_waveform(client, track, uri, generation)
             self.remote_opening = False
             self.stream_open = True
             self.current_played_track = track
@@ -10311,7 +10418,17 @@ class Player(Gtk.Window):
             self.playing = not resume_paused
             self.refresh_live_waveform()
             self.pending_resume_seek_ms = self.playback_position_ms
-            self.pipeline.set_state(Gst.State.PAUSED if resume_paused else Gst.State.PLAYING)
+            state = Gst.State.PAUSED if resume_paused else Gst.State.PLAYING
+            controller = getattr(self, 'playback_controller', None)
+            if controller is None:
+                self.pipeline.set_property('uri', uri)
+                self.pipeline.set_state(state)
+            else:
+                controller.open(uri, state, lambda: not self.closed and generation == self.play_generation)
+            if self.timeline_waveform_enabled:
+                # Give the playback stream time to buffer before requesting a
+                # second copy of the track for waveform analysis.
+                self.prepare_track_waveform(client, track, uri, generation, delay_ms=750)
             self.set_play_button_state(not resume_paused)
             self.status.set_text(f'Queue • {self.index + 1} / {len(self.queue)}' +
                                  (' • Ready to resume' if resume_paused else ''))
@@ -10338,12 +10455,14 @@ class Player(Gtk.Window):
         if getattr(self, 'lastfm_tracker', None):
             self.lastfm_tracker.previous = None
         self.playing = not self.playing
-        self.pipeline.set_state(Gst.State.PLAYING if self.playing else Gst.State.PAUSED)
+        Player.set_pipeline_state(self, Gst.State.PLAYING if self.playing else Gst.State.PAUSED)
         self.refresh_live_waveform()
         if not self.playing:
-            ok, position = self.pipeline.query_position(Gst.Format.TIME)
-            if ok and (position > 0 or self.playback_position_ms == 0):
-                self.playback_position_ms = position // Gst.MSECOND
+            if getattr(self, 'timeline_duration', 0) > 0:
+                elapsed = (0. if getattr(self, 'buffering_busy', False) else
+                           max(0., time.monotonic() - self.timeline_base_time))
+                self.playback_position_ms = round(min(self.timeline_duration,
+                                                       self.timeline_base_position + elapsed) * 1000)
         self.timeline_base_position = self.playback_position_ms / 1000
         self.timeline_base_time = time.monotonic()
         self.set_play_button_state(self.playing)
@@ -10507,8 +10626,8 @@ class Player(Gtk.Window):
             if buffering != self.buffering_busy:
                 self.buffering_busy = buffering
                 self.busy.begin() if buffering else self.busy.end()
-            if self.playing:
-                self.pipeline.set_state(Gst.State.PAUSED if percent < 100 else Gst.State.PLAYING)
+                if self.playing:
+                    Player.set_pipeline_state(self, Gst.State.PAUSED if buffering else Gst.State.PLAYING)
             self.status.set_text(f'Buffering {percent}%' if percent < 100 else 'Streaming from Plex')
 
     def seek_to(self, scale, scroll, value):
@@ -10607,6 +10726,10 @@ class Player(Gtk.Window):
             self.pending_timeline_seek = None
         if not self.seek.get_sensitive() or not self.queue:
             return
+        if Player.pipeline_transitioning(self):
+            self.pending_timeline_seek = position / 1000000
+            self.timeline_seek_source = GLib.timeout_add(50, self.flush_timeline_seek)
+            return
         track = self.queue[self.index]
         position = max(0, min(position, track.duration * 1000)) if track.duration else max(0, position)
         if getattr(self, 'lastfm_tracker', None):
@@ -10620,7 +10743,7 @@ class Player(Gtk.Window):
             self.persist_session(force=True)
 
     def apply_pending_resume_seek(self):
-        if not self.stream_open or not self.pending_resume_seek_ms:
+        if not self.stream_open or not self.pending_resume_seek_ms or Player.pipeline_transitioning(self):
             return
         track = self.queue[self.index]
         position = min(self.pending_resume_seek_ms, track.duration) if track.duration else self.pending_resume_seek_ms
@@ -10635,13 +10758,43 @@ class Player(Gtk.Window):
     def tick(self):
         if self.closed:
             return False
+        if Player.pipeline_transitioning(self):
+            return True
         self.apply_pending_resume_seek()
-        ok, duration = self.pipeline.query_duration(Gst.Format.TIME)
-        pos_ok, position = self.pipeline.query_position(Gst.Format.TIME)
+        if self.playback_poll_future is None and self.stream_open:
+            generation = self.play_generation
+            base_time = self.timeline_base_time
+            def poll():
+                ok, duration = self.pipeline.query_duration(Gst.Format.TIME)
+                pos_ok, position = self.pipeline.query_position(Gst.Format.TIME)
+                _result, state, _pending = self.pipeline.get_state(0)
+                return ok, duration, pos_ok, position, state
+            future = self.playback_poll_workers.submit(poll)
+            self.playback_poll_future = future
+            future.add_done_callback(lambda completed: GLib.idle_add(
+                self.finish_playback_poll, generation, base_time, completed))
+        if self.stream_open and self.queue:
+            self.persist_session()
+        if self.remote_receiver:
+            self.remote_receiver.publish(self.remote_snapshot())
+            if self.remote_receiver.last_request:
+                path, code = self.remote_receiver.last_request
+                self.remote_request_status.set_text(f'Last remote request: {path} → HTTP {code}')
+        return True
+
+    def finish_playback_poll(self, generation, base_time, future):
+        if self.playback_poll_future is future:
+            self.playback_poll_future = None
+        if (self.closed or generation != self.play_generation or
+                base_time != self.timeline_base_time or Player.pipeline_transitioning(self)):
+            return False
+        try:
+            ok, duration, pos_ok, position, state = future.result()
+        except Exception:
+            return False
         if getattr(self, 'lastfm_tracker', None):
             if self.lastfm_tracker.duration <= 0 and ok and duration > 0:
                 self.lastfm_tracker.duration = duration / Gst.SECOND
-            _result, state, _pending = self.pipeline.get_state(0)
             self.update_lastfm_playback(position / Gst.SECOND if pos_ok else None,
                                         self.stream_open and self.playing and
                                         not self.buffering_busy and state == Gst.State.PLAYING)
@@ -10656,14 +10809,7 @@ class Player(Gtk.Window):
                 self.wave_timeline.set_sensitive(True)
                 self.mpris.changed()
             self.time.set_text(f'{clock(position / Gst.SECOND)} / {clock(duration / Gst.SECOND)}')
-        if self.stream_open and self.queue:
-            self.persist_session()
-        if self.remote_receiver:
-            self.remote_receiver.publish(self.remote_snapshot())
-            if self.remote_receiver.last_request:
-                path, code = self.remote_receiver.last_request
-                self.remote_request_status.set_text(f'Last remote request: {path} → HTTP {code}')
-        return True
+        return False
 
     def animate_timeline(self):
         if self.closed:
@@ -10680,13 +10826,35 @@ class Player(Gtk.Window):
         now = time.monotonic()
         if not force and now - self.last_session_save < 15:
             return
-        try:
-            save_session(self.session_snapshot())
-        except OSError:
-            return
-        self.last_session_save = now
+        if Player.queue_session_save(self):
+            self.last_session_save = now
 
-    def session_snapshot(self):
+    @staticmethod
+    def queue_session_save(player):
+        workers = getattr(player, 'session_save_workers', None)
+        if workers is None:
+            try:
+                save_session(player.session_snapshot())
+                return True
+            except OSError:
+                return False
+        snapshot = player.session_snapshot(defer_items=True)
+        previous = getattr(player, 'session_save_future', None)
+        if previous is not None:
+            previous.cancel()
+        def save():
+            try:
+                save_session(serialize_snapshot(snapshot))
+            except OSError:
+                pass
+        try:
+            player.session_save_future = workers.submit(save)
+            return True
+        except RuntimeError:
+            return False
+
+    def session_snapshot(self, defer_items=False):
+        encode = (lambda item: item) if defer_items else item_to_data
         maximized = self.is_maximized()
         width, height = self.normal_size
         data = {
@@ -10708,24 +10876,29 @@ class Player(Gtk.Window):
                     data['time_machine_dates'] = {key: value.isoformat() for key, value in previous.items()}
         if self.client:
             data['server'] = self.client.address
-            data['history'] = [item_to_data(track)
+            data['history'] = [encode(track)
                                for track in getattr(self, 'play_history', ())]
             data['section'] = self.library.get_active_id()
             data['playlist'] = self.active_playlist.key if self.active_playlist else None
             data['song_sort'] = self.song_sort
             if self.selected_album and self.views.get_visible_child_name() == 'detail':
-                data['album_detail'] = item_to_data(self.selected_album)
+                data['album_detail'] = encode(self.selected_album)
             if self.queue and 0 <= self.index < len(self.queue):
                 position = self.playback_position_ms
-                if self.stream_open and self.playing and not self.pending_resume_seek_ms:
+                if (not defer_items and self.stream_open and self.playing and not self.pending_resume_seek_ms and
+                        not Player.pipeline_transitioning(self)):
                     ok, current = self.pipeline.query_position(Gst.Format.TIME)
                     if ok:
                         position = current // Gst.MSECOND
+                elif (defer_items and self.stream_open and self.playing and
+                      not self.pending_resume_seek_ms and self.timeline_duration > 0):
+                    elapsed = 0. if self.buffering_busy else max(0., time.monotonic() - self.timeline_base_time)
+                    position = round(min(self.timeline_duration, self.timeline_base_position + elapsed) * 1000)
                 data['playback'] = {
-                    'queue': [item_to_data(track) for track in self.queue],
+                    'queue': [encode(track) for track in self.queue],
                     'index': self.index,
                     'position_ms': max(0, position),
-                    'album': item_to_data(self.queue_album) if self.queue_album else None,
+                    'album': encode(self.queue_album) if self.queue_album else None,
                     'shuffle': self.shuffle.get_active(),
                     'repeat': self.repeat.get_active(),
                 }
@@ -10734,17 +10907,17 @@ class Player(Gtk.Window):
                 if name in self.saved_session:
                     data[name] = self.saved_session[name]
             if self.saved_session.get('history'):
-                data['history'] = [item_to_data(track)
+                data['history'] = [encode(track)
                                    for track in self.saved_session['history']]
             if self.saved_session.get('album_detail'):
-                data['album_detail'] = item_to_data(self.saved_session['album_detail'])
+                data['album_detail'] = encode(self.saved_session['album_detail'])
             old = self.saved_session.get('playback')
             if old:
                 data['playback'] = {
-                    'queue': [item_to_data(track) for track in old['queue']],
+                    'queue': [encode(track) for track in old['queue']],
                     'index': old['index'],
                     'position_ms': old['position_ms'],
-                    'album': item_to_data(old['album']) if old['album'] else None,
+                    'album': encode(old['album']) if old['album'] else None,
                     'shuffle': old['shuffle'], 'repeat': old['repeat'],
                 }
         return data
@@ -10775,6 +10948,7 @@ class Player(Gtk.Window):
         self.next_waveform_workers.shutdown(wait=False, cancel_futures=True)
         self.style_tile_art_workers.shutdown(wait=False, cancel_futures=True)
         self.rating_executor.shutdown(wait=False, cancel_futures=True)
+        Player.cancel_queue_render(self)
         self.busy.close()
         if self.sidebar_volume_timeout:
             GLib.source_remove(self.sidebar_volume_timeout)
@@ -10797,10 +10971,8 @@ class Player(Gtk.Window):
         if self.library_layout_save_timeout:
             GLib.source_remove(self.library_layout_save_timeout)
         self.save_library_layout_now()
-        try:
-            save_session(self.session_snapshot())
-        except OSError:
-            pass
+        Player.queue_session_save(self)
+        self.session_save_workers.shutdown(wait=False)
         self.closed = True
         self.album_prefetch_generation += 1
         if self.album_prefetch_thread:
@@ -10811,7 +10983,8 @@ class Player(Gtk.Window):
         if self.portal_shortcuts:
             self.portal_shortcuts.close()
         self.art_workers.shutdown(wait=False, cancel_futures=True)
-        self.pipeline.set_state(Gst.State.NULL)
+        self.playback_controller.shutdown(Gst.State.NULL)
+        self.playback_poll_workers.shutdown(wait=False, cancel_futures=True)
         Gtk.main_quit()
 
 
@@ -10819,7 +10992,7 @@ def runtime_self_test():
     """Check bundled GTK/GStreamer imports and the media elements used by playback."""
     if os.environ.get('APISTAT_REQUIRE_LASTFM_BUILD') == '1' and not lastfm.application_credentials():
         raise RuntimeError('Last.fm application credentials are missing from the build')
-    required = ('playbin', 'appsink', 'audioconvert', 'audioresample',
+    required = ('playbin', 'appsink', 'audioconvert', 'audioresample', 'level',
                 'souphttpsrc', 'autoaudiosink')
     missing = [name for name in required if Gst.ElementFactory.find(name) is None]
     if os.name == 'nt':

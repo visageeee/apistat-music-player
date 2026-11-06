@@ -1,4 +1,6 @@
 import tempfile
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from datetime import date
 import unittest
 from pathlib import Path
@@ -158,6 +160,39 @@ class SessionTests(unittest.TestCase):
         self.assertNotIn('art_mode', snapshot)
         self.assertEqual(snapshot['playback']['queue'], [session.item_to_data(track)])
         self.assertEqual(snapshot['playback']['position_ms'], 42500)
+        deferred = Player.session_snapshot(player, defer_items=True)
+        self.assertIs(deferred['playback']['queue'][0], track)
+        self.assertEqual(session.serialize_snapshot(deferred), snapshot)
+
+    def test_session_serialization_is_queued_without_blocking_and_keeps_latest(self):
+        entered, release = threading.Event(), threading.Event()
+        saved = []
+        track = Item('/library/metadata/12', 'Song', duration=180000)
+        current = {'index': 0}
+        def snapshot(defer_items=False):
+            self.assertTrue(defer_items)
+            return {'playback': {'queue': [track], 'index': current['index'], 'album': None}}
+        def save(data):
+            if not saved:
+                entered.set()
+                release.wait(timeout=2)
+            saved.append(data)
+        with ThreadPoolExecutor(max_workers=1) as workers, patch('player.save_session', side_effect=save):
+            player = SimpleNamespace(session_save_workers=workers, session_save_future=None,
+                                     session_snapshot=snapshot)
+            try:
+                self.assertTrue(Player.queue_session_save(player))
+                self.assertTrue(entered.wait(timeout=1))
+                current['index'] = 1
+                self.assertTrue(Player.queue_session_save(player))
+                current['index'] = 2
+                self.assertTrue(Player.queue_session_save(player))
+                release.set()
+                player.session_save_future.result(timeout=2)
+                self.assertEqual([item['playback']['index'] for item in saved], [0, 2])
+                self.assertEqual(saved[-1]['playback']['queue'][0]['title'], 'Song')
+            finally:
+                release.set()
 
     def test_pending_resume_seek_uses_saved_position(self):
         seeks = []

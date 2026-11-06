@@ -802,21 +802,14 @@ class PlayerControlTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 appearance.save_search_shortcut('not a key name')
 
-    def test_album_search_slides_open_and_focuses_then_closes(self):
-        state = [False]
-        reveal = SimpleNamespace(get_reveal_child=lambda: state[0],
-                                 set_reveal_child=lambda value: state.__setitem__(0, value))
+    def test_album_search_shortcut_focuses_persistent_field(self):
         player = SimpleNamespace(content_views=SimpleNamespace(get_visible_child_name=lambda: 'albums'),
-                                 album_search_revealer=reveal,
                                  views=SimpleNamespace(set_visible_child_name=Mock()),
-                                 search=SimpleNamespace(grab_focus=Mock()),
-                                 search_button=SimpleNamespace(grab_focus=Mock()))
+                                 search=SimpleNamespace(grab_focus=Mock()))
         Player.toggle_album_search(player)
-        self.assertTrue(state[0])
         player.search.grab_focus.assert_called_once()
         Player.toggle_album_search(player)
-        self.assertFalse(state[0])
-        player.search_button.grab_focus.assert_called_once()
+        self.assertEqual(player.search.grab_focus.call_count, 2)
 
     def test_album_header_reserves_search_height_without_extra_artist_gap(self):
         header = SimpleNamespace(get_visible=lambda: True, set_margin_start=Mock(),
@@ -1014,6 +1007,8 @@ class PlayerControlTests(unittest.TestCase):
             song_view=SimpleNamespace(queue_draw=lambda: None),
             persist_session=lambda **kwargs: saved.append(kwargs),
             queue=['track'],
+            playback_position_ms=42500, timeline_base_position=42.5,
+            timeline_base_time=0., timeline_duration=0.,
             start_track=lambda: restarts.append(True),
             play_album=lambda _index: restarts.append(True),
         )

@@ -1,6 +1,7 @@
 """MPRIS D-Bus controls for desktop media keys and media widgets."""
 
 import os
+import time
 import gi
 
 gi.require_version('Gst', '1.0')
@@ -96,8 +97,13 @@ class Mpris:
         return result
 
     def position(self):
-        ok, position = self.player.pipeline.query_position(Gst.Format.TIME)
-        return max(0, position // 1000) if ok else 0
+        player = self.player
+        position = getattr(player, 'timeline_base_position', 0.0)
+        if (player.stream_open and player.playing and
+                not getattr(player, 'buffering_busy', False)):
+            position += max(0., time.monotonic() - getattr(player, 'timeline_base_time', time.monotonic()))
+        duration = getattr(player, 'timeline_duration', 0.)
+        return max(0, int(min(position, duration) * 1000000 if duration > 0 else position * 1000000))
 
     def _get(self, _connection, _sender, _path, interface, name):
         player = self.player
@@ -117,8 +123,9 @@ class Mpris:
                 'LoopStatus': ('s', 'Playlist' if player.repeat.get_active() else 'None'),
                 'Rate': ('d', 1.0), 'Shuffle': ('b', player.shuffle.get_active()),
                 'Metadata': ('a{sv}', self.metadata()),
-                'Volume': ('d', player.pipeline.get_property('volume')),
-                'Position': ('x', self.position()),
+                'Volume': ('d', player.volume.get_value() if hasattr(player, 'volume')
+                           else player.pipeline.get_property('volume')),
+                'Position': ('x', self.position() if name == 'Position' else 0),
                 'MinimumRate': ('d', 1.0), 'MaximumRate': ('d', 1.0),
                 'CanGoNext': ('b', has_track and (player.index + 1 < len(player.queue) or player.repeat.get_active() or player.shuffle.get_active())),
                 'CanGoPrevious': ('b', has_track),

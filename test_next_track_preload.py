@@ -69,6 +69,19 @@ class NextTrackPreloadTests(unittest.TestCase):
         analyze.assert_called_once()
         cache.save_waveform.assert_called_once_with(track.key, track.duration, peaks)
 
+    def test_next_waveform_uses_server_loudness_before_streaming_audio(self):
+        track = Item('/library/metadata/2', 'Next', duration=120000)
+        peaks = [.5] * 512
+        cache = SimpleNamespace(read_waveform=Mock(return_value=None), save_waveform=Mock())
+        client = SimpleNamespace(loudness_waveform=Mock(return_value=peaks), stream=Mock())
+        with patch('next_track_preload.LocalCache', return_value=cache), \
+                patch('next_track_preload.analyze_track_waveform') as analyze:
+            preload_next_waveform(client, track)
+        client.loudness_waveform.assert_called_once_with(track)
+        client.stream.assert_not_called()
+        analyze.assert_not_called()
+        cache.save_waveform.assert_called_once_with(track.key, track.duration, peaks)
+
     def test_queue_change_cancels_old_next_track_work(self):
         current = Item('/library/metadata/1', 'Current')
         next_track = Item('/library/metadata/2', 'Next', duration=120000,

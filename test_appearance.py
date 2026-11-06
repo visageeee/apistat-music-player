@@ -1,3 +1,4 @@
+import sys
 import tempfile
 import unittest
 from concurrent.futures import Future
@@ -184,6 +185,18 @@ class AppearanceTests(unittest.TestCase):
         self.assertGreater(len(shades), 1)
         self.assertLess(max(shades) - min(shades), 8)
         self.assertNotEqual(pixels[:128 * 4], pixels[128 * 4:256 * 4])
+
+    def test_gradient_noise_is_stable_and_preserves_color_direction(self):
+        colors = ('#502040', '#102850')
+        first, _ = appearance.render_dithered_gradient(300, 200, colors)
+        second, _ = appearance.render_dithered_gradient(300, 200, colors)
+        self.assertEqual(bytes(first.get_data()), bytes(second.get_data()))
+        data = bytes(first.get_data())
+        # Cairo's native-endian ARGB32 is BGRA on the supported little-endian builds.
+        if sys.byteorder == 'little':
+            start, end = data[:4], data[-4:]
+            self.assertGreater(start[2], end[2])
+            self.assertLess(start[0], end[0])
 
     def test_gradient_uses_artwork_colors_and_stays_dark(self):
         pixbuf = GdkPixbuf.Pixbuf.new(GdkPixbuf.Colorspace.RGB, False, 8, 32, 32)

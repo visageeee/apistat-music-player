@@ -22,6 +22,24 @@ def item_to_data(item):
     return asdict(item)
 
 
+def serialize_snapshot(snapshot):
+    """Convert captured track objects away from the GTK thread."""
+    data = dict(snapshot)
+    if 'history' in data:
+        data['history'] = [item_to_data(item) if isinstance(item, Item) else item
+                           for item in data['history']]
+    if isinstance(data.get('album_detail'), Item):
+        data['album_detail'] = item_to_data(data['album_detail'])
+    if 'playback' in data:
+        playback = dict(data['playback'])
+        playback['queue'] = [item_to_data(item) if isinstance(item, Item) else item
+                             for item in playback['queue']]
+        if isinstance(playback.get('album'), Item):
+            playback['album'] = item_to_data(playback['album'])
+        data['playback'] = playback
+    return data
+
+
 def item_from_data(data):
     if not isinstance(data, dict) or not isinstance(data.get('key'), str):
         return None

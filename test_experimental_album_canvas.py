@@ -12,7 +12,7 @@ from gi.repository import Gdk
 from experimental_album_canvas import (ExperimentalAlbumCanvas, CanvasPlayer, COLUMNS, WORLD_WIDTH,
                                        zoom_anchor, zoom_row_anchor, sort_progress, grid_slots,
                                        row_offsets, year_font_size, artist_font_size, search_catalog,
-                                       heading_accent_range)
+                                       heading_accent_range, pan_bounds, is_touchpad_scroll)
 from plex_client import Item, ALBUM_SORT_ARTIST
 from thumbnail_atlas import ThumbnailAtlas, CELL_BYTES
 from gpu_album_wall import GPUAlbumWall
@@ -32,6 +32,9 @@ class CanvasTests(unittest.TestCase):
         adjustment.get_upper = lambda: 1000
         Player.update_canvas_hscroll(player, adjustment)
         scrollbar.set_visible.assert_called_with(True)
+        player.album_canvas = SimpleNamespace(geometry=lambda: (800, 10, 2, 10, 24, 20, 500, 0))
+        Player.update_canvas_hscroll(player, adjustment)
+        scrollbar.set_visible.assert_called_with(False)
 
     def test_only_year_or_letter_receives_accent(self):
         self.assertEqual(heading_accent_range('2026', 12), (0, 4))
@@ -135,6 +138,7 @@ class CanvasTests(unittest.TestCase):
 
     def test_scroll_targets_pointer_and_is_bounded(self):
         wall = SimpleNamespace(target_zoom=2.4, anchor=None, start_animation=Mock(),
+                               scroll_flipped_tracklist=Mock(return_value=False),
                                area=SimpleNamespace(get_allocated_width=lambda: 800))
         event = SimpleNamespace(direction=Gdk.ScrollDirection.UP, x=130, y=270)
         self.assertTrue(ExperimentalAlbumCanvas.scroll(wall, None, event))
@@ -145,6 +149,7 @@ class CanvasTests(unittest.TestCase):
     def test_zoom_can_go_below_fit_width(self):
         wall = SimpleNamespace(target_zoom=800 / WORLD_WIDTH, anchor=None, start_animation=Mock(),
                                unflip_for_zoom_out=Mock(),
+                               scroll_flipped_tracklist=Mock(return_value=False),
                                area=SimpleNamespace(get_allocated_width=lambda: 800))
         for _ in range(8):
             ExperimentalAlbumCanvas.scroll(wall, None,
@@ -154,15 +159,83 @@ class CanvasTests(unittest.TestCase):
     def test_control_scroll_changes_column_count_without_zoom_or_unflip(self):
         wall = SimpleNamespace(target_zoom=.5, anchor=None, start_animation=Mock(),
                                unflip_for_zoom_out=Mock(), ctrl_scroll_remainder=0.,
+                               scroll_flipped_tracklist=Mock(return_value=False),
                                columns=24, sort_order='year:desc', albums=[], reorder=Mock(),
                                canvas_player=SimpleNamespace(zoom=.5),
                                area=SimpleNamespace(get_allocated_width=lambda: 800))
+        wall.change_columns = lambda delta: ExperimentalAlbumCanvas.change_columns(wall, delta)
         event = SimpleNamespace(direction=Gdk.ScrollDirection.DOWN, x=120, y=200,
                                 state=Gdk.ModifierType.CONTROL_MASK)
         ExperimentalAlbumCanvas.scroll(wall, None, event)
         wall.reorder.assert_called_once_with('year:desc', albums=[], columns=25)
         wall.unflip_for_zoom_out.assert_not_called()
         self.assertEqual(wall.target_zoom, .5)
+
+    def test_touchpad_control_scroll_zooms_instead_of_changing_columns(self):
+        wall = SimpleNamespace(target_zoom=.5, anchor=None, start_animation=Mock(),
+                               unflip_for_zoom_out=Mock(), scroll_flipped_tracklist=Mock(return_value=False))
+        event = SimpleNamespace(direction=Gdk.ScrollDirection.SMOOTH, x=100, y=100,
+                                state=Gdk.ModifierType.CONTROL_MASK,
+                                get_scroll_deltas=lambda: (True, 0, -.5),
+                                get_source_device=lambda: SimpleNamespace(get_source=lambda: Gdk.InputSource.TOUCHPAD))
+        self.assertTrue(is_touchpad_scroll(event))
+        ExperimentalAlbumCanvas.scroll(wall, None, event)
+        self.assertGreater(wall.target_zoom, .5)
+
+    def test_two_finger_touchpad_scroll_pans_both_axes_without_zooming(self):
+        horizontal = SimpleNamespace(get_value=lambda: 100., set_value=Mock())
+        vertical = SimpleNamespace(get_value=lambda: 250., set_value=Mock())
+        wall = SimpleNamespace(canvas_player=SimpleNamespace(zoom=.5), target_zoom=.7,
+                               x_adjustment=horizontal, adjustment=vertical,
+                               scroll_flipped_tracklist=Mock(return_value=False),
+                               start_animation=Mock(), unflip_for_zoom_out=Mock())
+        event = SimpleNamespace(direction=Gdk.ScrollDirection.SMOOTH, x=100, y=100, state=0,
+                                get_scroll_deltas=lambda: (True, .5, -1),
+                                get_source_device=lambda: SimpleNamespace(get_source=lambda: Gdk.InputSource.TOUCHPAD))
+        self.assertTrue(ExperimentalAlbumCanvas.scroll(wall, None, event))
+        horizontal.set_value.assert_called_once_with(145.)
+        vertical.set_value.assert_called_once_with(160.)
+        self.assertEqual(wall.target_zoom, .5)
+        wall.start_animation.assert_not_called()
+        wall.unflip_for_zoom_out.assert_not_called()
+
+    def test_horizontal_only_two_finger_scroll_pans(self):
+        horizontal = SimpleNamespace(get_value=lambda: 10., set_value=Mock())
+        wall = SimpleNamespace(canvas_player=SimpleNamespace(zoom=.5), target_zoom=.5,
+                               x_adjustment=horizontal, adjustment=Mock(),
+                               scroll_flipped_tracklist=Mock(return_value=False))
+        event = SimpleNamespace(direction=Gdk.ScrollDirection.SMOOTH, state=0,
+                                get_scroll_deltas=lambda: (True, -1, 0),
+                                get_source_device=lambda: SimpleNamespace(get_source=lambda: Gdk.InputSource.TOUCHPAD))
+        ExperimentalAlbumCanvas.scroll(wall, None, event)
+        horizontal.set_value.assert_called_once_with(-80.)
+        wall.adjustment.set_value.assert_not_called()
+
+    def test_scroll_over_overflowing_flipped_album_changes_track_offset(self):
+        flip = SimpleNamespace(back_visible=True, tracks=list(range(40)), offset=0, layout=None, dirty=False)
+        wall = SimpleNamespace(flips={1: flip}, player=SimpleNamespace(album_art_size=200, text_size=18),
+                               visible=lambda: [(1, 10, 10)], flip_scroll_remainder=0., queue_frame=Mock())
+        event = SimpleNamespace(x=40, y=40)
+        self.assertTrue(ExperimentalAlbumCanvas.scroll_flipped_tracklist(wall, event, 1))
+        self.assertEqual(flip.offset, 1)
+        self.assertTrue(flip.dirty)
+        self.assertFalse(ExperimentalAlbumCanvas.scroll_flipped_tracklist(wall, SimpleNamespace(x=250, y=40), 1))
+        wall.scroll_flipped_tracklist = lambda event, step: ExperimentalAlbumCanvas.scroll_flipped_tracklist(wall, event, step)
+        wall.target_zoom = .5
+        event.direction = Gdk.ScrollDirection.DOWN
+        self.assertTrue(ExperimentalAlbumCanvas.scroll(wall, None, event))
+        self.assertEqual(flip.offset, 2)
+        self.assertEqual(wall.target_zoom, .5)
+
+    def test_pan_bounds_keep_half_viewport_or_all_small_content_visible(self):
+        for viewport, start, size in ((800, 0, 1600), (600, 0, 1200),
+                                      (800, 200, 400), (600, 250, 100)):
+            lower, upper = pan_bounds(viewport, start, size)
+            required = min(viewport / 2, size)
+            for offset in (lower, upper):
+                visible = max(0, min(viewport, start + size - offset) - max(0, start - offset))
+                self.assertAlmostEqual(visible, required)
+        self.assertAlmostEqual(zoom_row_anchor(0, 0, 20, [0, 100], 10, [0, 50], .5), 0)
 
     def test_zoom_out_starts_flip_back_animation(self):
         flip = Mock(target=1)

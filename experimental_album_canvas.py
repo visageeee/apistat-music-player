@@ -12,6 +12,7 @@ gi.require_version('PangoCairo', '1.0')
 from gi.repository import Gtk, Gdk, GdkPixbuf, GLib, Pango, PangoCairo
 
 from gpu_album_wall import GPUAlbumWall
+from gpu_flip import card_layout
 from local_cache import LocalCache, sort_albums
 from plex_client import ALBUM_SORT_ARTIST
 from thumbnail_atlas import ThumbnailAtlas, CELL as THUMB_SIZE
@@ -107,11 +108,15 @@ def row_offsets(row_count, marker_rows, row_height, heading_height):
     return offsets
 
 
-def zoom_row_anchor(offset, cursor, old_top, old_rows, new_top, new_rows):
+def zoom_row_anchor(offset, cursor, old_top, old_rows, new_top, new_rows, scale=1.):
     """Preserve the point within a row when differently sized headers scale."""
     position = offset + cursor - old_top
-    if not old_rows or len(old_rows) < 2 or position < 0 or position >= old_rows[-1]:
-        return offset + new_top - old_top
+    if not old_rows or len(old_rows) < 2:
+        return new_top + position * scale - cursor
+    if position < 0:
+        return new_top + position * scale - cursor
+    if position >= old_rows[-1]:
+        return new_top + new_rows[-1] + (position - old_rows[-1]) * scale - cursor
     row = max(0, bisect_right(old_rows, position) - 1)
     fraction = (position - old_rows[row]) / (old_rows[row + 1] - old_rows[row])
     return new_top + new_rows[row] + fraction * (new_rows[row + 1] - new_rows[row]) - cursor
@@ -120,6 +125,20 @@ def zoom_row_anchor(offset, cursor, old_top, old_rows, new_top, new_rows):
 def zoom_anchor(offset, cursor, old_zoom, new_zoom):
     """Keep the same canvas coordinate under the pointer during a zoom."""
     return (offset + cursor) * new_zoom / old_zoom - cursor
+
+
+def pan_bounds(viewport, content_start, content_size):
+    """Keep at least half the viewport, or all smaller content, in view."""
+    visible = min(viewport / 2, content_size)
+    return content_start + visible - viewport, content_start + content_size - visible
+
+
+def is_touchpad_scroll(event):
+    if event.direction != Gdk.ScrollDirection.SMOOTH:
+        return False
+    get_device = getattr(event, 'get_source_device', None)
+    device = get_device() if get_device else None
+    return device is not None and device.get_source() == Gdk.InputSource.TOUCHPAD
 
 
 def sort_progress(start, now):
@@ -445,14 +464,16 @@ class ExperimentalAlbumCanvas(GPUAlbumWall):
     def layout_changed(self, x_value=None, y_value=None):
         for flip in self.flips.values():
             flip.dirty = True
-        width, size, gap, margin, _columns, row_height, total, _x0 = self.geometry()
+        width, size, gap, margin, _columns, row_height, total, x0 = self.geometry()
         height = max(1, self.area.get_allocated_height())
         canvas_width = 2 * margin + self.columns * size + (self.columns - 1) * gap
+        x_min, x_max = pan_bounds(width, x0 - margin, canvas_width)
+        y_min, y_max = pan_bounds(height, 0, total)
         self.adjustment.configure(self.adjustment.get_value() if y_value is None else y_value,
-                                  0, max(total, height),
+                                  y_min, y_max + height,
                                   row_height / 3, height * .8, height)
         self.x_adjustment.configure(self.x_adjustment.get_value() if x_value is None else x_value,
-                                    0, max(canvas_width, width),
+                                    x_min, x_max + width,
                                     size / 3, width * .8, width)
         self.queue_frame()
         self.labels.queue_draw()
@@ -616,9 +637,39 @@ class ExperimentalAlbumCanvas(GPUAlbumWall):
             self.flip_tick_id = self.area.add_tick_callback(self.animate_flip)
         self.queue_frame()
 
+    def scroll_flipped_tracklist(self, event, step):
+        if not getattr(self, 'flips', None):
+            return False
+        size = self.player.album_art_size
+        for index, x, y in self.visible():
+            flip = self.flips.get(index)
+            if not (flip and flip.back_visible and flip.tracks and
+                    x <= event.x < x + size and y <= event.y < y + size):
+                continue
+            current = card_layout(size, self.player.text_size, len(flip.tracks), flip.offset)
+            if len(flip.tracks) <= current['capacity']:
+                return False
+            amount = self.flip_scroll_remainder + step
+            delta = math.trunc(amount)
+            self.flip_scroll_remainder = amount - delta
+            layout = card_layout(size, self.player.text_size, len(flip.tracks), flip.offset + delta)
+            flip.offset, flip.layout, flip.dirty = layout['offset'], layout, True
+            self.queue_frame()
+            return True
+        return False
+
+    def change_columns(self, delta):
+        columns = max(MIN_COLUMNS, min(MAX_COLUMNS, self.columns + delta))
+        if columns != self.columns:
+            self.target_zoom = self.canvas_player.zoom
+            self.reorder(self.sort_order, albums=self.albums, columns=columns)
+
     def scroll(self, _area, event):
+        dx = 0.
         if event.direction == Gdk.ScrollDirection.SMOOTH:
-            valid, _dx, dy = event.get_scroll_deltas()
+            valid, dx, dy = event.get_scroll_deltas()
+            if not valid:
+                dx = 0.
             step = dy if valid else 0
         elif event.direction == Gdk.ScrollDirection.UP:
             step = -1
@@ -626,18 +677,29 @@ class ExperimentalAlbumCanvas(GPUAlbumWall):
             step = 1
         else:
             return False
+        touchpad = is_touchpad_scroll(event)
+        control = bool(getattr(event, 'state', 0) & Gdk.ModifierType.CONTROL_MASK)
+        if step and self.scroll_flipped_tracklist(event, step):
+            return True
+        if touchpad and not control:
+            # Two-finger touchpad scrolling moves the canvas in both axes;
+            # pinch and Ctrl-modified touchpad events continue to zoom.
+            self.target_zoom = self.canvas_player.zoom
+            if dx:
+                self.x_adjustment.set_value(self.x_adjustment.get_value() + dx * 90)
+            if step:
+                self.adjustment.set_value(self.adjustment.get_value() + step * 90)
+            return True
         if step:
             self.anchor = (event.x, event.y)
-            if getattr(event, 'state', 0) & Gdk.ModifierType.CONTROL_MASK:
+            if control and not touchpad:
                 # Stop any in-flight wheel zoom before changing the layout.
                 self.target_zoom = self.canvas_player.zoom
                 self.ctrl_scroll_remainder += step
                 delta = math.trunc(self.ctrl_scroll_remainder)
                 self.ctrl_scroll_remainder -= delta
                 if delta:
-                    columns = max(MIN_COLUMNS, min(MAX_COLUMNS, self.columns + delta))
-                    if columns != self.columns:
-                        self.reorder(self.sort_order, albums=self.albums, columns=columns)
+                    self.change_columns(delta)
             else:
                 if step > 0:
                     self.unflip_for_zoom_out()
@@ -694,7 +756,7 @@ class ExperimentalAlbumCanvas(GPUAlbumWall):
             new_geometry = self.geometry()
             new_rows = self.get_row_offsets(new_geometry[5])
             oy = zoom_row_anchor(old_offset, y, old_geometry[3], old_rows,
-                                 new_geometry[3], new_rows)
+                                 new_geometry[3], new_rows, new / old)
             self.update_detail_tier()
             self.layout_changed(ox, oy)
         if self.sort_start is not None and now - self.sort_start >= SORT_SECONDS:

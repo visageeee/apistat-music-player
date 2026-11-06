@@ -26,7 +26,10 @@ class Handler(BaseHTTPRequestHandler):
             '/library/sections': '<MediaContainer><Directory key="1" title="Films" type="movie"/><Directory key="2" title="Music" type="artist"/></MediaContainer>',
             '/library/sections/2/all': '<MediaContainer totalSize="151"><Directory key="/library/metadata/10/children" title="Album &amp; More" parentTitle="Artist" year="2026" addedAt="1700000000"/></MediaContainer>',
             '/library/metadata/10/children': '<MediaContainer><Track key="/library/metadata/20" title="Song" index="2" parentIndex="1" duration="125000" grandparentTitle="Artist"/></MediaContainer>',
-            '/library/metadata/20': '<MediaContainer><Track><Media><Part key="/library/parts/42/file.flac"/></Media></Track></MediaContainer>',
+            '/library/metadata/20': ('<MediaContainer><Track><Media><Part key="/library/parts/42/file.flac">'
+                                     '<Stream streamType="2" id="77" selected="1"/>'
+                                     '</Part></Media></Track></MediaContainer>'),
+            '/library/streams/77/loudness': '-60.0\n-20.0\n-6.0\n',
             '/library/metadata/20/nearest': ('<MediaContainer>'
                 '<Track key="/library/metadata/21" title="Nearby One" grandparentTitle="Artist" parentTitle="Album" duration="90000"/>'
                 '<Metadata type="track" key="/library/metadata/22" title="Nearby Two"/>'
@@ -98,6 +101,24 @@ class ClientTests(unittest.TestCase):
 
     def test_library_filter(self):
         self.assertEqual(self.client.sections(), [('2', 'Music')])
+
+    def test_existing_loudness_is_fetched_from_selected_audio_stream(self):
+        track = Item('/library/metadata/20', 'Song', duration=1000)
+        self.client.stream(track)
+        before = len(Handler.requests)
+        peaks = self.client.loudness_waveform(track)
+        self.assertEqual(len(peaks), 512)
+        self.assertLess(peaks[0], peaks[-1])
+        self.assertEqual(len(Handler.requests), before + 1)
+        path, token = Handler.requests[-1]
+        self.assertEqual(urlsplit(path).path, '/library/streams/77/loudness')
+        self.assertEqual(parse_qs(urlsplit(path).query)['subsample'], ['512'])
+        self.assertEqual(token, 'test-secret')
+
+    def test_loudness_missing_or_invalid_path_is_handled(self):
+        self.assertIsNone(self.client.loudness_waveform(Item('/library/metadata/999', 'Missing')))
+        with self.assertRaises(ValueError):
+            self.client.loudness_waveform(Item('/library/streams/1/loudness', 'Invalid'))
 
     def test_album_pagination_and_search_encoding(self):
         albums, total = self.client.albums('2', 100, 'A & B')

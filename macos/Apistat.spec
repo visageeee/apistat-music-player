@@ -4,7 +4,7 @@ from pathlib import Path
 root = Path.cwd()
 plugins = ['app', 'audioconvert', 'audioresample', 'audioparsers', 'autodetect',
            'coreelements', 'coreaudio', 'osxaudio', 'faad', 'flac', 'id3demux',
-           'mpg123', 'ogg', 'playback', 'soup', 'spectrum', 'typefindfunctions',
+           'level', 'mpg123', 'ogg', 'playback', 'soup', 'spectrum', 'typefindfunctions',
            'volume', 'vorbis', 'wavparse', 'isomp4']
 a = Analysis(
     [str(root / 'player.py')], pathex=[str(root)], binaries=[],

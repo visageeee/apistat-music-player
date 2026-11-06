@@ -2,6 +2,7 @@ import os
 import threading
 import unittest
 from types import SimpleNamespace
+from unittest.mock import Mock, patch
 
 import gi
 gi.require_version('Gst', '1.0')
@@ -58,6 +59,23 @@ class FakePlayer:
 
 
 class MprisTests(unittest.TestCase):
+    def test_metadata_updates_and_position_do_not_query_the_pipeline(self):
+        player = FakePlayer()
+        player.pipeline.query_position = Mock(side_effect=AssertionError('blocking pipeline query'))
+        player.timeline_base_position = 12.
+        player.timeline_base_time = 100.
+        player.timeline_duration = 125.
+        player.buffering_busy = False
+        service = Mpris.__new__(Mpris)
+        service.player = player
+        service.connection = Mock()
+        with patch('mpris.time.monotonic', return_value=102.):
+            service.changed()
+            self.assertEqual(service.position(), 14000000)
+            player.buffering_busy = True
+            self.assertEqual(service.position(), 12000000)
+        player.pipeline.query_position.assert_not_called()
+
     def test_visible_identity_is_apistat(self):
         service = Mpris.__new__(Mpris)
         service.player = FakePlayer()

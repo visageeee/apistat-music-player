@@ -1,7 +1,8 @@
 """Decode and draw a compact waveform preview for the seek timeline."""
 
-from array import array
-import sys
+import math
+import threading
+import time
 from urllib.parse import urlsplit
 import cairo
 
@@ -26,8 +27,91 @@ def allowed_track_uri(uri, server_address):
         return False
 
 
-def analyze_audio_uri(uri, token, duration_ms, cancelled=lambda: False):
-    """Decode mono samples without routing analysis audio to an output device."""
+# Keep current and next-track analysis from competing with each other or playback.
+_ANALYSIS_SLOT = threading.Semaphore(1)
+# Local files can be analyzed at full speed; a bounded remote fallback avoids
+# an unrestricted second download competing with the playback stream.
+REMOTE_ANALYSIS_SPEED = 8.0
+
+
+def _fill_missing_peaks(peaks):
+    """Interpolate buckets skipped by GStreamer's sample-aligned intervals."""
+    known = [index for index, peak in enumerate(peaks) if peak is not None]
+    if not known:
+        return None
+    for index in range(known[0]):
+        peaks[index] = peaks[known[0]]
+    for left, right in zip(known, known[1:]):
+        for index in range(left + 1, right):
+            ratio = (index - left) / (right - left)
+            peaks[index] = peaks[left] + (peaks[right] - peaks[left]) * ratio
+    for index in range(known[-1] + 1, len(peaks)):
+        peaks[index] = peaks[known[-1]]
+    return peaks
+
+
+def waveform_from_loudness(data):
+    """Convert Plex's one-decibel-value-per-line response to timeline peaks."""
+    if not isinstance(data, bytes) or len(data) > 1024 * 1024:
+        return None
+    try:
+        lines = data.decode('ascii').splitlines()
+        if not lines or len(lines) > 100000:
+            return None
+        values = []
+        for line in lines:
+            decibels = float(line.strip())
+            if math.isnan(decibels) or decibels == math.inf:
+                return None
+            values.append(10 ** (max(-120., min(20., decibels)) / 20) if decibels != -math.inf else 0.)
+    except (ValueError, UnicodeError, OverflowError):
+        return None
+    ceiling = max(.05, max(values))
+    normalized = [min(1., (value / ceiling) ** .7) for value in values]
+    if len(normalized) == 1:
+        return normalized * PEAK_COUNT
+    result = []
+    for index in range(PEAK_COUNT):
+        position = index * (len(normalized) - 1) / (PEAK_COUNT - 1)
+        left = int(position)
+        right = min(left + 1, len(normalized) - 1)
+        ratio = position - left
+        result.append(normalized[left] * (1 - ratio) + normalized[right] * ratio)
+    return result
+
+
+def server_waveform(client, track, cancelled=lambda: False):
+    """Prefer a server's existing analysis; missing analysis is not an error."""
+    getter = getattr(client, 'loudness_waveform', None)
+    if not callable(getter) or cancelled():
+        return None
+    try:
+        result = getter(track)
+        return result if not cancelled() else None
+    except Exception:
+        return None
+
+
+def _wait_for_analysis_slot(cancelled):
+    while not cancelled():
+        if _ANALYSIS_SLOT.acquire(timeout=.1):
+            return True
+    return False
+
+
+def analyze_audio_uri(uri, token, duration_ms, cancelled=lambda: False, on_progress=None):
+    """Analyze audio off the UI thread with bounded decode/network demand."""
+    if duration_ms <= 0 or not _wait_for_analysis_slot(cancelled):
+        return None
+    try:
+        if cancelled():
+            return None
+        return _analyze_audio_uri(uri, token, duration_ms, cancelled, on_progress)
+    finally:
+        _ANALYSIS_SLOT.release()
+
+
+def _analyze_audio_uri(uri, token, duration_ms, cancelled, on_progress=None):
     pipeline = Gst.ElementFactory.make('playbin')
     if pipeline is None:
         return None
@@ -35,8 +119,11 @@ def analyze_audio_uri(uri, token, duration_ms, cancelled=lambda: False):
     sink_bin = Gst.parse_bin_from_description(
         'audioconvert ! audioresample ! '
         'audio/x-raw,format=S16LE,channels=1,rate=8000 ! '
-        'appsink name=wave_peaks sync=false', True)
+        'level name=wave_levels post-messages=true ! '
+        'appsink name=wave_peaks sync=false max-buffers=1', True)
     sink = sink_bin.get_by_name('wave_peaks')
+    level = sink_bin.get_by_name('wave_levels')
+    level.set_property('interval', max(1, int(duration_ms * Gst.MSECOND / PEAK_COUNT)))
     pipeline.set_property('audio-sink', sink_bin)
     def source_setup(_pipeline, source):
         if token and source.find_property('extra-headers'):
@@ -49,36 +136,69 @@ def analyze_audio_uri(uri, token, duration_ms, cancelled=lambda: False):
             source.set_property('timeout', 15)
     pipeline.connect('source-setup', source_setup)
     pipeline.set_property('uri', uri)
-    peaks = [0.0] * PEAK_COUNT
-    samples_seen = 0
-    expected_samples = max(1, round(duration_ms * SAMPLE_RATE / 1000))
+    peaks = [None] * PEAK_COUNT
+    duration_ns = duration_ms * Gst.MSECOND
+    speed = None if urlsplit(uri).scheme == 'file' else REMOTE_ANALYSIS_SPEED
+    deadline = time.monotonic()
+    last_progress = 0.
     try:
         pipeline.set_state(Gst.State.PLAYING)
         bus = pipeline.get_bus()
         while not cancelled():
             sample = sink.emit('try-pull-sample', 100 * Gst.MSECOND)
+            sample_seconds = 0.
             if sample is not None:
                 buffer = sample.get_buffer()
-                ok, mapped = buffer.map(Gst.MapFlags.READ)
-                if ok:
-                    try:
-                        values = array('h')
-                        values.frombytes(mapped.data)
-                        if sys.byteorder != 'little':
-                            values.byteswap()
-                        for value in values:
-                            bucket = min(PEAK_COUNT - 1,
-                                         samples_seen * PEAK_COUNT // expected_samples)
-                            peaks[bucket] = max(peaks[bucket], abs(value) / 32768)
-                            samples_seen += 1
-                    finally:
-                        buffer.unmap(mapped)
-            message = bus.pop_filtered(Gst.MessageType.EOS | Gst.MessageType.ERROR)
-            if message:
+                duration = buffer.duration
+                if duration == Gst.CLOCK_TIME_NONE or duration <= 0:
+                    duration = buffer.get_size() * Gst.SECOND / (2 * SAMPLE_RATE)
+                sample_seconds = duration / Gst.SECOND
+            finished = False
+            while True:
+                message = bus.pop_filtered(Gst.MessageType.ELEMENT | Gst.MessageType.EOS | Gst.MessageType.ERROR)
+                if message is None:
+                    break
                 if message.type == Gst.MessageType.ERROR:
                     return None
+                if message.type == Gst.MessageType.EOS:
+                    finished = True
+                    break
+                structure = message.get_structure()
+                if structure is None or structure.get_name() != 'level':
+                    continue
+                values = structure.get_value('peak')
+                timestamp = structure.get_value('timestamp')
+                if not values or timestamp is None or timestamp == Gst.CLOCK_TIME_NONE:
+                    continue
+                decibels = float(values[0])
+                amplitude = 10 ** (decibels / 20) if math.isfinite(decibels) else 0.
+                bucket = min(PEAK_COUNT - 1, max(0, int(timestamp * PEAK_COUNT / duration_ns)))
+                peaks[bucket] = max(peaks[bucket] or 0., amplitude)
+            now = time.monotonic()
+            if on_progress is not None and now - last_progress >= .5:
+                known = [i for i, value in enumerate(peaks) if value is not None]
+                if known:
+                    end = known[-1] + 1
+                    partial = _fill_missing_peaks(peaks[:end])
+                    ceiling = max(.05, max(partial))
+                    on_progress([min(1., (value / ceiling) ** .7) for value in partial] +
+                                [0.] * (PEAK_COUNT - end))
+                    last_progress = now
+            # Backpressure the appsink, rather than decoding/downloading the
+            # whole track at full speed beside the active playback stream.
+            if speed is not None:
+                deadline = max(deadline, time.monotonic()) + sample_seconds / speed
+                while not cancelled():
+                    delay = deadline - time.monotonic()
+                    if delay <= 0:
+                        break
+                    time.sleep(min(.05, delay))
+            if finished:
                 break
-        if cancelled() or samples_seen == 0:
+        if cancelled():
+            return None
+        peaks = _fill_missing_peaks(peaks)
+        if peaks is None:
             return None
         ceiling = max(0.05, max(peaks))
         return [min(1.0, (peak / ceiling) ** 0.7) for peak in peaks]
@@ -86,10 +206,10 @@ def analyze_audio_uri(uri, token, duration_ms, cancelled=lambda: False):
         pipeline.set_state(Gst.State.NULL)
 
 
-def analyze_track_waveform(uri, server_address, token, duration_ms, cancelled=lambda: False):
+def analyze_track_waveform(uri, server_address, token, duration_ms, cancelled=lambda: False, on_progress=None):
     if not allowed_track_uri(uri, server_address):
         return None
-    return analyze_audio_uri(uri, token, duration_ms, cancelled)
+    return analyze_audio_uri(uri, token, duration_ms, cancelled, on_progress)
 
 
 class TrackWaveform(Gtk.DrawingArea):
