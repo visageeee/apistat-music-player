@@ -12,6 +12,7 @@ from gi.repository import Gdk, Gtk
 
 LINE_COUNT = 13
 NODE_COUNT = 31
+PERSPECTIVE_NODE_COUNT = 55
 
 
 def approach(current, target, dt, attack, release):
@@ -50,17 +51,46 @@ def trace_curve(context, width, height, layer, phase, bass, mid, high, pulse,
         ripple = ripple_amplitude * center_gain * (
             0.82 * math.sin(ripple_phase) + 0.18 * math.sin(ripple_phase * 0.5 + 0.7))
         points.append((width * u, center - amplitude * shared - ripple))
+    trace_smooth_points(context, points)
+
+
+def trace_smooth_points(context, points):
     context.move_to(*points[0])
-    for index in range(NODE_COUNT - 1):
+    for index in range(len(points) - 1):
         before = points[max(0, index - 1)]
         start = points[index]
         end = points[index + 1]
-        after = points[min(NODE_COUNT - 1, index + 2)]
+        after = points[min(len(points) - 1, index + 2)]
         context.curve_to(start[0] + (end[0] - before[0]) / 6,
                          start[1] + (end[1] - before[1]) / 6,
                          end[0] - (after[0] - start[0]) / 6,
                          end[1] - (after[1] - start[1]) / 6,
                          *end)
+
+
+def trace_perspective_curve(context, width, height, layer, phase,
+                            bass, mid, high, pulse, line_energy=0., volume=1.):
+    """Trace a string from the horizon toward the viewer."""
+    fraction = layer / (LINE_COUNT - 1)
+    lane = (fraction - .5) * 1.65
+    swell = .08 + .50 * bass + .18 * mid + .10 * pulse
+    ripple_strength = .48 * math.sqrt(max(0., line_energy))
+    points = []
+    for index in range(PERSPECTIVE_NODE_COUNT):
+        # Continue the geometry past the viewport, so waves near the bottom
+        # never expose a visible endpoint as their amplitude changes.
+        depth = 1.8 * index / (PERSPECTIVE_NODE_COUNT - 1)
+        perspective = depth ** 1.2
+        # Decreasing phase sends the crests down the string toward the viewer.
+        travel = 2 * math.pi * (2.1 * depth - phase * .30 + fraction * .10)
+        wave = math.sin(travel) + .35 * math.sin(travel * .55 + 1.1)
+        ripple = math.sin(2 * math.pi * ((2.5 + 2 * fraction) * depth - phase * .38 + layer * .025))
+        # Let the ridges develop through the middle of the view rather than
+        # concentrating all their height near the bottom edge.
+        elevation = height * .17 * depth ** .55 * volume * (swell * wave + ripple_strength * ripple)
+        points.append((width * (.5 + lane * perspective),
+                       height * (.24 + .72 * depth) - elevation))
+    trace_smooth_points(context, points)
 
 
 class RibbonVisualizer(Gtk.DrawingArea):
@@ -69,6 +99,7 @@ class RibbonVisualizer(Gtk.DrawingArea):
         if windowless:
             self.set_has_window(False)
         self.colors = (self._rgba('#5fe1df'), self._rgba('#b58cce'))
+        self.view = 'ribbon'
         self.target = (0.0, 0.0, 0.0)
         self.line_target = (0.0,) * LINE_COUNT
         self.line_envelopes = [0.0] * LINE_COUNT
@@ -94,6 +125,10 @@ class RibbonVisualizer(Gtk.DrawingArea):
 
     def set_colors(self, primary, secondary):
         self.colors = self._rgba(primary), self._rgba(secondary)
+        self.queue_draw()
+
+    def set_view(self, view):
+        self.view = view if view in ('ribbon', 'perspective') else 'ribbon'
         self.queue_draw()
 
     def set_audio(self, levels):
@@ -208,6 +243,7 @@ class RibbonVisualizer(Gtk.DrawingArea):
         context.set_line_cap(cairo.LINE_CAP_ROUND)
         context.set_line_join(cairo.LINE_JOIN_ROUND)
         primary, secondary = self.colors
+        perspective = self.view == 'perspective'
         for layer in range(LINE_COUNT):
             fraction = layer / (LINE_COUNT - 1)
             color = (secondary.red * (1 - fraction) + primary.red * fraction,
@@ -215,15 +251,32 @@ class RibbonVisualizer(Gtk.DrawingArea):
                      secondary.blue * (1 - fraction) + primary.blue * fraction)
             strength = 0.34 + 0.66 * fraction
             context.new_path()
-            trace_curve(context, width, height, layer, self.phase,
-                        self.bass, self.mid, self.high, self.pulse,
-                        self.line_envelopes[layer], self.volume)
-            context.set_source_rgba(*color, 0.095 * strength)
+            if perspective:
+                trace_perspective_curve(context, width, height, layer, self.phase,
+                                        self.bass, self.mid, self.high, self.pulse,
+                                        self.line_envelopes[layer], self.volume)
+            else:
+                trace_curve(context, width, height, layer, self.phase,
+                            self.bass, self.mid, self.high, self.pulse,
+                            self.line_envelopes[layer], self.volume)
+            if perspective:
+                glow = cairo.LinearGradient(0, height * .24, 0, height * .90)
+                glow.add_color_stop_rgba(0, *color, 0)
+                glow.add_color_stop_rgba(1, *color, 0.095 * strength)
+                context.set_source(glow)
+            else:
+                context.set_source_rgba(*color, 0.095 * strength)
             context.set_line_width(8 + 2 * fraction + 2 * self.pulse)
             context.stroke_preserve()
-            context.set_source_rgba(*color,
-                                    min(0.9, (0.32 + 0.50 * fraction) *
-                                        (0.85 + 0.13 * self.high + 0.08 * self.pulse +
-                                         0.08 * self.line_envelopes[layer])))
+            alpha = min(0.9, (0.32 + 0.50 * fraction) *
+                        (0.85 + 0.13 * self.high + 0.08 * self.pulse +
+                         0.08 * self.line_envelopes[layer]))
+            if perspective:
+                core = cairo.LinearGradient(0, height * .24, 0, height * .90)
+                core.add_color_stop_rgba(0, *color, 0)
+                core.add_color_stop_rgba(1, *color, alpha)
+                context.set_source(core)
+            else:
+                context.set_source_rgba(*color, alpha)
             context.set_line_width(1.25 + 1.05 * fraction)
             context.stroke()

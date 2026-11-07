@@ -15,7 +15,8 @@ gi.require_version('PangoCairo', '1.0')
 from gi.repository import Gtk, Gdk, GdkPixbuf, GLib, Pango, PangoCairo
 
 from app_assets import placeholder_art
-from appearance import added_age_label
+from album_highlights import show_track_duration
+from appearance import album_info_label
 from local_cache import LocalCache
 from gpu_offscreen import create_offscreen_gpu, GL_BGRA
 from background_drag_scroll import BackgroundDragScroller
@@ -681,6 +682,8 @@ class GPUAlbumWall(Gtk.Box, GLProgram):
         self.upload(0, self.pixbuf_bytes(placeholder_art(size, .6), size))
 
     def upload_flip(self, flip):
+        if flip.layout and flip.layout['show_duration'] != show_track_duration(self.player.album_art_size):
+            flip.dirty = True
         if not flip.texture.value:
             self.gl.glGenTextures(1, ctypes.byref(flip.texture))
             self.gl.glBindTexture(GL_TEXTURE_2D, flip.texture)
@@ -866,12 +869,17 @@ class GPUAlbumWall(Gtk.Box, GLProgram):
         color = (0.1, 0.1, 0.1) if self.player.theme == 'light' else (0.93, 0.93, 0.93)
         for index, x, y in self.visible():
             album = self.albums[index]
-            for line, value in enumerate((album.title, album.artist, added_age_label(album.added_at))):
+            sort = getattr(self, 'sort_order', getattr(self.player, 'album_sort', 'addedAt:desc'))
+            for line, value in enumerate((album.title, album.artist, album_info_label(album, sort))):
                 layout = self.labels.create_pango_layout(value or '')
                 layout.set_width(int(size * Pango.SCALE))
                 layout.set_alignment(Pango.Alignment.CENTER)
                 layout.set_ellipsize(Pango.EllipsizeMode.END)
-                context.set_source_rgba(*color, 1 if line == 0 else .72)
+                if line == 2:
+                    attributes = Pango.AttrList()
+                    attributes.insert(Pango.attr_scale_new(.88))
+                    layout.set_attributes(attributes)
+                context.set_source_rgba(*color, (1., .78, .55)[line])
                 context.move_to(x, y + size + 4 + line * (self.player.text_size + 4))
                 PangoCairo.show_layout(context, layout)
         return False
@@ -895,7 +903,7 @@ class GPUAlbumWall(Gtk.Box, GLProgram):
                         if flip.layout is None:
                             flip.layout = card_layout(size, self.player.text_size,
                                                       len(flip.tracks or ()), flip.offset)
-                        hit = card_hit(flip.layout, event.y - y, size, flip.tracks)
+                        hit = card_hit(flip.layout, event.y - y, size, flip.tracks, event.x - x)
                     if event.button == 3:
                         if hit[0] == 'track':
                             song = flip.tracks[hit[1]]
@@ -925,6 +933,8 @@ class GPUAlbumWall(Gtk.Box, GLProgram):
     def drag_motion(self, widget, event):
         if self.background_scroller.motion(event):
             return True
+        if getattr(self, 'pressed_hit', None) and self.pressed_hit[0] == 'explore':
+            return False
         if (not self.drag_album or self.dragging or self.drag_origin is None or
                 not event.state & Gdk.ModifierType.BUTTON1_MASK):
             return False
@@ -957,10 +967,10 @@ class GPUAlbumWall(Gtk.Box, GLProgram):
             self.drag_track = None
             if hit[0] == 'track':
                 self.play_flip_track(hit[1])
-            elif hit[0] == 'album':
-                self.player.select_album(album)
             elif hit[0] == 'close':
                 self.toggle_album(album)
+            elif hit[0] == 'explore':
+                self.player.open_album_web(album)
             else:
                 GPUAlbumWall.album_pressed(self, album, event, x, y)
             return True

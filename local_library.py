@@ -358,6 +358,11 @@ class LocalLibrary:
             raise ValueError('Unsupported album sort')
         return albums[start:start + 100], len(albums)
 
+    def recommendation_catalog(self):
+        """Read the existing local index once for matching online recommendations."""
+        with self.connect() as db:
+            return [Item(**json.loads(row[0])) for row in db.execute('SELECT data FROM tracks')]
+
     def songs(self, section, start=0, sort='addedAt:desc'):
         with self.connect() as db:
             items = [Item(**json.loads(row[0])) for row in db.execute('SELECT data FROM tracks')]

@@ -172,6 +172,32 @@ class GPUAlbumWallTests(unittest.TestCase):
             wall.shutdown()
             wall.destroy()
 
+    def test_flipped_album_explore_button_opens_web(self):
+        album = SimpleNamespace(key='/library/metadata/1', title='Album', artist='Artist')
+        track = SimpleNamespace(key='/library/metadata/2', title='Track', duration=180000)
+        player = SimpleNamespace(album_art_size=300, album_spacing=10, album_margin=10,
+                                 show_album_details=False, text_size=18,
+                                 search_escape_pressed=Mock(), open_album_web=Mock(), client=object())
+        with patch('gpu_album_wall.load_gl', return_value=Mock()):
+            wall = GPUAlbumWall(player, Mock())
+        try:
+            wall.albums = [album]
+            wall.visible = lambda: [(0, 10, 20)]
+            flip = GPUFlip(album, 0, tracks=[track], progress=1)
+            flip.layout = card_layout(300, 18, 1, 0)
+            wall.flips[0] = wall.flip = flip
+            button_y = 20 + (flip.layout['explore_top'] + flip.layout['explore_height'] / 2) * 300 / 512
+            press = Gdk.Event.new(Gdk.EventType.BUTTON_PRESS)
+            press.button, press.x, press.y = 1, 250, button_y
+            release = Gdk.Event.new(Gdk.EventType.BUTTON_RELEASE)
+            release.button, release.x, release.y = 1, 250, button_y
+            wall.input_surface.emit('button-press-event', press)
+            wall.input_surface.emit('button-release-event', release)
+            player.open_album_web.assert_called_once_with(album)
+        finally:
+            wall.shutdown()
+            wall.destroy()
+
     def test_gpu_track_row_can_be_clicked_and_dragged(self):
         album = SimpleNamespace(key='/library/metadata/1', title='Album', artist='Artist')
         track = SimpleNamespace(key='/library/metadata/2', title='Track', duration=180000)

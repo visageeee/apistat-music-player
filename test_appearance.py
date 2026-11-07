@@ -1,6 +1,7 @@
 import sys
 import tempfile
 import unittest
+from types import SimpleNamespace
 from concurrent.futures import Future
 from pathlib import Path
 from unittest.mock import patch
@@ -14,6 +15,15 @@ import appearance
 
 
 class AppearanceTests(unittest.TestCase):
+    def test_visualizer_view_defaults_and_persists(self):
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.object(appearance, 'SETTINGS_PATH', Path(directory) / 'settings.json'):
+            self.assertEqual(appearance.load_visualizer_view(), 'ribbon')
+            appearance.save_visualizer_view('perspective')
+            self.assertEqual(appearance.load_visualizer_view(), 'perspective')
+            with self.assertRaises(ValueError):
+                appearance.save_visualizer_view('unknown')
+
     def test_info_panel_width_is_saved_and_validated(self):
         with tempfile.TemporaryDirectory() as directory, \
                 patch.object(appearance, 'SETTINGS_PATH', Path(directory) / 'settings.json'):
@@ -176,6 +186,14 @@ class AppearanceTests(unittest.TestCase):
         self.assertEqual(appearance.added_age_label(added, added + 86400), 'Added 1 day ago')
         self.assertEqual(appearance.added_age_label(added, added + 2 * 86400), 'Added 2 days ago')
         self.assertEqual(appearance.added_age_label(0, added), 'Date added unknown')
+
+    def test_album_third_line_follows_sort_order(self):
+        album = SimpleNamespace(added_at=0, year='1985')
+        self.assertEqual(appearance.album_info_label(album, 'addedAt:desc'), 'Date added unknown')
+        for sort in ('year:desc', 'titleSort', 'artist.titleSort'):
+            self.assertEqual(appearance.album_info_label(album, sort), '1985')
+        album.year = ''
+        self.assertEqual(appearance.album_info_label(album, 'titleSort'), '')
 
     def test_gradient_dither_breaks_up_flat_color_without_large_variation(self):
         surface, _pixels = appearance.render_dithered_gradient(

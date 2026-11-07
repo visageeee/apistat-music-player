@@ -137,6 +137,15 @@ class CanvasTests(unittest.TestCase):
         proxy.dragged_album = 'album'
         self.assertEqual(original.dragged_album, 'album')
 
+    def test_label_space_stops_growing_when_zoomed_in(self):
+        player = CanvasPlayer(SimpleNamespace(text_size=18, show_album_details=True))
+        player.zoom = 2.5
+        wall = SimpleNamespace(canvas_player=player, player=player, columns=COLUMNS,
+                               area=SimpleNamespace(get_allocated_width=lambda: 1200),
+                               get_row_offsets=lambda row_height: [0, row_height])
+        _width, size, gap, _margin, _columns, row_height, _total, _x = ExperimentalAlbumCanvas.geometry(wall)
+        self.assertAlmostEqual(row_height - size - gap, 3 * (18 + 4) + 6)
+
     @patch('experimental_album_canvas.sys.platform', 'linux')
     def test_scroll_targets_pointer_and_is_bounded(self):
         wall = SimpleNamespace(target_zoom=2.4, anchor=None, start_animation=Mock(),

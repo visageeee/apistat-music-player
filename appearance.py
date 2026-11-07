@@ -42,6 +42,7 @@ _gradient_memory = OrderedDict()
 _gradient_memory_lock = threading.Lock()
 _gradient_noise_lock = threading.Lock()
 _gradient_noise = None
+_gradient_gpu_failed = False
 
 
 def preloaded_gradient(width, height, colors):
@@ -63,7 +64,7 @@ def _gradient_noise_tile():
         pixels = array('I')
         randomizer = random.Random(5182)
         for _ in range(size * size):
-            alpha = randomizer.randrange(1, 6)
+            alpha = 2
             # ARGB32 stores premultiplied channels. Random black and white
             # pixels introduce a few levels of noise without tinting the art.
             channel = alpha if randomizer.getrandbits(1) else 0
@@ -96,12 +97,21 @@ def render_dithered_gradient(width, height, colors):
 
 
 def cached_gradient(width, height, colors):
+    global _gradient_gpu_failed
     ready = preloaded_gradient(width, height, colors)
     if ready is not None:
         return ready
     surface = read_gradient(colors, width, height)
     if surface is None:
-        surface, pixels = render_dithered_gradient(width, height, colors)
+        if not _gradient_gpu_failed:
+            try:
+                from gpu_gradient import render_gpu_gradient
+                surface, pixels = render_gpu_gradient(width, height, colors)
+            except Exception:
+                _gradient_gpu_failed = True
+                surface = None
+        if surface is None:
+            surface, pixels = render_dithered_gradient(width, height, colors)
         try:
             save_gradient(colors, width, height, surface)
         except (OSError, cairo.Error):
@@ -317,9 +327,32 @@ def load_background_visualizer_enabled():
     return _read_settings().get('background_visualizer', False) is True
 
 
+def load_visualizer_view():
+    view = _read_settings().get('visualizer_view', 'ribbon')
+    return view if view in ('ribbon', 'perspective') else 'ribbon'
+
+
+def save_visualizer_view(view):
+    if view not in ('ribbon', 'perspective'):
+        raise ValueError('Invalid visualizer view')
+    settings = _read_settings()
+    settings['visualizer_view'] = view
+    _write_settings(settings)
+
+
 def save_background_visualizer_enabled(enabled):
     settings = _read_settings()
     settings['background_visualizer'] = bool(enabled)
+    _write_settings(settings)
+
+
+def load_instrument_visualizer_enabled():
+    return _read_settings().get('instrument_visualizer', False) is True
+
+
+def save_instrument_visualizer_enabled(enabled):
+    settings = _read_settings()
+    settings['instrument_visualizer'] = bool(enabled)
     _write_settings(settings)
 
 
@@ -665,6 +698,13 @@ def added_age_label(added_at, now=None):
     if days == 0:
         return 'Added today'
     return f'Added {days} day' + ('' if days == 1 else 's') + ' ago'
+
+
+def album_info_label(album, sort):
+    if sort == 'addedAt:desc':
+        return added_age_label(album.added_at)
+    year = str(album.year or '').strip()
+    return year if year != '0' else ''
 
 
 def load_art_sizes():

@@ -319,7 +319,9 @@ class ExperimentalAlbumCanvas(GPUAlbumWall):
         size = self.player.album_art_size
         gap = self.player.album_spacing
         margin = self.player.album_margin
-        extra = ((3 * (self.canvas_player.player.text_size + 4) + 6) * self.canvas_player.zoom
+        # The labels stop growing at normal size, so their reserved space must
+        # stop growing too. Otherwise large zoom levels leave a wide blank gap.
+        extra = ((3 * (self.canvas_player.player.text_size + 4) + 6) * min(1., self.canvas_player.zoom)
                  if self.canvas_player.player.show_album_details else 0)
         row_height = size + gap + extra
         offsets = self.get_row_offsets(row_height)

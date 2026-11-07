@@ -48,13 +48,15 @@ if sys.platform.startswith('linux'):
 else:
     Mpris = None
 from appearance import (ALBUM_SIZE_RANGE, ALBUM_COLUMN_RANGE, NOW_SIZE_RANGE,
-                        DitheredGradient, added_age_label, album_cover_size, gradient_colors,
+                        DitheredGradient, added_age_label, album_info_label, album_cover_size, gradient_colors,
                         load_accent_color, load_album_columns, load_album_details_enabled,
                         load_art_accent_enabled, load_art_sizes, load_tooltips_hidden,
                         load_star_ratings_hidden,
                         load_smooth_scrolling_enabled, load_search_shortcut, save_search_shortcut,
                         load_custom_font, load_gradient_enabled, load_search_index_enabled,
                         load_background_visualizer_enabled, save_background_visualizer_enabled,
+                        load_visualizer_view, save_visualizer_view,
+                        load_instrument_visualizer_enabled, save_instrument_visualizer_enabled,
                         load_album_margins, save_album_margins,
                         load_keep_style_playing_enabled, save_keep_style_playing_enabled,
                         load_gpu_album_wall_enabled, save_gpu_album_wall_enabled,
@@ -101,12 +103,14 @@ import windows_window
 from track_waveform import TrackWaveform, analyze_track_waveform, analyze_audio_uri, server_waveform
 from playback_pipeline import PlaybackPipeline
 from ribbon_audio import RibbonAudioTap
+from instrument_visualizer import run_analysis as analyze_instruments, sample_analysis
 from ribbon_visualizer import RibbonVisualizer
 from frosted_bar import FrostedBar
 from lyrics import LyricsClient, lyrics_error_message
 from artist_info import file_info_lines, format_artist_description
 from next_track_preload import preload_next_art, preload_next_waveform
 from album_card import FlipCard
+from album_highlights import show_track_duration, track_highlights
 from gtk_snapshot import draw_allocated, normalize_surface_origin
 from app_assets import app_icon, placeholder_art, SMALL_PLACEHOLDER_LOGO_RATIO
 from album_zoom_icon import AlbumZoomIcon
@@ -124,6 +128,7 @@ from companion_account import (PlexAccount, load_device_token, save_device_token
                                clear_device_token)
 from companion_config import load_config, save_config
 import lastfm
+from similar_recommendations import similar_tracks as lastfm_similar_tracks
 from app_paths import migrate_legacy_data
 
 if sys.platform == 'darwin' and getattr(sys, 'frozen', False):
@@ -422,6 +427,11 @@ class Player(Gtk.Window):
         self.rating_executor = ThreadPoolExecutor(max_workers=1)
         self.rating_requests = {}
         self.waveform_workers = ThreadPoolExecutor(max_workers=1)
+        self.instrument_workers = ThreadPoolExecutor(max_workers=1, thread_name_prefix='instrument-analysis')
+        self.instrument_future = None
+        self.instrument_pending = None
+        self.instrument_analysis = None
+        self.instrument_generation = 0
         self.next_art_workers = ThreadPoolExecutor(max_workers=1)
         self.next_waveform_workers = ThreadPoolExecutor(max_workers=1)
         self.next_art_prefetch_future = None
@@ -485,10 +495,9 @@ class Player(Gtk.Window):
             #album-sort-bar button.active { color: #fff; font-weight: bold; }
             #album-sort-bar button label { font-size: 0.85em; }
             #album-grid #album-title { font-weight: bold; color: #fff; }
-            #album-grid #album-meta { color: #ccc; font-size: 11px; }
+            #album-grid #album-meta { color: #fff; font-size: 11px; }
             #album-card-back { background: transparent; border: 0; }
             #album-card-back button { color: #eee; }
-            #album-card-back #album-back-title { font-weight: bold; }
             #album-card-back #playing-marker { color: #e7a641; font-size: 16px; }
             #album-card-back #playing-marker.paused { font-size: 12px; }
             #album-card-back button.playing-track { background: rgba(255, 255, 255, 0.25);
@@ -687,6 +696,8 @@ class Player(Gtk.Window):
         self.theme = load_theme()
         self.gradient_enabled = load_gradient_enabled()
         self.background_visualizer_enabled = load_background_visualizer_enabled()
+        self.visualizer_view = load_visualizer_view()
+        self.instrument_visualizer_enabled = load_instrument_visualizer_enabled()
         self.frosted_player_bar = load_frosted_player_bar()
         self.timeline_waveform_enabled = load_timeline_waveform_enabled()
         self.accent_color = load_accent_color()
@@ -872,6 +883,7 @@ class Player(Gtk.Window):
         self.shared_background.connect('size-allocate', self.background_allocated)
         self.content_overlay.add(self.shared_background)
         self.background_visualizer = RibbonVisualizer(windowless=True)
+        self.background_visualizer.set_view(self.visualizer_view)
         self.background_visualizer.set_no_show_all(True)
         self.background_visualizer.set_hexpand(True)
         self.background_visualizer.set_vexpand(True)
@@ -940,6 +952,11 @@ class Player(Gtk.Window):
         self.content_overlay.add_overlay(self.window_controls)
         self.connect('window-state-event', self.window_state_changed)
         self.buffering_busy = False
+        self.album_web_wall = None
+        self.album_web_generation = 0
+        self.album_web_history = []
+        self.album_web_identity = None
+        self.album_web_album = None
         self.album_panel = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
         self.content_views.add_named(self.album_panel, 'albums')
         toolbar = Gtk.Box()
@@ -1494,6 +1511,14 @@ class Player(Gtk.Window):
             #song-panel button:checked {{ border-bottom: 2px solid {color}; }}
             #album-card-back button.playing-track {{ background: {wash}; }}
             #album-card-back #playing-marker {{ color: {color}; }}
+            #album-card-back #album-explore-button,
+            #album-card-back #album-explore-button:hover,
+            #album-card-back #album-cover-button,
+            #album-card-back #album-cover-button:hover {{
+                background: rgba({red}, {green}, {blue}, 0.38); background-image: none; color: #ffffff;
+                border: 0; box-shadow: none; padding: 2px 4px; font-size: 0.85em; }}
+            #album-card-back #album-explore-button label,
+            #album-card-back #album-cover-button label {{ color: #ffffff; }}
             #song-drop-line {{ background: {color}; }}
             #playlist-list row.playlist-drag-target {{
                 box-shadow: inset 0 0 0 2px {color}; }}
@@ -1542,6 +1567,12 @@ class Player(Gtk.Window):
             self.sidebar_volume_indicator.queue_draw()
         if getattr(self, 'album_canvas', None) is not None:
             self.album_canvas.labels.queue_draw()
+        for wall in (getattr(self, 'album_canvas', None), getattr(self, 'gpu_wall', None),
+                     getattr(self, 'album_web_wall', None)):
+            if wall is not None and getattr(wall, 'flips', None):
+                for flip in wall.flips.values():
+                    flip.dirty = True
+                wall.queue_frame()
         Player.redraw_sidebar_icons(self)
         for name in ('song_view', 'queue_view', 'track_view'):
             view = getattr(self, name, None)
@@ -1885,6 +1916,9 @@ class Player(Gtk.Window):
     def escape_search(self):
         panel = self.content_views.get_visible_child_name()
         if panel == 'albums':
+            if self.views.get_visible_child_name() == 'web':
+                self.album_web_back()
+                return True
             if self.views.get_visible_child_name() == 'detail':
                 self.views.set_visible_child_name('wall')
                 return True
@@ -2083,6 +2117,117 @@ class Player(Gtk.Window):
             self.show_context_menu(event, gpu_album=album, gpu_wall=self.album_canvas)
         else:
             self.album_canvas.toggle_album(album)
+
+    def ensure_album_web(self):
+        if self.album_web_wall is not None:
+            return True
+        try:
+            from album_web_wall import AlbumWebWall
+            panel = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+            header = Gtk.Box(spacing=8, margin_start=16, margin_end=16, margin_top=8, margin_bottom=6)
+            header.pack_start(self.button('‹ Back', self.album_web_back), False, False, 0)
+            header.pack_start(self.button('All albums', self.close_album_web), False, False, 0)
+            self.album_web_title = Gtk.Label(xalign=0)
+            self.album_web_title.set_hexpand(True)
+            self.album_web_title.set_ellipsize(Pango.EllipsizeMode.END)
+            header.pack_start(self.album_web_title, True, True, 0)
+            header.pack_start(self.button('Tracklist', self.album_web_tracklist), False, False, 0)
+            header.pack_start(self.button('Refresh', self.album_web_refresh), False, False, 0)
+            panel.pack_start(header, False, False, 0)
+            self.album_web_message = Gtk.Label(xalign=.5)
+            self.album_web_message.set_margin_bottom(4)
+            panel.pack_start(self.album_web_message, False, False, 0)
+            self.album_web_wall = AlbumWebWall(self, self.album_web_failed, self.album_web_pressed)
+            panel.pack_start(self.album_web_wall, True, True, 0)
+            self.views.add_named(panel, 'web')
+            panel.show_all()
+            self.update_queue_bottom_inset()
+            return True
+        except (OSError, ImportError, RuntimeError, AttributeError):
+            self.album_web_wall = None
+            self.status.set_text('Album web requires a working GPU album wall.')
+            return False
+
+    def album_web_failed(self):
+        self.close_album_web()
+        self.status.set_text('Album web could not initialize GPU rendering.')
+        return False
+
+    def close_album_web(self, *_):
+        self.album_web_generation += 1
+        self.album_web_history.clear()
+        if self.views.get_visible_child_name() == 'web':
+            self.views.set_visible_child_name('wall')
+
+    def album_web_back(self, *_):
+        if len(self.album_web_history) > 1:
+            self.album_web_history.pop()
+            self.open_album_web(self.album_web_history[-1], add_history=False)
+        else:
+            self.close_album_web()
+
+    def album_web_tracklist(self, *_):
+        if self.album_web_wall and self.album_web_album:
+            self.album_web_wall.toggle_album(self.album_web_album)
+
+    def album_web_refresh(self, *_):
+        if self.album_web_album:
+            self.open_album_web(self.album_web_album, add_history=False, refresh=True)
+
+    def album_web_pressed(self, album, event, _x, _y):
+        if event.button == 3:
+            self.show_context_menu(event, gpu_album=album, gpu_wall=self.album_web_wall)
+        elif self.album_web_album:
+            if album.key == self.album_web_album.key:
+                self.album_web_wall.toggle_album(album)
+            else:
+                self.open_album_web(album)
+
+    def open_album_web(self, album, add_history=True, refresh=False):
+        client, section = self.client, self.library.get_active_id()
+        if client is None or not section or not self.ensure_album_web():
+            return
+        if self.album_web_identity != (client, section):
+            self.album_web_history.clear()
+            self.album_web_identity = (client, section)
+        if add_history and (not self.album_web_history or self.album_web_history[-1].key != album.key):
+            self.album_web_history.append(album)
+        self.album_web_generation += 1
+        generation = self.album_web_generation
+        self.album_web_album = album
+        self.album_web_title.set_text(f'{album.artist} — {album.title}')
+        self.album_web_message.set_text('Finding related albums with Last.fm…')
+        self.album_web_wall.set_graph(client, album, [])
+        self.views.set_visible_child_name('web')
+        session = getattr(self, 'lastfm_session', None)
+        credentials = lastfm.application_credentials() or (
+            (session['api_key'], session['secret']) if session else None)
+        cached = self.canvas_catalog if self.canvas_catalog_identity == (client, section) else None
+        valid = lambda: (not self.closed and self.client is client and
+                         self.library.get_active_id() == section and
+                         self.album_web_generation == generation and
+                         self.views.get_visible_child_name() == 'web')
+        def work():
+            from album_web import related_albums
+            valid_worker = lambda: (not self.closed and self.client is client and
+                                    self.album_web_generation == generation)
+            catalog = cached if cached is not None else build_album_index(client, section, valid_worker)
+            if catalog is None:
+                return [], ''
+            try:
+                return related_albums(client, section, album, catalog, credentials, refresh=refresh), ''
+            except lastfm.LastFMError as error:
+                return [], str(error)
+        def ready(result):
+            related, error = result
+            self.album_web_wall.set_graph(client, album, related)
+            if error:
+                self.album_web_message.set_text(error)
+            elif related:
+                self.album_web_message.set_text(f'{len(related)} related albums · Last.fm')
+            else:
+                self.album_web_message.set_text('No related albums found in this library.')
+        self.async_work(work, ready, valid)
 
     def canvas_search_changed(self, *_args):
         if (not getattr(self, 'canvas_enabled', False) or not self.client or
@@ -2314,8 +2459,10 @@ class Player(Gtk.Window):
                 self.set_art_size(tile.art_image, size)
                 tile.metadata_box.set_size_request(size, -1)
                 tile.flip_card.resize_card(size)
-                tile.heading_button.set_visible(size >= 100)
                 tile.cover_button.set_label('‹' if size < 100 else '‹ Cover')
+                for button in tile.track_buttons:
+                    if hasattr(button, 'duration_label'):
+                        button.duration_label.set_visible(show_track_duration(size))
             grid.queue_resize()
         self.grid.queue_resize()
         self.apply_album_grid_columns()
@@ -3403,6 +3550,7 @@ class Player(Gtk.Window):
             item('Show cover' if flipped else 'Flip album',
                  lambda: wall.toggle_album(gpu_album))
             item('Open album', lambda: self.select_album(gpu_album))
+            item('Explore related albums', lambda: self.open_album_web(gpu_album))
             item('Show Artist Albums', lambda: self.show_artist_albums(gpu_album.artist))
             item('Show in library', lambda: self.show_in_library(gpu_album))
             item('Add to queue', lambda: self.enqueue_album(gpu_album))
@@ -3412,6 +3560,7 @@ class Player(Gtk.Window):
             item('Show cover' if tile.flip_card.side == 'back' else 'Flip album',
                  lambda: self.flip_album_card(tile))
             item('Open album', lambda: tile.open_album(tile.album))
+            item('Explore related albums', lambda: self.open_album_web(tile.album))
             item('Show Artist Albums', lambda: self.show_artist_albums(tile.album.artist))
             item('Show in library', lambda: self.show_in_library(tile.album))
             item('Add to queue', lambda: self.enqueue_album(tile.album))
@@ -3544,8 +3693,7 @@ class Player(Gtk.Window):
             item('Edit tags…', lambda: self.show_tag_editor(edit_tracks))
         item('Add to queue', lambda: self.enqueue_tracks([song]))
         item('Play next', lambda: self.enqueue_tracks([song], play_next=True))
-        if not getattr(self.client, 'is_local', False):
-            item('Add similar songs to queue', lambda: self.enqueue_similar_songs(song))
+        item('Add similar songs to queue', lambda: self.enqueue_similar_songs(song))
         loved = song.user_rating >= 9.5
         item('Remove Love' if loved else 'Love Song',
              lambda: self.set_song_loved(song, not loved))
@@ -3572,6 +3720,29 @@ class Player(Gtk.Window):
             for candidate in tile.tracks or []:
                 if candidate.key == key:
                     candidate.user_rating = rating
+        for tracks in getattr(self, '_album_card_tracks', {}).values():
+            for candidate in tracks:
+                if candidate.key == key:
+                    candidate.user_rating = rating
+        for grid in (self.grid, getattr(self, 'style_album_grid', None)):
+            if grid is None:
+                continue
+            for child in grid.get_children():
+                tile = child.get_child()
+                highlights = track_highlights(tile.tracks)
+                for track, button in zip(tile.tracks or (), tile.track_buttons):
+                    if hasattr(button, 'highlight_marker'):
+                        button.highlight_marker.set_text(highlights.get(track.key, ''))
+        for wall in (getattr(self, 'album_canvas', None), getattr(self, 'gpu_wall', None),
+                     getattr(self, 'album_web_wall', None),
+                     getattr(getattr(self, 'time_machine', None), 'gpu_wall', None)):
+            if wall is not None:
+                for flip in wall.flips.values():
+                    for candidate in flip.tracks or ():
+                        if candidate.key == key:
+                            candidate.user_rating = rating
+                    flip.dirty = True
+                wall.queue_frame()
         rating_column = next(index for index, (_label, field) in
                              enumerate(LIBRARY_COLUMNS) if field == 'user_rating')
         views = [(getattr(self, 'song_store', None), self.songs)]
@@ -3739,6 +3910,7 @@ class Player(Gtk.Window):
         self.now_visual_background.set_vhomogeneous(False)
         self.now_visual_background.add_named(Gtk.Box(), 'art')
         self.hero_waveform = RibbonVisualizer()
+        self.hero_waveform.set_view(self.visualizer_view)
         self.hero_waveform.add_events(Gdk.EventMask.BUTTON_PRESS_MASK |
                                       Gdk.EventMask.SCROLL_MASK)
         self.hero_waveform.connect('button-press-event', self.toggle_now_waveform)
@@ -3896,6 +4068,80 @@ class Player(Gtk.Window):
             save_background_visualizer_enabled(self.background_visualizer_enabled)
         except OSError:
             self.status.set_text('Could not save the appearance setting.')
+
+    def visualizer_view_changed(self, combo):
+        view = combo.get_active_id()
+        if view not in ('ribbon', 'perspective'):
+            return
+        self.visualizer_view = view
+        self.hero_waveform.set_view(view)
+        self.background_visualizer.set_view(view)
+        try:
+            save_visualizer_view(view)
+        except OSError:
+            self.status.set_text('Could not save the visualizer view.')
+
+    def instrument_visualizer_changed(self, button):
+        self.instrument_visualizer_enabled = button.get_active()
+        self.instrument_generation += 1
+        self.instrument_analysis = None
+        self.instrument_pending = None
+        try:
+            save_instrument_visualizer_enabled(self.instrument_visualizer_enabled)
+        except OSError:
+            self.status.set_text('Could not save the instrument visualizer setting.')
+        if self.instrument_visualizer_enabled and self.current_stream_uri and self.queue:
+            self.prepare_instrument_analysis(self.queue_client, self.queue[self.index],
+                                             self.current_stream_uri, self.play_generation)
+        elif self.instrument_visualizer_enabled:
+            self.instrument_visualizer_status.set_text('Play a track to begin instrument analysis.')
+        else:
+            self.instrument_visualizer_status.set_text('Uses the regular audio visualizer.')
+
+    def prepare_instrument_analysis(self, client, track, uri, play_generation):
+        if not self.instrument_visualizer_enabled or not client or track.duration <= 0:
+            return
+        if self.instrument_future is not None:
+            # Finish a long-running track so its analysis is useful next time;
+            # retain only the latest requested track while that work runs.
+            self.instrument_pending = (client, track, uri, play_generation)
+            self.instrument_visualizer_status.set_text('Analyzing a previous track; current track is queued.')
+            return
+        generation = self.instrument_generation
+        valid = lambda: not self.closed and self.instrument_visualizer_enabled and generation == self.instrument_generation
+        self.instrument_visualizer_status.set_text('Analyzing instruments in the background…')
+        def work():
+            return analyze_instruments(LocalCache(client), client, track, uri, lambda: not valid())
+        def finish(future):
+            self.instrument_future = None
+            if self.closed:
+                return False
+            try:
+                analysis, status = future.result()
+            except Exception:
+                analysis, status = None, 'failed'
+            if valid() and play_generation == self.play_generation:
+                self.instrument_analysis = analysis
+                messages = {
+                    'ready': 'Instrument analysis ready.',
+                    'missing': 'Demucs Python is unavailable. See the guide for setup.',
+                    'missing_numpy': 'NumPy is missing from the Demucs environment. See the guide for setup.',
+                    'missing_demucs': 'Demucs or a dependency is missing. See the guide for setup.',
+                    'failed': 'Instrument analysis failed. Check Demucs setup; regular visualizer remains active.',
+                    'cancelled': 'Instrument analysis cancelled.',
+                }
+                self.instrument_visualizer_status.set_text(messages.get(status, 'Instrument analysis unavailable.'))
+            pending = self.instrument_pending
+            self.instrument_pending = None
+            if (self.instrument_visualizer_enabled and pending and
+                    pending[3] == self.play_generation):
+                self.prepare_instrument_analysis(*pending)
+            return False
+        try:
+            self.instrument_future = self.instrument_workers.submit(work)
+            self.instrument_future.add_done_callback(lambda future: GLib.idle_add(finish, future))
+        except RuntimeError:
+            self.instrument_future = None
 
     def rate_now_track(self, _button, stars):
         if 0 <= self.index < len(self.queue) and (self.stream_open or self.remote_opening):
@@ -6103,11 +6349,29 @@ class Player(Gtk.Window):
         self.gradient_toggle.set_active(self.gradient_enabled)
         self.gradient_toggle.connect('toggled', self.gradient_changed)
         panel.pack_start(self.gradient_toggle, False, False, 0)
+        visualizer_row = Gtk.Box(spacing=12)
+        visualizer_row.pack_start(Gtk.Label(label='Visualizer view', xalign=0), False, False, 0)
+        self.visualizer_view_combo = Gtk.ComboBoxText()
+        self.visualizer_view_combo.append('ribbon', 'Ribbon')
+        self.visualizer_view_combo.append('perspective', 'Coming towards you')
+        self.visualizer_view_combo.set_active_id(self.visualizer_view)
+        self.visualizer_view_combo.connect('changed', self.visualizer_view_changed)
+        visualizer_row.pack_start(self.visualizer_view_combo, False, False, 0)
+        panel.pack_start(visualizer_row, False, False, 0)
         self.background_visualizer_toggle = Gtk.CheckButton(
             label='Show the Now Playing visualizer on other gradient backgrounds')
         self.background_visualizer_toggle.set_active(self.background_visualizer_enabled)
         self.background_visualizer_toggle.connect('toggled', self.background_visualizer_changed)
         panel.pack_start(self.background_visualizer_toggle, False, False, 0)
+        self.instrument_visualizer_toggle = Gtk.CheckButton(
+            label='Experimental: react to instruments (requires Demucs)')
+        self.instrument_visualizer_toggle.set_active(self.instrument_visualizer_enabled)
+        self.instrument_visualizer_toggle.connect('toggled', self.instrument_visualizer_changed)
+        panel.pack_start(self.instrument_visualizer_toggle, False, False, 0)
+        self.instrument_visualizer_status = Gtk.Label(
+            label='Demucs runs separately; its model may download on first use.', xalign=0)
+        self.instrument_visualizer_status.set_line_wrap(True)
+        panel.pack_start(self.instrument_visualizer_status, False, False, 0)
         accent_row = Gtk.Box(spacing=12)
         accent_row.pack_start(Gtk.Label(label='Pick accent color', xalign=0), False, False, 0)
         self.accent_color_button = Gtk.ColorButton()
@@ -6945,6 +7209,8 @@ class Player(Gtk.Window):
         if getattr(self, 'album_canvas', None):
             self.album_canvas.set_bottom_inset(0)
             self.canvas_hscroll.set_margin_bottom(max(0, inset))
+        if getattr(self, 'album_web_wall', None):
+            self.album_web_wall.set_bottom_inset(inset)
         info = getattr(self, 'info_revealer', None)
         if info is not None and info.get_margin_bottom() != inset:
             info.set_margin_bottom(max(0, inset))
@@ -7032,12 +7298,14 @@ class Player(Gtk.Window):
     @staticmethod
     def gpu_wall_is_mapped(player):
         walls = (getattr(player, 'album_canvas', None), getattr(player, 'gpu_wall', None),
+                 getattr(player, 'album_web_wall', None),
                  getattr(getattr(player, 'time_machine', None), 'gpu_wall', None))
         return any(wall is not None and wall.area.get_mapped() for wall in walls)
 
     @staticmethod
     def gpu_glass_surface(player, bar):
         walls = (getattr(player, 'album_canvas', None), getattr(player, 'gpu_wall', None),
+                 getattr(player, 'album_web_wall', None),
                  getattr(getattr(player, 'time_machine', None), 'gpu_wall', None))
         for wall in walls:
             if wall is not None and wall.area.get_mapped():
@@ -8427,21 +8695,36 @@ class Player(Gtk.Window):
             return
         section = self.library.get_active_id()
         self.status.set_text('Finding similar songs…')
+        session = getattr(self, 'lastfm_session', None)
+        credentials = lastfm.application_credentials() or (
+            (session['api_key'], session['secret']) if session else None)
+        excluded = {item.key for item in getattr(self, 'queue', [])}
+        excluded.update(item.key for item in getattr(self, 'play_history', []))
         def work():
+            try:
+                online = lastfm_similar_tracks(client, section, song, credentials, excluded)
+            except (lastfm.LastFMError, OSError):
+                online = []
+            if getattr(client, 'is_local', False) or len(online) >= 10:
+                return online
             try:
                 candidates = client.nearest_tracks(song, limit=50)
             except HTTPError as error:
-                if error.code == 404:
+                if error.code == 404 or online:
                     candidates = []
                 else:
                     raise
             if section:
-                candidates.extend(client.metadata_similar_tracks(song, section, limit=50))
-            return candidates
+                try:
+                    candidates.extend(client.metadata_similar_tracks(song, section, limit=50))
+                except (HTTPError, OSError):
+                    if not online:
+                        raise
+            return online + [track for track in candidates if track.key not in excluded]
         def ready(candidates):
             chosen = select_similar_tracks(song, candidates, limit=10)
             if not chosen:
-                self.status.set_text('Plex found no sonic matches or tracks with matching genre or artist.')
+                self.status.set_text('No similar songs found in this library (no sonic matches or tracks with matching genre or artist).')
                 return
             self.enqueue_tracks(chosen)
             self.status.set_text(f'Added {len(chosen)} similar songs to queue')
@@ -9245,9 +9528,14 @@ class Player(Gtk.Window):
         tile.pack_end(metadata, False, False, 0)
         for index, (value, name) in enumerate(((album.title, 'album-title'),
                                                (album.artist, 'album-meta'),
-                                               (age, 'album-meta'))):
+                                               (album_info_label(album, self.album_sort), 'album-meta'))):
             label = Gtk.Label(label=value, xalign=0.5)
             label.set_name(name)
+            label.set_opacity((1., .78, .55)[index])
+            if index == 2:
+                attributes = Pango.AttrList()
+                attributes.insert(Pango.attr_scale_new(.88))
+                label.set_attributes(attributes)
             label.set_ellipsize(Pango.EllipsizeMode.END)
             label.set_max_width_chars(1)
             if index == 1:
@@ -9268,20 +9556,6 @@ class Player(Gtk.Window):
         back_content = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=3, margin=5)
         back_content.set_name('album-card-back')
         back.add_overlay(back_content)
-        heading = Gtk.Label(label=album.title, xalign=0.5)
-        heading.set_name('album-back-title')
-        heading.set_ellipsize(Pango.EllipsizeMode.END)
-        heading.set_max_width_chars(1)
-        heading_button = Gtk.Button()
-        heading_button.drag_source_set(Gdk.ModifierType.BUTTON1_MASK, album_target,
-                                       Gdk.DragAction.COPY)
-        heading_button.connect('drag-data-get', self.drag_media_key, album.key)
-        heading_button.connect('drag-begin', self.album_drag_begin, album, image)
-        heading_button.connect('drag-end', self.album_drag_end)
-        heading_button.add(heading)
-        self.set_tooltip(heading_button, 'Open full album view')
-        heading_button.connect('clicked', lambda *_: tile.open_album(album))
-        back_content.pack_start(heading_button, False, False, 0)
         tracks_scroll = Gtk.ScrolledWindow()
         tracks_scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
         tracks_scroll.set_min_content_width(1)
@@ -9295,9 +9569,28 @@ class Player(Gtk.Window):
         tracks_scroll.add(tracks_box)
         self.attach_smooth_scroll(tracks_scroll)
         back_content.pack_start(tracks_scroll, True, True, 0)
+        footer = Gtk.Box(spacing=5)
+        footer.set_homogeneous(True)
         cover_button = Gtk.Button(label='‹' if self.album_art_size < 100 else '‹ Cover')
+        cover_button.set_name('album-cover-button')
+        cover_button.get_child().set_valign(Gtk.Align.CENTER)
         self.set_tooltip(cover_button, 'Flip back to album art')
-        back_content.pack_end(cover_button, False, False, 0)
+        footer.pack_start(cover_button, True, True, 0)
+        explore_button = Gtk.Button()
+        explore_button.set_name('album-explore-button')
+        explore_button.set_size_request(1, -1)
+        explore_label = Gtk.Label(label='Explore Related')
+        explore_label.set_valign(Gtk.Align.CENTER)
+        explore_label.set_ellipsize(Pango.EllipsizeMode.END)
+        explore_label.set_max_width_chars(16)
+        explore_button.add(explore_label)
+        explore_button.get_accessible().set_name('Explore related albums')
+        self.set_tooltip(explore_button, 'Explore related albums')
+        explore_button.connect('clicked', lambda *_: self.open_album_web(album))
+        explore_button.connect('button-press-event',
+                               lambda _widget, event: self.album_context_menu_pressed(tile, event))
+        footer.pack_end(explore_button, True, True, 0)
+        back_content.pack_end(footer, False, False, 0)
         flip_card = FlipCard(front, back, self.album_art_size)
         tile.pack_start(flip_card, False, False, 0)
         tile.album = album
@@ -9313,7 +9606,6 @@ class Player(Gtk.Window):
         tile.pending_tracks_error = False
         tile.flip_card = flip_card
         flip_card.on_side_shown = lambda side: self.album_side_shown(tile, side)
-        tile.heading_button = heading_button
         tile.cover_button = cover_button
         tile.back_gradient = background
         background.set_fallback_color('#f5f5f3' if self.theme == 'light' else '#000000')
@@ -9332,7 +9624,6 @@ class Player(Gtk.Window):
                       lambda: epoch == self.art_epoch, show_back_colors)
         tile.show_all()
         metadata.set_visible(self.show_album_details)
-        heading_button.set_visible(self.album_art_size >= 100)
 
     def flip_album_card(self, tile):
         flip = tile.flip_card
@@ -9424,6 +9715,7 @@ class Player(Gtk.Window):
             child.destroy()
         if not tracks:
             card.tracks_box.pack_start(Gtk.Label(label='No tracks found'), False, False, 0)
+        highlights = track_highlights(tracks)
         for index, track in enumerate(tracks):
             button = Gtk.Button()
             song_target = [Gtk.TargetEntry.new('application/x-plex-song-key',
@@ -9451,15 +9743,19 @@ class Player(Gtk.Window):
             title.set_max_width_chars(1)
             title.set_hexpand(True)
             duration = Gtk.Label(label=clock(track.duration / 1000), xalign=1)
+            duration.set_no_show_all(True)
+            duration.set_visible(show_track_duration(self.album_art_size))
             row.pack_start(play_marker, False, False, 0)
             row.pack_start(number, False, False, 0)
             row.pack_start(title, True, True, 0)
-            right_spacer = Gtk.Box()
+            right_spacer = Gtk.Label(label=highlights.get(track.key, ''))
             right_spacer.set_size_request(22, -1)
             row.pack_end(right_spacer, False, False, 0)
             row.pack_end(duration, False, False, 0)
             button.add(row)
             button.play_marker = play_marker
+            button.highlight_marker = right_spacer
+            button.duration_label = duration
             button.connect('drag-begin', self.album_track_drag_begin, track.title)
             self.set_tooltip(button, track.title)
             button.connect('clicked', lambda _button, selected=index: self.play_card_track(card, selected))
@@ -9552,7 +9848,7 @@ class Player(Gtk.Window):
                 continue
             for child in grid.get_children():
                 tile = child.get_child()
-                tile.age_label.set_text(added_age_label(tile.age_album.added_at))
+                tile.age_label.set_text(album_info_label(tile.age_album, self.album_sort))
         return True
 
     def button(self, text, callback):
@@ -10328,6 +10624,8 @@ class Player(Gtk.Window):
         self.next_art_prefetch_future = None
         self.next_wave_prefetch_future = None
         self.current_stream_uri = ''
+        self.instrument_analysis = None
+        self.instrument_pending = None
         self.wave_timeline.set_peaks(None)
         self.wave_timeline.set_sensitive(False)
         if self.buffering_busy:
@@ -10431,6 +10729,8 @@ class Player(Gtk.Window):
             self.lastfm_tracker = lastfm.PlaybackTracker(track)
             self.playing = not resume_paused
             self.refresh_live_waveform()
+            if self.instrument_visualizer_enabled:
+                self.prepare_instrument_analysis(client, track, uri, generation)
             self.pending_resume_seek_ms = self.playback_position_ms
             state = Gst.State.PAUSED if resume_paused else Gst.State.PLAYING
             controller = getattr(self, 'playback_controller', None)
@@ -10510,10 +10810,10 @@ class Player(Gtk.Window):
             self.index += 1
         elif self.repeat.get_active():
             self.index = 0
-        elif self.keep_style_playing_enabled and not getattr(getattr(self, 'queue_client', None), 'is_local', False):
+        elif self.keep_style_playing_enabled:
             if self.style_autoplay_exhausted:
                 self.stop()
-                self.status.set_text('No more songs found in this mood')
+                self.status.set_text('No more similar songs found in this library')
                 return
             self.style_autoplay_waiting = True
             if not self.style_autoplay_pending:
@@ -10526,8 +10826,7 @@ class Player(Gtk.Window):
         self.start_track()
 
     def maybe_prefetch_same_style(self):
-        if (self.keep_style_playing_enabled and not getattr(getattr(self, 'queue_client', None), 'is_local', False)
-                and self.playing and self.queue and
+        if (self.keep_style_playing_enabled and self.playing and self.queue and
                 self.index == len(self.queue) - 1 and
                 not self.repeat.get_active() and
                 not (self.shuffle.get_active() and len(self.queue) > 1) and
@@ -10564,8 +10863,17 @@ class Player(Gtk.Window):
         self.style_autoplay_generation = request
         index = self.index
         self.style_autoplay_pending = True
-        self.status.set_text('Finding more songs in the same mood…')
+        self.status.set_text('Finding more similar songs…')
+        session = getattr(self, 'lastfm_session', None)
+        credentials = lastfm.application_credentials() or (
+            (session['api_key'], session['secret']) if session else None)
         def work():
+            try:
+                online = lastfm_similar_tracks(client, section, current, credentials, excluded)
+            except (lastfm.LastFMError, OSError):
+                online = []
+            if online or getattr(client, 'is_local', False):
+                return None, online
             cache = LocalCache(client)
             facets = cache.read_music_facets(section)
             if facets is None:
@@ -10594,7 +10902,7 @@ class Player(Gtk.Window):
                 self.style_autoplay_exhausted = True
                 if waiting:
                     self.stop()
-                self.status.set_text('No more songs found in this mood')
+                self.status.set_text('No more similar songs found in this library')
                 return
             self.auto_style_facet = facet
             self.auto_style_keys = {track.key for track in tracks}
@@ -10609,7 +10917,7 @@ class Player(Gtk.Window):
                 self.index += 1
                 self.start_track()
             else:
-                self.status.set_text(f'Queued {len(tracks)} songs with a matching mood')
+                self.status.set_text(f'Queued {len(tracks)} similar songs')
         def failed():
             self.style_autoplay_pending = False
             waiting = self.style_autoplay_waiting
@@ -10617,7 +10925,7 @@ class Player(Gtk.Window):
             self.style_autoplay_exhausted = True
             if waiting:
                 self.stop()
-            self.status.set_text('Could not find more songs with this mood')
+            self.status.set_text('Could not find more similar songs')
         self.async_work(work, ready, valid, failed)
 
     def message(self, bus, message):
@@ -10625,6 +10933,14 @@ class Player(Gtk.Window):
             if self.live_waveform_tap is not None:
                 levels = self.live_waveform_tap.read_message(message)
                 if levels is not None:
+                    analysis = getattr(self, 'instrument_analysis', None)
+                    if analysis is not None and getattr(self, 'instrument_visualizer_enabled', False):
+                        elapsed = (max(0., time.monotonic() - self.timeline_base_time)
+                                   if self.playing and not self.buffering_busy else 0.)
+                        position_ms = (self.timeline_base_position + elapsed) * 1000
+                        instruments = sample_analysis(analysis, position_ms)
+                        if instruments is not None:
+                            levels = tuple(levels[:3]) + instruments
                     self.hero_waveform.set_audio(levels)
                     self.background_visualizer.set_audio(levels)
         elif message.type == Gst.MessageType.EOS:
@@ -10937,6 +11253,8 @@ class Player(Gtk.Window):
         return data
 
     def close(self, *_):
+        if getattr(self, 'album_web_wall', None):
+            self.album_web_wall.shutdown()
         if getattr(self, 'album_canvas', None):
             self.album_canvas.shutdown()
         if getattr(self, 'canvas_search_source', 0):
@@ -10957,6 +11275,9 @@ class Player(Gtk.Window):
             GLib.source_remove(self.background_prefetch_source)
             self.background_prefetch_source = 0
         self.waveform_generation += 1
+        self.instrument_generation += 1
+        self.instrument_pending = None
+        self.instrument_workers.shutdown(wait=False, cancel_futures=True)
         self.waveform_workers.shutdown(wait=False, cancel_futures=True)
         self.next_art_workers.shutdown(wait=False, cancel_futures=True)
         self.next_waveform_workers.shutdown(wait=False, cancel_futures=True)

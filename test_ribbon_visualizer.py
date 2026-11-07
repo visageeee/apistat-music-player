@@ -7,11 +7,45 @@ from gi.repository import Gtk
 
 import cairo
 
-from ribbon_visualizer import (LINE_COUNT, NODE_COUNT, RibbonVisualizer, approach,
-                               ribbon_profile, trace_curve)
+from ribbon_visualizer import (LINE_COUNT, NODE_COUNT, PERSPECTIVE_NODE_COUNT, RibbonVisualizer, approach,
+                               ribbon_profile, trace_curve, trace_perspective_curve)
 
 
 class RibbonVisualizerTests(unittest.TestCase):
+    def test_perspective_strings_run_from_horizon_to_foreground_and_react(self):
+        context = cairo.Context(cairo.RecordingSurface(cairo.CONTENT_COLOR_ALPHA, None))
+        def string(layer, phase, energy):
+            context.new_path()
+            trace_perspective_curve(context, 900, 420, layer, phase, .5, .3, .2, .1, energy)
+            return list(context.copy_path())
+        left, right = string(0, .2, 0), string(12, .2, 0)
+        self.assertEqual(len(left), PERSPECTIVE_NODE_COUNT)
+        self.assertAlmostEqual(left[0][1][0], 450, delta=.01)
+        self.assertAlmostEqual(right[0][1][0], 450, delta=.01)
+        self.assertLess(left[-1][1][-2], right[-1][1][-2])
+        self.assertGreater(left[-1][1][-1], 420)
+        self.assertGreater(right[-1][1][-1], 420)
+        active = string(0, .2, .8)
+        displacement = [abs(a[1][-1] - b[1][-1]) for a, b in zip(left, active)]
+        self.assertGreater(max(displacement), 5)
+        self.assertGreater(max(displacement[8:21]), 5)
+        moving = string(0, .8, .8)
+        self.assertGreater(max(abs(a[1][-1] - b[1][-1])
+                               for a, b in zip(active, moving)), 5)
+        self.assertTrue(all(abs(a[1][-2] - b[1][-2]) < .01 for a, b in zip(left, active)))
+
+    def test_view_selection_reaches_both_visualizers(self):
+        from types import SimpleNamespace
+        from unittest.mock import Mock, patch
+        from player import Player
+        player = SimpleNamespace(hero_waveform=Mock(), background_visualizer=Mock(), status=Mock())
+        combo = SimpleNamespace(get_active_id=lambda: 'perspective')
+        with patch('player.save_visualizer_view') as save:
+            Player.visualizer_view_changed(player, combo)
+        player.hero_waveform.set_view.assert_called_once_with('perspective')
+        player.background_visualizer.set_view.assert_called_once_with('perspective')
+        save.assert_called_once_with('perspective')
+
     def test_background_visualizer_paints_below_foreground_widgets(self):
         window = Gtk.OffscreenWindow()
         window.set_default_size(80, 80)

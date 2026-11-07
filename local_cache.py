@@ -304,7 +304,8 @@ def build_album_index(client, section, valid=lambda: True):
 
 
 def gradient_path(colors, width, height):
-    return CACHE_ROOT / 'gradients' / (_hash(*colors, width, height) + '.png')
+    # Older gradients used stronger noise; do not reuse those cached images.
+    return CACHE_ROOT / 'gradients' / (_hash('smooth-v2', *colors, width, height) + '.png')
 
 
 def read_gradient(colors, width, height):

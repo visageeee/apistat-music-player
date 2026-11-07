@@ -16,6 +16,7 @@ a = Analysis(
     pathex=[str(root)],
     binaries=[],
     datas=[(str(root / 'apistat.png'), '.'),
+           (str(root / 'instrument_worker.py'), '.'),
            (str(root / 'assets' / 'time-machine'), 'assets/time-machine'),
            (str(root / 'fonts' / 'Nunito-wght.ttf'), 'fonts'),
            (str(root / 'fonts' / 'OFL.txt'), 'fonts'),
