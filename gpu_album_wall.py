@@ -21,7 +21,7 @@ from local_cache import LocalCache
 from gpu_offscreen import create_offscreen_gpu, GL_BGRA
 from background_drag_scroll import BackgroundDragScroller
 from gpu_flip import BACK_SIZE, GPUFlip, back_pixels, card_hit, card_layout
-from gpu_glass import GPUBlur, glass_rect
+from gpu_glass import GPUBlur, glass_rect, scene_covers_bar
 from gpu_gl import (GLProgram, load_gl, GL_TEXTURE_2D, GL_TEXTURE0, GL_BLEND, GL_RGBA, GL_UNSIGNED_BYTE,
                     GL_TEXTURE_MIN_FILTER, GL_TEXTURE_MAG_FILTER, GL_LINEAR,
                     GL_COLOR_BUFFER_BIT, GL_ARRAY_BUFFER, GL_STREAM_DRAW, GL_TRIANGLES)
@@ -590,6 +590,8 @@ class GPUAlbumWall(Gtk.Box, GLProgram):
         machine = getattr(self.player, 'time_machine', None)
         if machine is not None and getattr(machine, 'gpu_wall', None) is self:
             effects.append(getattr(machine, 'header_frost', None))
+        if getattr(self.player, 'artist_page_canvas', None) is self:
+            effects.append(getattr(self.player, 'artist_page_frost', None))
         if getattr(self.player, 'frosted_player_bar', False):
             effects.append(getattr(self.player, 'frosted_bar', None))
             effects.extend(effect for widget, effect in getattr(self.player, 'top_frosted_bars', ())
@@ -751,11 +753,21 @@ class GPUAlbumWall(Gtk.Box, GLProgram):
             if self.glass_renderer is None:
                 self.glass_renderer = GPUBlur(self.gl)
             for effect, rect, items in targets:
+                configure = getattr(effect, 'configure_gpu_sampling', None)
+                if configure is not None:
+                    configure(bool(self.offscreen is not None and self.offscreen.texture.value))
                 width = max(1, math.ceil(rect[2] / effect.SCALE))
                 height = max(1, math.ceil(rect[3] / effect.SCALE))
+                frame_available = (getattr(effect, 'sample_wall_frame', False) and
+                                   self.offscreen is not None and self.offscreen.texture.value)
+                scene_size = (self.area.get_allocated_width(), self.area.get_allocated_height())
+                direct = frame_available and scene_covers_bar(rect, getattr(effect, 'PAD', 56), scene_size)
+                kwargs = ({'source_texture': self.offscreen.texture,
+                           'source_rect': rect, 'source_size': scene_size, 'supersample': 4} if direct else
+                          {'supersample': 4} if frame_available else {})
                 surface = self.glass_renderer.render(
                     id(effect.bar), width, height, self.vao, self.buffer,
-                    lambda rect=rect, items=items: self.draw_glass_scene(rect, items))
+                    lambda rect=rect, items=items: self.draw_glass_scene(rect, items), **kwargs)
                 self.glass_surfaces[id(effect.bar)] = surface
                 changed = getattr(effect, 'backdrop_changed', None)
                 if changed is not None:
@@ -768,6 +780,7 @@ class GPUAlbumWall(Gtk.Box, GLProgram):
     def render(self, area, _context):
         if self.closed or not self.ready:
             return True
+        self._render_now = time.monotonic()
         gl = self.gl
         width, height = max(1, area.get_allocated_width()), max(1, area.get_allocated_height())
         scale = area.get_scale_factor()
@@ -858,8 +871,10 @@ class GPUAlbumWall(Gtk.Box, GLProgram):
             gl.glBufferData(GL_ARRAY_BUFFER, ctypes.sizeof(data), data, GL_STREAM_DRAW)
             gl.glDrawArrays(GL_TRIANGLES, 0, len(vertices) // 4)
         if gl.glGetError():
+            self._render_now = None
             return self.fail()
         self.render_glass(targets)
+        self._render_now = None
         return True
 
     def draw_labels(self, _widget, context):
@@ -892,7 +907,7 @@ class GPUAlbumWall(Gtk.Box, GLProgram):
             if x <= event.x < x + size:
                 if self.player.show_album_details and y + size + self.player.text_size + 8 <= event.y < y + size + 2 * (self.player.text_size + 4) + 8:
                     if event.button == 1:
-                        self.player.show_artist_albums(self.albums[index].artist)
+                        self.player.show_artist_page(self.albums[index].artist)
                         return True
                 if y <= event.y < y + size:
                     flip = self.flips.get(index)

@@ -108,6 +108,18 @@ class CanvasTests(unittest.TestCase):
         self.assertEqual(sort_progress(10, 11), 1)
         self.assertAlmostEqual(sort_progress(10, 10.325), .5)
 
+    def test_one_gpu_frame_uses_one_sort_animation_timestamp(self):
+        wall = SimpleNamespace(geometry=lambda: (800, 100, 10, 0, 4, 110, 500, 0),
+                               get_row_offsets=lambda _height: [0, 110],
+                               x_adjustment=SimpleNamespace(get_value=lambda: 0),
+                               adjustment=SimpleNamespace(get_value=lambda: 0),
+                               sort_start=10., sort_origins=[(1, 0)], _render_now=10.2,
+                               albums=[object()], album_slots=[0], columns=4)
+        with patch('experimental_album_canvas.time.monotonic', side_effect=AssertionError('clock advanced')):
+            first = list(ExperimentalAlbumCanvas.positions(wall))
+            second = list(ExperimentalAlbumCanvas.positions(wall))
+        self.assertEqual(first, second)
+
     def test_sort_remaps_texture_slots_and_tracks_interrupted_motion(self):
         albums = [Item('/a', 'B', artist='Z'), Item('/b', 'A', artist='A')]
         wall = SimpleNamespace(albums=albums, sort_start=None, sort_origins=None, sort_order='titleSort',

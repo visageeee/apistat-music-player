@@ -1,4 +1,5 @@
 import tempfile
+import ctypes
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -11,6 +12,7 @@ gi.require_version('Gdk', '3.0')
 from gi.repository import Gdk, GLib, Gtk
 from gpu_album_wall import GPUAlbumWall, atlas_cell_size, DRAG_GRACE_SECONDS
 from gpu_flip import GPUFlip, card_layout
+from frosted_bar import FrostedBar
 from player import Player
 
 
@@ -86,6 +88,64 @@ class GPUAlbumWallTests(unittest.TestCase):
         effect.enabled = False
         with patch('gpu_album_wall.glass_rect', return_value=(0, 0, 500, 200)):
             self.assertEqual(GPUAlbumWall.glass_targets(wall), [])
+
+    def test_artist_glass_uses_wall_backdrop_even_when_player_glass_is_off(self):
+        bar = SimpleNamespace(get_mapped=lambda: True)
+        effect = SimpleNamespace(bar=bar, enabled=True, PAD=56)
+        player = SimpleNamespace(frosted_player_bar=False, artist_page_frost=effect)
+        wall = SimpleNamespace(player=player, area=object(), visible_in_rect=lambda _rect: [(0, 1, 2)])
+        player.artist_page_canvas = wall
+        with patch('gpu_album_wall.glass_rect', return_value=(0, 0, 500, 200)):
+            self.assertEqual(GPUAlbumWall.glass_targets(wall), [(effect, (0, 0, 500, 200), [(0, 1, 2)])])
+
+    def test_artist_glass_samples_the_rendered_wall_frame(self):
+        effect = SimpleNamespace(bar=object(), SCALE=4, sample_wall_frame=True,
+                                 backdrop_changed=Mock())
+        effect.bar = SimpleNamespace(queue_draw=Mock())
+        texture = ctypes.c_uint(7)
+        renderer = SimpleNamespace(render=Mock(return_value='surface'))
+        wall = SimpleNamespace(glass_failed=False, glass_renderer=renderer, gl=Mock(),
+                               offscreen=SimpleNamespace(texture=texture), vao=1, buffer=2,
+                               area=SimpleNamespace(get_allocated_width=lambda: 800,
+                                                    get_allocated_height=lambda: 600),
+                               glass_surfaces={}, draw_glass_scene=Mock())
+        GPUAlbumWall.render_glass(wall, [(effect, (0, -56, 800, 200), [])])
+        self.assertIs(renderer.render.call_args.kwargs['source_texture'], texture)
+        self.assertEqual(renderer.render.call_args.kwargs['source_rect'], (0, -56, 800, 200))
+        self.assertEqual(renderer.render.call_args.kwargs['source_size'], (800, 600))
+        wall.draw_glass_scene.assert_not_called()
+
+    def test_other_glass_panels_also_sample_the_rendered_frame(self):
+        bar = SimpleNamespace(connect=Mock(), queue_draw=Mock())
+        content = SimpleNamespace(connect=Mock(), connect_after=Mock())
+        background = SimpleNamespace(connect=Mock(), connect_after=Mock())
+        effect = FrostedBar(bar, content, background, lambda: 'dark', sample_wall_frame=True)
+        texture = ctypes.c_uint(9)
+        renderer = SimpleNamespace(render=Mock(return_value='surface'))
+        wall = SimpleNamespace(glass_failed=False, glass_renderer=renderer, gl=Mock(),
+                               offscreen=SimpleNamespace(texture=texture), vao=1, buffer=2,
+                               area=SimpleNamespace(get_allocated_width=lambda: 800,
+                                                    get_allocated_height=lambda: 600),
+                               glass_surfaces={}, draw_glass_scene=Mock())
+        GPUAlbumWall.render_glass(wall, [(effect, (0, 450, 800, 150), [])])
+        self.assertEqual(effect.SCALE, 4)
+        self.assertTrue(effect.exact_scaling)
+        self.assertIs(renderer.render.call_args.kwargs['source_texture'], texture)
+        self.assertEqual(renderer.render.call_args.args[1:3], (200, 38))
+
+    def test_glass_outside_the_wall_frame_uses_high_resolution_redraw(self):
+        bar = SimpleNamespace(connect=Mock(), queue_draw=Mock())
+        content = SimpleNamespace(connect=Mock(), connect_after=Mock())
+        background = SimpleNamespace(connect=Mock(), connect_after=Mock())
+        effect = FrostedBar(bar, content, background, lambda: 'dark', sample_wall_frame=True)
+        renderer = SimpleNamespace(render=Mock(return_value='surface'))
+        wall = SimpleNamespace(glass_failed=False, glass_renderer=renderer, gl=Mock(),
+                               offscreen=SimpleNamespace(texture=ctypes.c_uint(9)), vao=1, buffer=2,
+                               area=SimpleNamespace(get_allocated_width=lambda: 800,
+                                                    get_allocated_height=lambda: 600),
+                               glass_surfaces={}, draw_glass_scene=Mock())
+        GPUAlbumWall.render_glass(wall, [(effect, (0, 500, 800, 156), [])])
+        self.assertEqual(renderer.render.call_args.kwargs, {'supersample': 4})
 
     def test_gpu_wall_redraws_and_composites_background_visualizer(self):
         background = Mock()

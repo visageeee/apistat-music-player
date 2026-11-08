@@ -319,16 +319,20 @@ class ExperimentalAlbumCanvas(GPUAlbumWall):
         size = self.player.album_art_size
         gap = self.player.album_spacing
         margin = self.player.album_margin
+        inset = getattr(self, 'content_top_inset', 0)
         # The labels stop growing at normal size, so their reserved space must
         # stop growing too. Otherwise large zoom levels leave a wide blank gap.
         extra = ((3 * (self.canvas_player.player.text_size + 4) + 6) * min(1., self.canvas_player.zoom)
                  if self.canvas_player.player.show_album_details else 0)
         row_height = size + gap + extra
         offsets = self.get_row_offsets(row_height)
-        total = offsets[-1] + 2 * margin
+        total = offsets[-1] + 2 * margin + inset
         canvas_width = world_width(self.columns) * self.canvas_player.zoom
         x0 = margin + max(0., (width - canvas_width) / 2)
-        return width, size, gap, margin, self.columns, row_height, total, x0
+        return width, size, gap, margin + inset, self.columns, row_height, total, x0
+
+    def make_grid_slots(self, albums, order, columns):
+        return grid_slots(albums, order, columns)
 
     def get_row_offsets(self, row_height):
         count = math.ceil(len(self.grid_items) / self.columns)
@@ -344,7 +348,8 @@ class ExperimentalAlbumCanvas(GPUAlbumWall):
 
     def set_albums(self, client, albums, reset=False):
         super().set_albums(client, albums, reset)
-        self.grid_items, self.album_slots, self.year_markers = grid_slots(self.albums, self.sort_order, self.columns)
+        self.grid_items, self.album_slots, self.year_markers = getattr(self, 'make_grid_slots', grid_slots)(
+            self.albums, self.sort_order, self.columns)
         if reset:
             self.refresh_indices.clear()
             if self.thumbnail_atlas is not None:
@@ -512,6 +517,8 @@ class ExperimentalAlbumCanvas(GPUAlbumWall):
 
     def positions(self, now=None):
         """Yield indices and screen positions, including in-flight sorting."""
+        if now is None:
+            now = getattr(self, '_render_now', None)
         _width, size, gap, top, _columns, row_height, _total, x0 = self.geometry()
         offsets = self.get_row_offsets(row_height)
         ox, oy = self.x_adjustment.get_value(), self.adjustment.get_value()
@@ -550,7 +557,8 @@ class ExperimentalAlbumCanvas(GPUAlbumWall):
                                      self.area.get_allocated_height()))
 
     def draw_labels(self, widget, context):
-        super().draw_labels(widget, context)
+        if not getattr(self, 'suppress_album_labels', False):
+            super().draw_labels(widget, context)
         if self.sort_origins is not None:
             return False
         _width, size, gap, top, columns, row_height, _total, x0 = self.geometry()
@@ -647,7 +655,7 @@ class ExperimentalAlbumCanvas(GPUAlbumWall):
         self.albums = ordered
         self.sort_order = sort
         self.columns = columns
-        self.grid_items, self.album_slots, self.year_markers = grid_slots(ordered, sort, columns)
+        self.grid_items, self.album_slots, self.year_markers = getattr(self, 'make_grid_slots', grid_slots)(ordered, sort, columns)
         new_row_height = self.geometry()[5]
         new_offsets = self.get_row_offsets(new_row_height)
         self.sort_origins = [old_positions.get(album.key, (slot % columns,

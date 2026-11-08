@@ -3,7 +3,7 @@ import ctypes
 from types import SimpleNamespace
 from unittest.mock import Mock
 
-from gpu_glass import (GPUBlur, glass_rect, GL_VIEWPORT, GL_COLOR_CLEAR_VALUE,
+from gpu_glass import (GPUBlur, glass_rect, scene_quad, scene_covers_bar, GL_VIEWPORT, GL_COLOR_CLEAR_VALUE,
                        GL_FRAMEBUFFER, GL_FRAMEBUFFER_BINDING, GL_CURRENT_PROGRAM,
                        GL_VERTEX_ARRAY_BINDING, GL_ARRAY_BUFFER_BINDING,
                        GL_ACTIVE_TEXTURE, GL_TEXTURE_BINDING_2D)
@@ -24,6 +24,18 @@ class GPUGlassTests(unittest.TestCase):
                               get_allocated_width=lambda: 1,
                               get_allocated_height=lambda: 36)
         self.assertIsNone(glass_rect(bar, object(), 56))
+
+    def test_scene_rectangle_maps_to_the_same_frame_coordinates(self):
+        quad = list(scene_quad((10, -20, 50, 40), (100, 100)))
+        self.assertAlmostEqual(quad[2], .1)
+        self.assertAlmostEqual(quad[3], 1.2)
+        self.assertAlmostEqual(quad[6], .6)
+        self.assertAlmostEqual(quad[11], .8)
+
+    def test_direct_sampling_requires_the_bar_to_fit_in_the_scene(self):
+        self.assertTrue(scene_covers_bar((0, -56, 800, 180), 56, (800, 600)))
+        self.assertFalse(scene_covers_bar((0, 500, 800, 156), 56, (800, 600)))
+        self.assertFalse(scene_covers_bar((-5, -56, 800, 180), 56, (800, 600)))
 
     def test_blur_restores_gl_state_even_when_framebuffer_setup_fails(self):
         gl = Mock()

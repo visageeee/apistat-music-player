@@ -18,7 +18,8 @@ class FrostedBar:
     def __init__(self, bar, content, background, theme, timeline=lambda: None,
                  edge='bottom', window_capture=False, capture_allowed=lambda: True,
                  capture_content=lambda: True, gpu_surface=lambda: None,
-                 retain_missing_gpu=lambda: False, cache_frames=False):
+                 retain_missing_gpu=lambda: False, cache_frames=False,
+                 scale=None, exact_scaling=False, sample_wall_frame=False):
         self.bar = bar
         self.content = content
         self.background = background
@@ -31,6 +32,15 @@ class FrostedBar:
         self.gpu_surface = gpu_surface
         self.retain_missing_gpu = retain_missing_gpu
         self.cache_frames = bool(cache_frames)
+        if scale is not None:
+            self.SCALE = max(1, int(scale))
+        self.exact_scaling = bool(exact_scaling)
+        self.sample_wall_frame = bool(sample_wall_frame)
+        if self.sample_wall_frame:
+            self.exact_scaling = True
+        self._base_scale = self.SCALE
+        self._base_exact_scaling = self.exact_scaling
+        self._gpu_sampling = False
         self._backdrop_dirty = True
         self.surface = None
         self.enabled = False
@@ -115,6 +125,15 @@ class FrostedBar:
         """Mark a freshly rendered external backdrop for compositing."""
         self._backdrop_dirty = True
 
+    def configure_gpu_sampling(self, enabled):
+        enabled = bool(enabled and self.sample_wall_frame)
+        if self._gpu_sampling == enabled:
+            return
+        self._gpu_sampling = enabled
+        self.SCALE = 4 if enabled else self._base_scale
+        self.exact_scaling = True if enabled else self._base_exact_scaling
+        self._backdrop_dirty = True
+
     def set_enabled(self, enabled):
         self.enabled = bool(enabled)
         if not self.enabled:
@@ -155,13 +174,15 @@ class FrostedBar:
         content_height = self.content.get_allocated_height()
         if min(width, height, content_height) < 2:
             return True
+        capture_content = self.capture_content()
+        self.configure_gpu_sampling(not capture_content)
         scale = self.SCALE
         size = math.ceil(width / scale), math.ceil((height + self.PAD) / scale)
-        capture_content = self.capture_content()
         gpu = None if capture_content else self.gpu_surface()
         # A GPU frame can arrive after a GTK resize or redraw. Keep the last
         # complete backdrop instead of clearing it to the background alone.
-        if (not capture_content and self.retain_missing_gpu() and self.surface is not None and
+        if (not capture_content and (self.sample_wall_frame or self.retain_missing_gpu()) and
+                self.surface is not None and
                 (gpu is None or (gpu.get_width(), gpu.get_height()) != size)):
             return True
         if self.surface is None or (self.surface.get_width(), self.surface.get_height()) != size:
@@ -192,7 +213,10 @@ class FrostedBar:
                 Gdk.cairo_set_source_pixbuf(context, pixels, 0, self.PAD / scale)
                 context.paint()
             return True
-        context.scale(1 / scale, 1 / scale)
+        if self.exact_scaling:
+            context.scale(size[0] / width, size[1] / (height + self.PAD))
+        else:
+            context.scale(1 / scale, 1 / scale)
         context.translate(-x, -(y - self.PAD))
         FrostedBar._capture_depth += 1
         try:
@@ -243,7 +267,11 @@ class FrostedBar:
         context.clip()
         if self.surface is not None:
             context.translate(0, -self.PAD)
-            context.scale(self.SCALE, self.SCALE)
+            if self.exact_scaling:
+                context.scale(width / self.surface.get_width(),
+                              (height + self.PAD) / self.surface.get_height())
+            else:
+                context.scale(self.SCALE, self.SCALE)
             context.set_source_surface(self.surface, 0, 0)
             context.get_source().set_filter(cairo.FILTER_BILINEAR)
             context.paint()

@@ -907,7 +907,7 @@ class PlayerControlTests(unittest.TestCase):
         opened = []
         player = SimpleNamespace(index=0,
                                  queue=[Item('/library/metadata/1', 'Song', artist='Coltrane')],
-                                 show_artist_albums=opened.append)
+                                 show_artist_page=opened.append)
         Player.show_current_artist_albums(player)
         self.assertEqual(opened, ['Coltrane'])
 

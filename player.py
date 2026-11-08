@@ -496,6 +496,17 @@ class Player(Gtk.Window):
             #album-sort-bar button label { font-size: 0.85em; }
             #album-grid #album-title { font-weight: bold; color: #fff; }
             #album-grid #album-meta { color: #fff; font-size: 11px; }
+            #artist-page-title { font-size: 1.8em; font-weight: bold; }
+            #artist-page-section { font-size: 1.2em; font-weight: bold; }
+            #artist-glass { background: transparent; background-image: none; }
+            #artist-page-close, #artist-page-close:hover { background: transparent;
+                border: 0; box-shadow: none; padding: 2px 8px; font-size: 1.4em; }
+            #artist-page-song, #artist-page-song:active { background: transparent;
+                background-image: none; border: 0; box-shadow: none; padding: 3px 6px; }
+            #artist-page-song:hover { background: rgba(255, 255, 255, 0.10);
+                background-image: none; border: 0; box-shadow: none; }
+            #artist-read-more, #artist-read-more:hover { background: transparent;
+                background-image: none; border: 0; box-shadow: none; padding: 2px 0; }
             #album-card-back { background: transparent; border: 0; }
             #album-card-back button { color: #eee; }
             #album-card-back #playing-marker { color: #e7a641; font-size: 16px; }
@@ -1157,7 +1168,8 @@ class Player(Gtk.Window):
                                       lambda: Player.solid_timeline_background(self),
                                       capture_allowed=lambda: Player.library_frosted_capture_allowed(self),
                                       capture_content=lambda: not Player.gpu_wall_is_mapped(self),
-                                      gpu_surface=lambda: Player.gpu_glass_surface(self, self.player_bar))
+                                      gpu_surface=lambda: Player.gpu_glass_surface(self, self.player_bar),
+                                      sample_wall_frame=True)
         self.setup_frosted_top_bars()
         self.seek = Gtk.Scale.new_with_range(Gtk.Orientation.HORIZONTAL, 0, 1, 0.01)
         self.seek.set_name('border-timeline')
@@ -1468,6 +1480,9 @@ class Player(Gtk.Window):
         canvas = getattr(self, 'album_canvas', None)
         if canvas is not None:
             canvas.layout_changed()
+        canvas = getattr(self, 'artist_page_canvas', None)
+        if canvas is not None:
+            canvas.layout_changed()
 
     def apply_tooltip_setting(self):
         Gtk.Settings.get_default().set_property(
@@ -1568,7 +1583,7 @@ class Player(Gtk.Window):
         if getattr(self, 'album_canvas', None) is not None:
             self.album_canvas.labels.queue_draw()
         for wall in (getattr(self, 'album_canvas', None), getattr(self, 'gpu_wall', None),
-                     getattr(self, 'album_web_wall', None)):
+                     getattr(self, 'album_web_wall', None), getattr(self, 'artist_page_canvas', None)):
             if wall is not None and getattr(wall, 'flips', None):
                 for flip in wall.flips.values():
                     flip.dirty = True
@@ -1653,6 +1668,8 @@ class Player(Gtk.Window):
                 #album-sort-bar button { background: #e2e2de; color: #202326; }
                 #album-sort-bar button.sort-divider { border-right-color: #c6c6c1; }
                 #album-sort-bar button:hover { background: #cecec9; }
+                #artist-page-song:hover { background: rgba(0, 0, 0, 0.08);
+                    background-image: none; border: 0; box-shadow: none; }
                 #album-sort-bar button.active { color: #101010; }
                 #style-facet-card { background: #e7e7e3; border-color: #c5c5bf; }
                 #style-facet-title { color: #fff; }
@@ -1916,6 +1933,9 @@ class Player(Gtk.Window):
     def escape_search(self):
         panel = self.content_views.get_visible_child_name()
         if panel == 'albums':
+            if self.views.get_visible_child_name() == 'artist':
+                self.artist_page_back()
+                return True
             if self.views.get_visible_child_name() == 'web':
                 self.album_web_back()
                 return True
@@ -2451,7 +2471,8 @@ class Player(Gtk.Window):
         self.album_art_size = size
         if gpu and getattr(self, 'gpu_wall_enabled', False):
             gpu.layout_changed()
-        for grid in (self.grid, getattr(self, 'style_album_grid', None)):
+        for grid in (self.grid, getattr(self, 'style_album_grid', None),
+                     getattr(self, 'artist_page_grid', None)):
             if grid is None:
                 continue
             for child in grid.get_children():
@@ -2459,6 +2480,8 @@ class Player(Gtk.Window):
                 self.set_art_size(tile.art_image, size)
                 tile.metadata_box.set_size_request(size, -1)
                 tile.flip_card.resize_card(size)
+                if hasattr(tile, 'album_description'):
+                    tile.album_description.set_size_request(max(90, size), -1)
                 tile.cover_button.set_label('‹' if size < 100 else '‹ Cover')
                 for button in tile.track_buttons:
                     if hasattr(button, 'duration_label'):
@@ -3602,12 +3625,12 @@ class Player(Gtk.Window):
         artist = artist_getter()
         if not artist:
             return False
-        self.show_artist_albums(artist)
+        self.show_artist_page(artist)
         return True
 
     def show_current_artist_albums(self, *_):
         if 0 <= self.index < len(self.queue):
-            self.show_artist_albums(self.queue[self.index].artist)
+            self.show_artist_page(self.queue[self.index].artist)
 
     def now_album_pressed(self, _widget, event):
         if event.button != 1 or not self.client or not 0 <= self.index < len(self.queue):
@@ -3724,7 +3747,8 @@ class Player(Gtk.Window):
             for candidate in tracks:
                 if candidate.key == key:
                     candidate.user_rating = rating
-        for grid in (self.grid, getattr(self, 'style_album_grid', None)):
+        for grid in (self.grid, getattr(self, 'style_album_grid', None),
+                     getattr(self, 'artist_page_grid', None)):
             if grid is None:
                 continue
             for child in grid.get_children():
@@ -3735,6 +3759,7 @@ class Player(Gtk.Window):
                         button.highlight_marker.set_text(highlights.get(track.key, ''))
         for wall in (getattr(self, 'album_canvas', None), getattr(self, 'gpu_wall', None),
                      getattr(self, 'album_web_wall', None),
+                     getattr(self, 'artist_page_canvas', None),
                      getattr(getattr(self, 'time_machine', None), 'gpu_wall', None)):
             if wall is not None:
                 for flip in wall.flips.values():
@@ -3832,6 +3857,435 @@ class Player(Gtk.Window):
         self.async_work(future.result, updated,
                         lambda: client is self.client,
                         failed)
+
+    def ensure_artist_page(self):
+        if getattr(self, 'artist_page', None) is not None:
+            return
+        page = Gtk.Overlay()
+        self.artist_page = page
+        surface = Gtk.EventBox()
+        surface.set_name('artist-glass')
+        surface.set_visible_window(False)
+        surface.set_app_paintable(True)
+        surface.set_valign(Gtk.Align.START)
+        surface.set_hexpand(True)
+        header = Gtk.Box(spacing=20, margin=16)
+        surface.add(header)
+        self.artist_page_image = Gtk.Image()
+        self.set_placeholder_art(self.artist_page_image, 150, SMALL_PLACEHOLDER_LOGO_RATIO)
+        self.artist_page_image.set_valign(Gtk.Align.START)
+        header.pack_start(self.artist_page_image, False, False, 0)
+        text = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+        self.artist_page_title = Gtk.Label(xalign=0)
+        self.artist_page_title.set_name('artist-page-title')
+        self.artist_page_title.set_line_wrap(True)
+        text.pack_start(self.artist_page_title, False, False, 0)
+        self.artist_page_bio = Gtk.Label(xalign=0, yalign=0)
+        self.artist_page_bio.set_line_wrap(True)
+        self.artist_page_bio.set_max_width_chars(48)
+        self.artist_page_bio.set_lines(5)
+        self.artist_page_bio.set_ellipsize(Pango.EllipsizeMode.END)
+        self.artist_page_bio.set_selectable(True)
+        text.pack_start(self.artist_page_bio, False, False, 0)
+        self.artist_page_source = Gtk.Label(xalign=0)
+        self.artist_page_source.set_opacity(.6)
+        text.pack_start(self.artist_page_source, False, False, 0)
+        header.pack_start(text, True, True, 0)
+        popular = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+        popular.set_size_request(180, -1)
+        self.artist_page_songs_title = Gtk.Label(label='Popular songs', xalign=0)
+        self.artist_page_songs_title.set_name('artist-page-section')
+        self.artist_page_songs_title.set_ellipsize(Pango.EllipsizeMode.END)
+        popular.pack_start(self.artist_page_songs_title, False, False, 0)
+        self.artist_page_songs = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+        popular.pack_start(self.artist_page_songs, False, False, 0)
+        header.pack_start(popular, True, True, 0)
+        close = Gtk.Button(label='×')
+        close.set_name('artist-page-close')
+        close.set_valign(Gtk.Align.START)
+        close.get_accessible().set_name('Close artist page')
+        close.connect('clicked', self.artist_page_back)
+        header.pack_end(close, False, False, 0)
+        self.artist_page_grid = Gtk.FlowBox()
+        self.artist_page_grid.set_name('album-grid')
+        self.artist_page_grid.set_selection_mode(Gtk.SelectionMode.NONE)
+        self.artist_page_grid.set_homogeneous(True)
+        self.artist_page_grid.set_min_children_per_line(1)
+        self.artist_page_grid.set_max_children_per_line(12)
+        self.artist_page_grid.set_row_spacing(self.album_spacing)
+        self.artist_page_grid.set_column_spacing(self.album_spacing)
+        self.artist_page_grid.set_valign(Gtk.Align.START)
+        wall = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, margin=self.album_margin)
+        self.artist_page_fallback_wall = wall
+        wall.pack_start(self.artist_page_grid, False, False, 0)
+        fallback = self.scroll(wall)
+        fallback.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        fallback.connect('scroll-event', self.artist_page_fallback_zoom)
+        self.artist_page_walls = Gtk.Stack()
+        self.artist_page_walls.add_named(fallback, 'gtk')
+        self.artist_page_canvas = None
+        if sys.platform.startswith('linux') or sys.platform == 'win32':
+            try:
+                from artist_album_canvas import ArtistAlbumCanvas
+                canvas = ArtistAlbumCanvas(self, self.artist_page_canvas_failed,
+                                           self.artist_page_canvas_pressed, embedded=True)
+                canvas.columns = 4
+                canvas.render_surface.set_margin_top(0)
+                canvas.scrollbar.set_margin_top(0)
+                self.artist_page_canvas = canvas
+                self.artist_page_walls.add_named(canvas, 'canvas')
+            except (OSError, ImportError, RuntimeError, AttributeError):
+                self.artist_page_canvas = None
+        page.add(self.artist_page_walls)
+        page.add_overlay(surface)
+        surface.connect('size-allocate', self.artist_page_header_allocated)
+        self.views.add_named(page, 'artist')
+        background = getattr(self, 'shared_background', None)
+        self.artist_page_frost = None
+        if background is not None:
+            self.artist_page_frost = FrostedBar(
+                surface, self.artist_page_walls, background, lambda: self.theme, edge='top',
+                capture_content=lambda: not (self.artist_page_canvas and self.artist_page_canvas.area.get_mapped()),
+                gpu_surface=lambda: (self.artist_page_canvas.glass_surfaces.get(id(surface))
+                                     if self.artist_page_canvas else None),
+                retain_missing_gpu=lambda: bool(self.artist_page_canvas and not self.artist_page_canvas.glass_failed),
+                cache_frames=True, scale=4, exact_scaling=True, sample_wall_frame=True)
+            self.artist_page_frost.set_enabled(True)
+            page.connect('destroy', lambda *_: self.artist_page_frost.stop())
+        page.show_all()
+        self.artist_page_walls.set_visible_child_name('canvas' if self.artist_page_canvas else 'gtk')
+
+    def artist_page_header_allocated(self, _widget, allocation):
+        height = max(0, allocation.height)
+        wall = getattr(self, 'artist_page_fallback_wall', None)
+        if wall is not None and wall.get_margin_top() != self.album_margin + height:
+            wall.set_margin_top(self.album_margin + height)
+        canvas = getattr(self, 'artist_page_canvas', None)
+        if canvas is not None and getattr(canvas, 'content_top_inset', 0) != height:
+            canvas.content_top_inset = height
+            canvas.layout_changed()
+
+    def artist_page_canvas_pressed(self, album, event, _x, _y):
+        if event.button == 3:
+            self.show_context_menu(event, gpu_album=album, gpu_wall=self.artist_page_canvas)
+        else:
+            self.artist_page_canvas.toggle_album(album)
+
+    def artist_page_fallback_zoom(self, _widget, event):
+        if not event.state & Gdk.ModifierType.CONTROL_MASK:
+            return False
+        if event.direction == Gdk.ScrollDirection.SMOOTH:
+            valid, _dx, dy = event.get_scroll_deltas()
+            if not valid or not dy:
+                return False
+            step = -1 if dy > 0 else 1
+        elif event.direction in (Gdk.ScrollDirection.UP, Gdk.ScrollDirection.DOWN):
+            step = 1 if event.direction == Gdk.ScrollDirection.UP else -1
+        else:
+            return False
+        size = max(80, min(480, getattr(self, 'artist_page_fallback_size', self.album_art_size) + step * 24))
+        self.artist_page_fallback_size = size
+        for child in self.artist_page_grid.get_children():
+            tile = child.get_child()
+            self.set_art_size(tile.art_image, size)
+            tile.metadata_box.set_size_request(size, -1)
+            tile.flip_card.resize_card(size)
+            if hasattr(tile, 'album_description'):
+                tile.album_description.set_size_request(max(90, size), -1)
+            tile.cover_button.set_label('‹' if size < 100 else '‹ Cover')
+            for button in tile.track_buttons:
+                if hasattr(button, 'duration_label'):
+                    button.duration_label.set_visible(show_track_duration(size))
+        return True
+
+    def artist_page_canvas_failed(self):
+        if getattr(self, 'artist_page_walls', None) is not None:
+            self.artist_page_walls.set_visible_child_name('gtk')
+            self.artist_page_populate_fallback()
+            self.status.set_text('Artist album canvas unavailable; using the classic wall.')
+        return False
+
+    def artist_page_populate_fallback(self):
+        albums = getattr(self, 'artist_page_albums', ())
+        generation = self.artist_page_generation
+        def add_batch(start=0):
+            if self.closed or self.artist_page_generation != generation:
+                return False
+            for album in albums[start:start + 8]:
+                self.add_album_tile(album, grid=self.artist_page_grid, show_description=True)
+                tile = self.artist_page_grid.get_children()[-1].get_child()
+                tile.age_label.set_text(str(album.year or ''))
+                tile.album_description.set_text(self.artist_page_descriptions.get(album.key, ''))
+                size = getattr(self, 'artist_page_fallback_size', self.album_art_size)
+                if size != self.album_art_size:
+                    self.set_art_size(tile.art_image, size)
+                    tile.metadata_box.set_size_request(size, -1)
+                    tile.flip_card.resize_card(size)
+                    tile.album_description.set_size_request(max(90, size), -1)
+            if start + 8 < len(albums):
+                GLib.idle_add(add_batch, start + 8)
+            return False
+        for child in self.artist_page_grid.get_children():
+            child.destroy()
+        add_batch()
+
+    def artist_page_back(self, *_):
+        self.artist_page_generation = getattr(self, 'artist_page_generation', 0) + 1
+        panel, view = getattr(self, 'artist_page_origin', ('albums', 'wall'))
+        self.show_view(panel, preserve=True)
+        if panel == 'albums':
+            self.views.set_visible_child_name(view if view != 'artist' else 'wall')
+
+    def show_artist_page(self, artist):
+        client = self.client
+        section = self.library.get_active_id()
+        if not client or not section or not artist:
+            return
+        if (self.content_views.get_visible_child_name() != 'albums' or
+                self.views.get_visible_child_name() != 'artist'):
+            self.artist_page_origin = (self.content_views.get_visible_child_name(),
+                                       self.views.get_visible_child_name())
+        self.ensure_artist_page()
+        self.artist_page_generation = getattr(self, 'artist_page_generation', 0) + 1
+        generation = self.artist_page_generation
+        self.artist_page_title.set_text(artist)
+        self.artist_page_bio.set_text('Loading artist information…')
+        self.artist_page_source.set_text('')
+        self.artist_page_has_photo = False
+        self.artist_page_songs_title.set_text('Popular songs')
+        self.set_placeholder_art(self.artist_page_image, 150, SMALL_PLACEHOLDER_LOGO_RATIO)
+        self.artist_page_albums = []
+        self.artist_page_descriptions = {}
+        if self.artist_page_canvas is not None:
+            self.artist_page_canvas.set_albums(None, [], reset=True)
+        for box in (self.artist_page_songs, self.artist_page_grid):
+            for child in box.get_children():
+                child.destroy()
+        self.show_view('albums')
+        self.views.set_visible_child_name('artist')
+        valid = lambda: (not self.closed and self.client is client and
+                         self.library.get_active_id() == section and
+                         self.artist_page_generation == generation)
+        cached = self.canvas_catalog if self.canvas_catalog_identity == (client, section) else None
+        def load_library():
+            from artist_page import artist_library
+            from similar_recommendations import library_catalog
+            albums = cached if cached is not None else build_album_index(
+                client, section, lambda: not self.closed and self.artist_page_generation == generation)
+            if albums is None:
+                return None
+            return artist_library(artist, albums, library_catalog(client, section))
+        def library_ready(result):
+            if result is None:
+                return
+            albums, songs = result
+            if albums:
+                self.load_art(client, albums[0], self.artist_page_image, 150,
+                              lambda: valid() and not self.artist_page_has_photo)
+            self.artist_page_set_songs(songs[:5], 'Most played in your library' if
+                                       any(song.play_count for song in songs) else 'Songs in your library')
+            self.artist_page_albums = albums
+            if self.artist_page_canvas is not None and self.artist_page_walls.get_visible_child_name() == 'canvas':
+                self.artist_page_canvas.set_albums(client, albums, reset=True)
+                self.artist_page_canvas.set_descriptions(self.artist_page_descriptions)
+            else:
+                self.artist_page_populate_fallback()
+            self.artist_page_load_descriptions(client, artist, albums, valid)
+            self.artist_page_load_profile(client, artist, albums, songs, valid)
+        def failed():
+            self.artist_page_bio.set_text('Could not load this artist from the library.')
+        self.async_work(load_library, library_ready, valid, failed)
+
+    def artist_page_set_songs(self, songs, title):
+        songs = list(songs[:5])
+        self.artist_page_songs_title.set_text(title)
+        for child in self.artist_page_songs.get_children():
+            child.destroy()
+        if not songs:
+            self.artist_page_songs.pack_start(Gtk.Label(label='No songs found in this library.', xalign=0),
+                                              False, False, 0)
+        for index, song in enumerate(songs):
+            button = Gtk.Button()
+            button.set_name('artist-page-song')
+            label = Gtk.Label(label=f'{index + 1}.  {song.title}', xalign=0)
+            label.set_ellipsize(Pango.EllipsizeMode.END)
+            button.add(label)
+            button.connect('clicked', lambda _button, i=index: self.play_artist_song(songs, i))
+            button.connect('button-press-event', lambda _button, event, i=index, item=song:
+                           self.artist_page_song_menu(event, songs, i, item))
+            self.artist_page_songs.pack_start(button, False, False, 0)
+        self.artist_page_songs.show_all()
+
+    def artist_page_load_descriptions(self, client, artist, albums, valid):
+        from artist_page import full_description
+        cache = getattr(self, '_artist_album_descriptions', None)
+        if cache is None:
+            cache = self._artist_album_descriptions = {}
+        for album in albums:
+            description = full_description(getattr(album, 'summary', '')) or cache.get((client, album.key), '')
+            if description:
+                self.artist_page_descriptions[album.key] = description
+        self.artist_page_update_descriptions()
+        session = getattr(self, 'lastfm_session', None)
+        credentials = lastfm.application_credentials() or (
+            (session['api_key'], session['secret']) if session else None)
+        generation = self.artist_page_generation
+        worker_valid = lambda: (not self.closed and self.client is client and
+                                self.artist_page_generation == generation)
+        def work():
+            from artist_page import full_description, plex_album_description
+            api = lastfm.LastFM(*credentials) if credentials else None
+            last_request = 0.
+            for album in albums:
+                if not worker_valid():
+                    break
+                key = (client, album.key)
+                if key in cache or getattr(album, 'summary', ''):
+                    continue
+                description = ''
+                if not getattr(client, 'is_local', False):
+                    try:
+                        description = plex_album_description(client, album)
+                    except Exception:
+                        pass
+                cacheable = bool(description)
+                if not description and api:
+                    delay = 1. - (time.monotonic() - last_request)
+                    if delay > 0:
+                        time.sleep(delay)
+                    if not worker_valid():
+                        break
+                    try:
+                        response = api.request('album.getInfo', {'artist': artist, 'album': album.title,
+                                                                 'autocorrect': 1})
+                        last_request = time.monotonic()
+                        cacheable = True
+                        wiki = response.get('album', {}).get('wiki', {})
+                        description = full_description(wiki.get('content') or wiki.get('summary', ''))
+                        if description:
+                            description += '\nLast.fm'
+                    except (lastfm.LastFMError, AttributeError, TypeError):
+                        # Avoid hammering Last.fm when the service is unavailable or rate-limited.
+                        api = None
+                if cacheable:
+                    cache[key] = description
+                if description:
+                    GLib.idle_add(self.artist_page_description_ready, valid, album.key, description)
+            return None
+        self.async_work(work, lambda _result: None, valid)
+
+    def artist_page_description_ready(self, valid, key, description):
+        if valid():
+            self.artist_page_descriptions[key] = description
+            self.artist_page_update_descriptions()
+        return False
+
+    def artist_page_update_descriptions(self):
+        canvas = getattr(self, 'artist_page_canvas', None)
+        if canvas is not None:
+            canvas.set_descriptions(self.artist_page_descriptions)
+        for child in self.artist_page_grid.get_children():
+            tile = child.get_child()
+            if hasattr(tile, 'album_description'):
+                tile.album_description.set_text(self.artist_page_descriptions.get(tile.album.key, ''))
+
+    @staticmethod
+    def update_album_description_more(label, button):
+        if label.in_destruction() or button.in_destruction():
+            return False
+        visible = bool(label.get_text()) and label.get_layout().is_ellipsized()
+        if button.get_visible() != visible:
+            button.set_visible(visible)
+        return False
+
+    def show_album_description(self, album, description, anchor, rect=None):
+        if not description:
+            return
+        popover = Gtk.Popover.new(anchor)
+        if rect is not None:
+            popover.set_pointing_to(rect)
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8, margin=14)
+        title = Gtk.Label(label=album.title, xalign=0)
+        title.set_name('artist-page-section')
+        box.pack_start(title, False, False, 0)
+        label = Gtk.Label(label=description, xalign=0, yalign=0)
+        label.set_line_wrap(True)
+        label.set_max_width_chars(55)
+        label.set_selectable(True)
+        scroll = Gtk.ScrolledWindow()
+        scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        scroll.set_min_content_width(280)
+        scroll.set_max_content_height(400)
+        scroll.set_propagate_natural_height(True)
+        scroll.add(label)
+        box.pack_start(scroll, True, True, 0)
+        popover.add(box)
+        popover.connect('closed', lambda widget: widget.destroy())
+        popover.show_all()
+        popover.popup()
+
+    def artist_page_song_menu(self, event, songs, index, song):
+        if event.button != 3:
+            return False
+        self.show_song_context_menu(event, song, index, lambda: self.play_artist_song(songs, index))
+        return True
+
+    def play_artist_song(self, songs, index):
+        if not 0 <= index < len(songs):
+            return
+        Player.clear_remote_queue(self)
+        self.queue = list(songs)
+        self.queue_client = self.client
+        self.queue_album = None
+        self.index = index
+        self.start_track()
+
+    def artist_page_load_profile(self, client, artist, albums, songs, valid):
+        session = getattr(self, 'lastfm_session', None)
+        credentials = lastfm.application_credentials() or (
+            (session['api_key'], session['secret']) if session else None)
+        def work():
+            from artist_page import plex_artist_profile, popular_tracks
+            from similar_recommendations import _normal
+            summary, image, source, popular = '', None, '', []
+            if getattr(client, 'is_local', False):
+                try:
+                    result = client.artist_description(artist, albums[0].title if albums else '')
+                    if result:
+                        summary, _url = result
+                        source = 'Artist information from Wikipedia'
+                except Exception:
+                    pass
+            else:
+                seed = next((song for song in songs if _normal(song.album_artist) == _normal(artist)),
+                            songs[0] if songs else None)
+                try:
+                    summary, image = plex_artist_profile(client, seed, artist)
+                    if summary:
+                        source = 'Artist information from Plex'
+                except Exception:
+                    pass
+            if credentials and songs:
+                try:
+                    response = lastfm.LastFM(*credentials).request(
+                        'artist.getTopTracks', {'artist': artist, 'autocorrect': 1, 'limit': 200})
+                    popular = popular_tracks(songs, response, limit=5)
+                except lastfm.LastFMError:
+                    pass
+            return summary, image, source, popular
+        def ready(result):
+            summary, image, source, popular = result
+            summary = ' '.join(summary.split())
+            if len(summary) > 700:
+                summary = summary[:697].rsplit(' ', 1)[0] + '…'
+            self.artist_page_bio.set_text(summary or 'No artist biography is available.')
+            self.artist_page_source.set_text(source)
+            if image:
+                self.artist_page_has_photo = True
+                self.load_art(client, image, self.artist_page_image, 150, valid)
+            if popular:
+                self.artist_page_set_songs(popular, 'Popular songs · Last.fm')
+        self.async_work(work, ready, valid)
 
     def show_artist_albums(self, artist):
         if not self.client or not artist:
@@ -7211,6 +7665,8 @@ class Player(Gtk.Window):
             self.canvas_hscroll.set_margin_bottom(max(0, inset))
         if getattr(self, 'album_web_wall', None):
             self.album_web_wall.set_bottom_inset(inset)
+        if getattr(self, 'artist_page_canvas', None):
+            self.artist_page_canvas.set_bottom_inset(inset)
         info = getattr(self, 'info_revealer', None)
         if info is not None and info.get_margin_bottom() != inset:
             info.set_margin_bottom(max(0, inset))
@@ -7287,7 +7743,8 @@ class Player(Gtk.Window):
                                 lambda: self.theme, edge='top',
                                 window_capture=widget is self.settings_tab_bar,
                                 capture_content=lambda: not Player.gpu_wall_is_mapped(self),
-                                gpu_surface=lambda bar=widget: Player.gpu_glass_surface(self, bar))
+                                gpu_surface=lambda bar=widget: Player.gpu_glass_surface(self, bar),
+                                sample_wall_frame=True)
             self.top_frosted_bars.append((widget, effect))
             if widget is self.settings_tab_bar:
                 self.settings_top_frost = effect
@@ -7299,6 +7756,7 @@ class Player(Gtk.Window):
     def gpu_wall_is_mapped(player):
         walls = (getattr(player, 'album_canvas', None), getattr(player, 'gpu_wall', None),
                  getattr(player, 'album_web_wall', None),
+                 getattr(player, 'artist_page_canvas', None),
                  getattr(getattr(player, 'time_machine', None), 'gpu_wall', None))
         return any(wall is not None and wall.area.get_mapped() for wall in walls)
 
@@ -7306,6 +7764,7 @@ class Player(Gtk.Window):
     def gpu_glass_surface(player, bar):
         walls = (getattr(player, 'album_canvas', None), getattr(player, 'gpu_wall', None),
                  getattr(player, 'album_web_wall', None),
+                 getattr(player, 'artist_page_canvas', None),
                  getattr(getattr(player, 'time_machine', None), 'gpu_wall', None))
         for wall in walls:
             if wall is not None and wall.area.get_mapped():
@@ -9498,9 +9957,34 @@ class Player(Gtk.Window):
             future.add_done_callback(lambda _completed: GLib.idle_add(self.busy.end))
         submit_fetch()
 
-    def add_album_tile(self, album, grid=None, on_album=None):
+    def add_album_tile(self, album, grid=None, on_album=None, show_description=False):
         grid = grid if grid is not None else self.grid
-        tile = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+        tile = Gtk.Box(orientation=(Gtk.Orientation.HORIZONTAL if show_description else Gtk.Orientation.VERTICAL),
+                       spacing=12 if show_description else 4)
+        content = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4) if show_description else tile
+        if show_description:
+            tile.pack_start(content, False, False, 0)
+            description_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+            description = Gtk.Label(xalign=0, yalign=0)
+            description.set_line_wrap(True)
+            description.set_lines(8)
+            description.set_ellipsize(Pango.EllipsizeMode.END)
+            description.set_size_request(max(90, self.album_art_size), -1)
+            description.set_opacity(.72)
+            description_box.pack_start(description, False, False, 0)
+            more = Gtk.Button(label='Read more…')
+            more.set_name('artist-read-more')
+            more.set_halign(Gtk.Align.START)
+            more.set_no_show_all(True)
+            more.connect('clicked', lambda widget: self.show_album_description(
+                album, description.get_text(), widget))
+            description_box.pack_start(more, False, False, 0)
+            description.connect('size-allocate', lambda label, _allocation:
+                                Player.update_album_description_more(label, more))
+            description.connect('notify::label', lambda label, _property:
+                                GLib.idle_add(Player.update_album_description_more, label, more))
+            tile.pack_start(description_box, True, True, 0)
+            tile.album_description = description
         tile.album_grid = grid
         tile.open_album = on_album or self.select_album
         tile.add_events(Gdk.EventMask.BUTTON_PRESS_MASK)
@@ -9525,7 +10009,7 @@ class Player(Gtk.Window):
         front.connect('drag-end', self.album_drag_end)
         metadata = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
         metadata.set_size_request(self.album_art_size, -1)
-        tile.pack_end(metadata, False, False, 0)
+        content.pack_end(metadata, False, False, 0)
         for index, (value, name) in enumerate(((album.title, 'album-title'),
                                                (album.artist, 'album-meta'),
                                                (album_info_label(album, self.album_sort), 'album-meta'))):
@@ -9592,7 +10076,7 @@ class Player(Gtk.Window):
         footer.pack_end(explore_button, True, True, 0)
         back_content.pack_end(footer, False, False, 0)
         flip_card = FlipCard(front, back, self.album_art_size)
-        tile.pack_start(flip_card, False, False, 0)
+        content.pack_start(flip_card, False, False, 0)
         tile.album = album
         tile.art_image = image
         tile.metadata_box = metadata
@@ -9787,7 +10271,10 @@ class Player(Gtk.Window):
             time_wall.refresh_flip()
         if getattr(self, 'gpu_wall_enabled', False) and getattr(self, 'gpu_wall', None):
             self.gpu_wall.refresh_flip()
-        for grid in (self.grid, getattr(self, 'style_album_grid', None)):
+        if getattr(self, 'artist_page_canvas', None):
+            self.artist_page_canvas.refresh_flip()
+        for grid in (self.grid, getattr(self, 'style_album_grid', None),
+                     getattr(self, 'artist_page_grid', None)):
             if grid is None:
                 continue
             for child in grid.get_children():
@@ -11257,6 +11744,8 @@ class Player(Gtk.Window):
             self.album_web_wall.shutdown()
         if getattr(self, 'album_canvas', None):
             self.album_canvas.shutdown()
+        if getattr(self, 'artist_page_canvas', None):
+            self.artist_page_canvas.shutdown()
         if getattr(self, 'canvas_search_source', 0):
             GLib.source_remove(self.canvas_search_source)
             self.canvas_search_source = 0

@@ -47,6 +47,7 @@ class Item:
     codec: str = ''
     playlist_item_id: int = 0
     smart: bool = False
+    summary: str = ''
 
 
 class PlexClient:
@@ -296,6 +297,7 @@ class PlexClient:
         root = self.xml('/library/sections/' + section + '/all', **params)
         items = [Item(x.attrib['key'], x.get('title', 'Untitled'),
                       x.get('parentTitle', ''), x.get('year', ''), thumb=x.get('thumb', ''),
+                      summary=x.get('summary', ''),
                       added_at=int(x.get('addedAt', '0')) if x.get('addedAt', '0').isdigit() else 0)
                  for x in root.findall('Directory')]
         total = int(root.get('totalSize', start + len(items)))

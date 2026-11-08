@@ -7,7 +7,8 @@ import gi
 gi.require_version('Gdk', '3.0')
 from gi.repository import Gdk
 
-from gpu_gl import GL_RGBA, GL_TEXTURE_2D, GL_UNSIGNED_BYTE
+from gpu_gl import (GL_RGBA, GL_TEXTURE_2D, GL_UNSIGNED_BYTE, GL_LINEAR,
+                    GL_TEXTURE_MIN_FILTER, GL_TEXTURE_MAG_FILTER)
 
 EGL_NONE = 0x3038
 EGL_SURFACE_TYPE = 0x3033
@@ -32,6 +33,9 @@ GL_FRAMEBUFFER = 0x8D40
 GL_COLOR_ATTACHMENT0 = 0x8CE0
 GL_FRAMEBUFFER_COMPLETE = 0x8CD5
 GL_BGRA = 0x80E1
+GL_TEXTURE_WRAP_S = 0x2802
+GL_TEXTURE_WRAP_T = 0x2803
+GL_CLAMP_TO_EDGE = 0x812F
 
 
 def load_egl():
@@ -156,6 +160,10 @@ class OffscreenGPU:
         if not self.framebuffer.value:
             gl.glGenFramebuffers(1, ctypes.byref(self.framebuffer))
         gl.glBindTexture(GL_TEXTURE_2D, self.texture)
+        gl.glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR)
+        gl.glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR)
+        gl.glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE)
+        gl.glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE)
         gl.glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, width, height, 0,
                         GL_RGBA, GL_UNSIGNED_BYTE, None)
         gl.glBindFramebuffer(GL_FRAMEBUFFER, self.framebuffer)

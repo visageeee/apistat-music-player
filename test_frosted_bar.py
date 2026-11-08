@@ -8,6 +8,37 @@ from frosted_bar import FrostedBar
 
 
 class FrostedBarTests(unittest.TestCase):
+    def test_gpu_sampling_uses_precise_resolution_and_restores_cpu_fallback(self):
+        bar = SimpleNamespace(connect=Mock())
+        content = SimpleNamespace(connect=Mock(), connect_after=Mock())
+        background = SimpleNamespace(connect=Mock(), connect_after=Mock())
+        glass = FrostedBar(bar, content, background, lambda: 'dark', sample_wall_frame=True)
+        self.assertEqual(glass.SCALE, 28)
+        previous = glass.surface = object()
+        glass.configure_gpu_sampling(True)
+        self.assertEqual(glass.SCALE, 4)
+        self.assertTrue(glass.exact_scaling)
+        self.assertIs(glass.surface, previous)
+        glass.configure_gpu_sampling(False)
+        self.assertEqual(glass.SCALE, 28)
+        self.assertTrue(glass.exact_scaling)
+        self.assertIs(glass.surface, previous)
+
+    def test_exact_scaling_aligns_non_multiple_backdrop_dimensions(self):
+        bar = SimpleNamespace(connect=Mock(), get_mapped=lambda: True,
+                              get_allocated_width=lambda: 127,
+                              get_allocated_height=lambda: 63, queue_draw=Mock())
+        content = SimpleNamespace(connect=Mock(), connect_after=Mock())
+        background = SimpleNamespace(connect=Mock(), connect_after=Mock())
+        glass = FrostedBar(bar, content, background, lambda: 'dark',
+                           cache_frames=True, scale=12, exact_scaling=True)
+        glass.enabled = True
+        glass._backdrop_dirty = False
+        glass.surface = cairo.ImageSurface(cairo.FORMAT_ARGB32, 11, 10)
+        context = Mock()
+        glass.draw(bar, context)
+        context.scale.assert_called_once_with(127 / 11, (63 + glass.PAD) / 10)
+
     def test_gpu_backdrop_is_composited_without_redrawing_content(self):
         bar = SimpleNamespace(connect=Mock(), get_mapped=lambda: True,
                               get_allocated_width=lambda: 120,
@@ -83,6 +114,24 @@ class FrostedBarTests(unittest.TestCase):
         glass.refresh()
         self.assertIsNot(glass.surface, previous)
         self.assertEqual((glass.surface.get_width(), glass.surface.get_height()), (5, 6))
+
+    def test_shared_gpu_glass_keeps_last_frame_when_new_one_is_unavailable(self):
+        bar = SimpleNamespace(connect=Mock(), get_mapped=lambda: True,
+                              get_allocated_width=lambda: 120,
+                              get_allocated_height=lambda: 60, queue_draw=Mock())
+        content = SimpleNamespace(connect=Mock(), connect_after=Mock(),
+                                  get_mapped=lambda: True, get_allocated_height=lambda: 400)
+        background = SimpleNamespace(connect=Mock(), connect_after=Mock(), draw=Mock())
+        frame = [cairo.ImageSurface(cairo.FORMAT_ARGB32, 30, 29)]
+        glass = FrostedBar(bar, content, background, lambda: 'dark', sample_wall_frame=True,
+                           capture_content=lambda: False, gpu_surface=lambda: frame[0])
+        glass.enabled = True
+        glass.drawn(content, None); glass.drawn(background, None)
+        glass.refresh()
+        previous = glass.surface
+        frame[0] = None
+        glass.refresh()
+        self.assertIs(glass.surface, previous)
 
     def test_backdrop_can_skip_gpu_content_but_still_draw_background(self):
         bar = SimpleNamespace(connect=Mock(), get_mapped=lambda: True,

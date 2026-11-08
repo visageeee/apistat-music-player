@@ -554,7 +554,7 @@ class TimeMachineView:
                                            capture_content=lambda: not (self.gpu_wall and self.gpu_wall.area.get_mapped()),
                                            gpu_surface=lambda: self.gpu_wall.glass_surfaces.get(id(self.header_surface)) if self.gpu_wall else None,
                                            retain_missing_gpu=lambda: bool(self.gpu_wall and not self.gpu_wall.glass_failed),
-                                           cache_frames=True)
+                                           cache_frames=True, sample_wall_frame=True)
             self.header_frost.set_enabled(True)
             self.widget.connect('destroy', lambda *_: self.header_frost.stop())
         self.views.set_visible_child_name('albums')
