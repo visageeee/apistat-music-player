@@ -22,7 +22,7 @@ a = Analysis(
            (str(root / 'fonts' / 'OFL.txt'), 'fonts'),
            (str(root / 'windows' / 'fonts.conf'), 'windows')],
     hiddenimports=['gi.repository.PangoFc', 'gpu_album_wall', 'gpu_wgl',
-                   'experimental_album_canvas', 'thumbnail_atlas'],
+                   'experimental_album_canvas', 'album_map', 'album_map_canvas', 'album_chart', 'thumbnail_atlas'],
     hookspath=[],
     hooksconfig={
         'gi': {

@@ -48,6 +48,7 @@ class Item:
     playlist_item_id: int = 0
     smart: bool = False
     summary: str = ''
+    style: str = ''
 
 
 class PlexClient:
@@ -297,6 +298,9 @@ class PlexClient:
         root = self.xml('/library/sections/' + section + '/all', **params)
         items = [Item(x.attrib['key'], x.get('title', 'Untitled'),
                       x.get('parentTitle', ''), x.get('year', ''), thumb=x.get('thumb', ''),
+                      genre=', '.join(tag.get('tag') for tag in x.findall('Genre') if tag.get('tag')) or x.get('genre', ''),
+                      mood=', '.join(tag.get('tag') for tag in x.findall('Mood') if tag.get('tag')),
+                      style=', '.join(tag.get('tag') for tag in x.findall('Style') if tag.get('tag')),
                       summary=x.get('summary', ''),
                       added_at=int(x.get('addedAt', '0')) if x.get('addedAt', '0').isdigit() else 0)
                  for x in root.findall('Directory')]

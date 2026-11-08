@@ -1015,6 +1015,14 @@ class Player(Gtk.Window):
             button.connect('clicked', self.change_album_sort, sort)
             sort_buttons.pack_start(button, False, False, 0)
             self.album_sort_buttons[sort] = button
+        self.album_map_active = False
+        self.album_map_generation = 0
+        self.album_map_canvas = None
+        self.album_map_button = Gtk.ToggleButton(label='MAP')
+        self.set_tooltip(self.album_map_button, 'Explore an experimental map of related albums')
+        self.album_map_button.set_sensitive(sys.platform.startswith('linux') or sys.platform == 'win32')
+        self.album_map_button.connect('toggled', self.album_map_toggled)
+        sort_buttons.pack_start(self.album_map_button, False, False, 0)
         sort_buttons.pack_start(self.search, False, False, 0)
         sort_bar.set_center_widget(sort_buttons)
         album_actions = Gtk.Box(spacing=0)
@@ -1483,6 +1491,9 @@ class Player(Gtk.Window):
         canvas = getattr(self, 'artist_page_canvas', None)
         if canvas is not None:
             canvas.layout_changed()
+        canvas = getattr(self, 'album_map_canvas', None)
+        if canvas is not None:
+            canvas.layout_changed()
 
     def apply_tooltip_setting(self):
         Gtk.Settings.get_default().set_property(
@@ -1583,7 +1594,8 @@ class Player(Gtk.Window):
         if getattr(self, 'album_canvas', None) is not None:
             self.album_canvas.labels.queue_draw()
         for wall in (getattr(self, 'album_canvas', None), getattr(self, 'gpu_wall', None),
-                     getattr(self, 'album_web_wall', None), getattr(self, 'artist_page_canvas', None)):
+                     getattr(self, 'album_web_wall', None), getattr(self, 'artist_page_canvas', None),
+                     getattr(self, 'album_map_canvas', None)):
             if wall is not None and getattr(wall, 'flips', None):
                 for flip in wall.flips.values():
                     flip.dirty = True
@@ -1942,6 +1954,13 @@ class Player(Gtk.Window):
             if self.views.get_visible_child_name() == 'detail':
                 self.views.set_visible_child_name('wall')
                 return True
+            if getattr(self, 'album_map_active', False):
+                if self.search.get_text().strip():
+                    self.search.set_text('')
+                    self.album_map_canvas.set_filter('')
+                else:
+                    self.album_map_button.set_active(False)
+                return True
             if self.artist_filter or self.search.get_text().strip():
                 self.show_all_albums()
                 return True
@@ -2044,6 +2063,8 @@ class Player(Gtk.Window):
         return False
 
     def classic_album_wall_changed(self, button):
+        if getattr(self, 'album_map_active', False):
+            self.album_map_button.set_active(False)
         classic = button.get_active()
         try:
             save_classic_album_wall_enabled(classic)
@@ -2137,6 +2158,178 @@ class Player(Gtk.Window):
             self.show_context_menu(event, gpu_album=album, gpu_wall=self.album_canvas)
         else:
             self.album_canvas.toggle_album(album)
+
+    def album_map_toggled(self, button):
+        active = button.get_active()
+        if active:
+            if not self.client or not self.library.get_active_id():
+                button.set_active(False)
+                self.status.set_text('Choose a music library to explore its map.')
+                return
+            try:
+                if self.album_map_canvas is None:
+                    from album_map_canvas import AlbumMapCanvas
+                    self.album_map_canvas = AlbumMapCanvas(self, self.album_map_failed,
+                                                           self.album_map_pressed)
+                    self.album_wall_stack.add_named(self.album_map_canvas, 'map')
+                    self.album_map_canvas.show_all()
+                self.album_map_previous_wall = self.album_wall_stack.get_visible_child_name()
+                self.album_map_active = True
+                if getattr(self, 'canvas_search_source', 0):
+                    GLib.source_remove(self.canvas_search_source)
+                    self.canvas_search_source = 0
+                self.artist_filter = None
+                self.artist_filter_bar.hide()
+                self.views.set_visible_child_name('wall')
+                self.album_wall_stack.set_visible_child_name('map')
+                self.set_album_frosted_source(self.album_map_canvas)
+                self.album_top_allocated()
+                self.update_queue_bottom_inset()
+                button.get_style_context().add_class('active')
+                self.load_album_map()
+            except (OSError, ImportError, RuntimeError, AttributeError):
+                button.set_active(False)
+                self.status.set_text('Album map requires the GPU album wall.')
+        else:
+            self.album_map_generation += 1
+            was_active = self.album_map_active
+            self.album_map_active = False
+            button.get_style_context().remove_class('active')
+            if was_active:
+                previous = getattr(self, 'album_map_previous_wall', None) or 'gtk'
+                self.album_wall_stack.set_visible_child_name(previous)
+                source = (self.album_canvas if previous == 'canvas' else
+                          self.gpu_wall if previous == 'gpu' else self.wall_scroll)
+                self.set_album_frosted_source(source)
+                self.load_albums()
+
+    def album_map_failed(self):
+        if not self.closed and self.album_map_active:
+            self.album_map_button.set_active(False)
+            self.status.set_text('Album map could not initialize GPU rendering.')
+        return False
+
+    def album_map_pressed(self, album, event, _x, _y):
+        if event.button == 3:
+            self.show_context_menu(event, gpu_album=album, gpu_wall=self.album_map_canvas)
+        else:
+            self.album_map_canvas.toggle_album(album)
+
+    def load_album_map(self, refresh=False, rebuild=False):
+        client, section = self.client, self.library.get_active_id()
+        if not client or not section or not self.album_map_active:
+            return
+        self.album_map_generation += 1
+        generation = self.album_map_generation
+        catalog = (self.canvas_catalog if not refresh and self.canvas_catalog_identity == (client, section)
+                   else None)
+        songs = (list(self.song_catalog) if self.song_catalog is not None and
+                 self.song_catalog_source == (client, section, None, None) else None)
+        self.status.set_text('Building album map…')
+        valid_worker = lambda: (not self.closed and self.client is client and self.album_map_active and
+                                self.album_map_generation == generation)
+        def work():
+            from album_map import cached_facet_tags, cached_layout, cached_links
+            albums = catalog if catalog is not None else build_album_index(client, section, valid_worker)
+            if albums is None or not valid_worker():
+                return None
+            albums = sorted(albums, key=lambda album: album.key)
+            tracks = songs
+            if tracks is None:
+                tracks = (client.recommendation_catalog() if getattr(client, 'is_local', False) else
+                          LocalCache(client).read_song_index(section, max_age=None))
+            missing_index = tracks is None
+            tracks = tracks or []
+            links = cached_links(client, section, albums)
+            def facets():
+                from album_chart import cached_charts
+                found = ({} if getattr(client, 'is_local', False) else cached_facet_tags(client, section))
+                for key, chart in cached_charts(client, section, albums).items():
+                    found.setdefault(key, {}).update(chart)
+                return found
+            if not valid_worker():
+                return None
+            return albums, links, cached_layout(client, section, albums, tracks, links, refresh or rebuild,
+                                                facets=facets), missing_index
+        def loaded(result):
+            if result is None:
+                return
+            albums, links, layout, missing_index = result
+            self.album_map_canvas.set_map(client, albums, layout, links)
+            self.album_map_canvas.set_filter(self.search.get_text())
+            self.status.set_text(f'Experimental map · {len(albums)} albums · drag to pan · scroll or pinch to zoom' +
+                                 (' · open Full music library to cache song genres' if missing_index else ''))
+        def failed():
+            self.status.set_text('Could not build the album map.')
+        self.async_work(work, loaded, valid_worker, failed)
+
+    def chart_album(self, album):
+        client, section = self.client, self.library.get_active_id()
+        if not client or not section:
+            return
+        session = getattr(self, 'lastfm_session', None)
+        credentials = lastfm.application_credentials() or (
+            (session['api_key'], session['secret']) if session else None)
+        self.status.set_text(f'Charting {album.title}…')
+        valid = lambda: (not self.closed and self.client is client and
+                         self.library.get_active_id() == section)
+        def work():
+            from album_chart import ChartLookupError, chart_album
+            api = lastfm.LastFM(*credentials) if credentials else None
+            try:
+                return chart_album(client, section, album, api)
+            except ChartLookupError as error:
+                return {'error': str(error)}
+        def done(result):
+            if result and result.get('error'):
+                self.status.set_text(result['error'])
+                return
+            if not result:
+                message = 'No useful Plex or Last.fm tags found for this album.'
+                if not credentials:
+                    message += ' Last.fm application credentials are unavailable.'
+                self.status.set_text(message)
+                return
+            if self.album_map_active:
+                self.load_album_map(rebuild=True)
+            self.status.set_text('Charted ' + album.title + ' using ' + ' and '.join(result['sources']) + '.')
+        self.async_work(work, done, valid)
+
+    def chart_artist(self, album):
+        client, section = self.client, self.library.get_active_id()
+        artist = (album.artist or '').strip()
+        if not client or not section:
+            return
+        if artist.casefold() in ('', 'unknown artist', 'various artists'):
+            self.status.set_text('This album has no individual artist to chart.')
+            return
+        session = getattr(self, 'lastfm_session', None)
+        credentials = lastfm.application_credentials() or (
+            (session['api_key'], session['secret']) if session else None)
+        self.status.set_text(f'Charting {artist}…')
+        valid = lambda: (not self.closed and self.client is client and
+                         self.library.get_active_id() == section)
+        def work():
+            from album_chart import ChartLookupError, chart_artist
+            api = lastfm.LastFM(*credentials) if credentials else None
+            try:
+                return chart_artist(client, section, album, api)
+            except ChartLookupError as error:
+                return {'error': str(error)}
+        def done(result):
+            if result and result.get('error'):
+                self.status.set_text(result['error'])
+                return
+            if not result:
+                message = 'No useful Plex or Last.fm tags found for this artist.'
+                if not credentials:
+                    message += ' Last.fm application credentials are unavailable.'
+                self.status.set_text(message)
+                return
+            if self.album_map_active:
+                self.load_album_map(rebuild=True)
+            self.status.set_text('Charted ' + artist + ' using ' + ' and '.join(result['sources']) + '.')
+        self.async_work(work, done, valid)
 
     def ensure_album_web(self):
         if self.album_web_wall is not None:
@@ -2250,6 +2443,10 @@ class Player(Gtk.Window):
         self.async_work(work, ready, valid)
 
     def canvas_search_changed(self, *_args):
+        if getattr(self, 'album_map_active', False):
+            if self.album_map_canvas is not None:
+                self.album_map_canvas.set_filter(self.search.get_text())
+            return
         if (not getattr(self, 'canvas_enabled', False) or not self.client or
                 not self.search.has_focus() or
                 (self.artist_filter and not self.search.get_text().strip())):
@@ -3522,6 +3719,10 @@ class Player(Gtk.Window):
         if top is None:
             return
         height = max(36, top.get_allocated_height())
+        map_canvas = getattr(self, 'album_map_canvas', None)
+        if map_canvas is not None:
+            map_canvas.render_surface.set_margin_top(height)
+            map_canvas.scrollbar.set_margin_top(height)
         wall = getattr(self, 'album_wall', None)
         if wall is not None and wall.get_margin_top() != self.album_margin + height:
             wall.set_margin_top(self.album_margin + height)
@@ -3574,6 +3775,8 @@ class Player(Gtk.Window):
                  lambda: wall.toggle_album(gpu_album))
             item('Open album', lambda: self.select_album(gpu_album))
             item('Explore related albums', lambda: self.open_album_web(gpu_album))
+            item('Chart album', lambda: self.chart_album(gpu_album))
+            item('Chart artist', lambda: self.chart_artist(gpu_album))
             item('Show Artist Albums', lambda: self.show_artist_albums(gpu_album.artist))
             item('Show in library', lambda: self.show_in_library(gpu_album))
             item('Add to queue', lambda: self.enqueue_album(gpu_album))
@@ -3584,6 +3787,8 @@ class Player(Gtk.Window):
                  lambda: self.flip_album_card(tile))
             item('Open album', lambda: tile.open_album(tile.album))
             item('Explore related albums', lambda: self.open_album_web(tile.album))
+            item('Chart album', lambda: self.chart_album(tile.album))
+            item('Chart artist', lambda: self.chart_artist(tile.album))
             item('Show Artist Albums', lambda: self.show_artist_albums(tile.album.artist))
             item('Show in library', lambda: self.show_in_library(tile.album))
             item('Add to queue', lambda: self.enqueue_album(tile.album))
@@ -3685,6 +3890,8 @@ class Player(Gtk.Window):
                 context.remove_class('active')
 
     def change_album_sort(self, _button, sort):
+        if getattr(self, 'album_map_active', False):
+            self.album_map_button.set_active(False)
         if getattr(self, 'canvas_enabled', False) and not self.artist_filter:
             if sort != self.album_sort:
                 self.album_sort = sort
@@ -3760,6 +3967,7 @@ class Player(Gtk.Window):
         for wall in (getattr(self, 'album_canvas', None), getattr(self, 'gpu_wall', None),
                      getattr(self, 'album_web_wall', None),
                      getattr(self, 'artist_page_canvas', None),
+                     getattr(self, 'album_map_canvas', None),
                      getattr(getattr(self, 'time_machine', None), 'gpu_wall', None)):
             if wall is not None:
                 for flip in wall.flips.values():
@@ -4309,6 +4517,9 @@ class Player(Gtk.Window):
         self.load_albums()
 
     def search_album_titles(self, *_):
+        if getattr(self, 'album_map_active', False):
+            self.album_map_canvas.set_filter(self.search.get_text())
+            return
         self.artist_filter = None
         self.artist_catalog = None
         self.album_search_catalog = None
@@ -4779,6 +4990,14 @@ class Player(Gtk.Window):
         return False
 
     def change_album_zoom(self, steps):
+        if getattr(self, 'album_map_active', False) and self.album_map_canvas is not None:
+            canvas = self.album_map_canvas
+            if steps < 0:
+                canvas.unflip_for_zoom_out()
+            canvas.anchor = (canvas.area.get_allocated_width() / 2, canvas.area.get_allocated_height() / 2)
+            canvas.target_zoom = max(.01, min(2.5, canvas.target_zoom * math.exp(.17 * steps)))
+            canvas.start_animation()
+            return
         canvas = getattr(self, 'album_canvas', None)
         if getattr(self, 'canvas_enabled', False) and canvas is not None:
             if steps < 0:
@@ -4801,12 +5020,18 @@ class Player(Gtk.Window):
             self.status.set_text('Could not save album grid zoom.')
 
     def change_canvas_columns(self, delta):
+        if getattr(self, 'album_map_active', False) and self.album_map_canvas is not None:
+            self.album_map_canvas.change_columns(delta)
+            return
         canvas = getattr(self, 'album_canvas', None)
         if getattr(self, 'canvas_enabled', False) and canvas is not None:
             canvas.change_columns(delta)
 
     def reload_albums(self, *_):
         if not self.client:
+            return
+        if getattr(self, 'album_map_active', False):
+            self.load_album_map(refresh=True)
             return
         self.artist_catalog = None
         self.album_search_catalog = None
@@ -7514,6 +7739,8 @@ class Player(Gtk.Window):
             self.gpu_wall.layout_changed()
         if getattr(self, 'album_canvas', None):
             self.album_canvas.layout_changed()
+        if getattr(self, 'album_map_canvas', None):
+            self.album_map_canvas.layout_changed()
         for child in self.grid.get_children():
             tile = child.get_child()
             tile.metadata_box.set_visible(self.show_album_details)
@@ -7565,6 +7792,12 @@ class Player(Gtk.Window):
 
     def single_flip_changed(self, button):
         self.single_flip_enabled = button.get_active()
+        map_canvas = getattr(self, 'album_map_canvas', None)
+        if map_canvas is not None:
+            if self.single_flip_enabled:
+                map_canvas.enforce_single_flip()
+            else:
+                map_canvas.pending_exclusive_flip = None
         time_wall = getattr(getattr(self, 'time_machine', None), 'gpu_wall', None)
         if time_wall is not None:
             if self.single_flip_enabled:
@@ -7663,6 +7896,9 @@ class Player(Gtk.Window):
         if getattr(self, 'album_canvas', None):
             self.album_canvas.set_bottom_inset(0)
             self.canvas_hscroll.set_margin_bottom(max(0, inset))
+        if getattr(self, 'album_map_canvas', None):
+            self.album_map_canvas.set_bottom_inset(0)
+            self.album_map_canvas.scrollbar.set_margin_bottom(max(0, inset))
         if getattr(self, 'album_web_wall', None):
             self.album_web_wall.set_bottom_inset(inset)
         if getattr(self, 'artist_page_canvas', None):
@@ -7704,7 +7940,7 @@ class Player(Gtk.Window):
 
     def frosted_top_controls(self):
         return (self.search, self.style_search,
-                *self.album_sort_buttons.values(),
+                *self.album_sort_buttons.values(), self.album_map_button,
                 *self.style_mode_buttons.values(), *self.settings_tab_buttons)
 
     def update_frosted_top_style(self):
@@ -7755,6 +7991,7 @@ class Player(Gtk.Window):
     @staticmethod
     def gpu_wall_is_mapped(player):
         walls = (getattr(player, 'album_canvas', None), getattr(player, 'gpu_wall', None),
+                 getattr(player, 'album_map_canvas', None),
                  getattr(player, 'album_web_wall', None),
                  getattr(player, 'artist_page_canvas', None),
                  getattr(getattr(player, 'time_machine', None), 'gpu_wall', None))
@@ -7763,6 +8000,7 @@ class Player(Gtk.Window):
     @staticmethod
     def gpu_glass_surface(player, bar):
         walls = (getattr(player, 'album_canvas', None), getattr(player, 'gpu_wall', None),
+                 getattr(player, 'album_map_canvas', None),
                  getattr(player, 'album_web_wall', None),
                  getattr(player, 'artist_page_canvas', None),
                  getattr(getattr(player, 'time_machine', None), 'gpu_wall', None))
@@ -9803,6 +10041,7 @@ class Player(Gtk.Window):
             self.start_track()
 
     def library_changed(self, *_):
+        self.album_map_generation = getattr(self, 'album_map_generation', 0) + 1
         self.song_generation = getattr(self, 'song_generation', 0) + 1
         self.auto_style_facet = None
         self.auto_style_keys.clear()
@@ -10273,6 +10512,8 @@ class Player(Gtk.Window):
             self.gpu_wall.refresh_flip()
         if getattr(self, 'artist_page_canvas', None):
             self.artist_page_canvas.refresh_flip()
+        if getattr(self, 'album_map_canvas', None):
+            self.album_map_canvas.refresh_flip()
         for grid in (self.grid, getattr(self, 'style_album_grid', None),
                      getattr(self, 'artist_page_grid', None)):
             if grid is None:
@@ -10631,6 +10872,10 @@ class Player(Gtk.Window):
     def load_albums(self, more=False, force_refresh=False):
         section = self.library.get_active_id()
         if not self.client or not section:
+            return
+        if getattr(self, 'album_map_active', False):
+            if not more:
+                self.load_album_map(refresh=force_refresh)
             return
         if getattr(self, 'canvas_enabled', False):
             if not more:
@@ -11740,6 +11985,9 @@ class Player(Gtk.Window):
         return data
 
     def close(self, *_):
+        self.album_map_generation = getattr(self, 'album_map_generation', 0) + 1
+        if getattr(self, 'album_map_canvas', None):
+            self.album_map_canvas.shutdown()
         if getattr(self, 'album_web_wall', None):
             self.album_web_wall.shutdown()
         if getattr(self, 'album_canvas', None):

@@ -24,7 +24,7 @@ class Handler(BaseHTTPRequestHandler):
         fixtures = {
             '/': '<MediaContainer machineIdentifier="test-machine"/>',
             '/library/sections': '<MediaContainer><Directory key="1" title="Films" type="movie"/><Directory key="2" title="Music" type="artist"/></MediaContainer>',
-            '/library/sections/2/all': '<MediaContainer totalSize="151"><Directory key="/library/metadata/10/children" title="Album &amp; More" parentTitle="Artist" year="2026" addedAt="1700000000"/></MediaContainer>',
+            '/library/sections/2/all': '<MediaContainer totalSize="151"><Directory key="/library/metadata/10/children" title="Album &amp; More" parentTitle="Artist" year="2026" addedAt="1700000000"><Genre tag="Jazz"/><Mood tag="Calm"/><Style tag="Cool Jazz"/></Directory></MediaContainer>',
             '/library/metadata/10/children': '<MediaContainer><Track key="/library/metadata/20" title="Song" index="2" parentIndex="1" duration="125000" grandparentTitle="Artist"/></MediaContainer>',
             '/library/metadata/20': ('<MediaContainer><Track><Media><Part key="/library/parts/42/file.flac">'
                                      '<Stream streamType="2" id="77" selected="1"/>'
@@ -125,6 +125,7 @@ class ClientTests(unittest.TestCase):
         self.assertEqual(total, 151)
         self.assertEqual(albums[0].title, 'Album & More')
         self.assertEqual(albums[0].added_at, 1700000000)
+        self.assertEqual((albums[0].genre, albums[0].mood, albums[0].style), ('Jazz', 'Calm', 'Cool Jazz'))
         path, token = Handler.requests[-1]
         query = parse_qs(urlsplit(path).query)
         self.assertEqual(query['X-Plex-Container-Start'], ['100'])
